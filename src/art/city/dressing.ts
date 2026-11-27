@@ -504,7 +504,8 @@ function chunkDetail(ctx: CityCtx, bag: Bag, ts: TS, _chunk: number, s0: number,
     const lat = onWall && fac !== null ? fac - side * 0.1 : side > 0 ? Math.min(e.outerR - 0.3, edge + 0.3) : Math.max(e.outerL + 0.3, edge - 0.3);
     const p = ts.p(sb, lat, e.pedestrian ? 0 : KERB);
     // faces back towards the runner so it can be read approaching
-    plaque(bag, p.x, p.y + (onWall ? 0.6 : 0), p.z, heading + Math.PI, j.name, ceramic, !onWall);
+    // on a wall the plaque goes above the shop signs (which sit at ~3.25 m)
+    plaque(bag, p.x, p.y + (onWall ? 1.5 : 0), p.z, heading + Math.PI, j.name, ceramic, !onWall);
   }
 
   // parked cars in the parking areas near the route

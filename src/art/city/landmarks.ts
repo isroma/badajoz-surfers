@@ -10,7 +10,7 @@ import * as THREE from "three";
 import type { CityLandmark } from "../../city/data";
 import { Acc } from "./acc";
 import { Bag, TS, samples } from "./bag";
-import { flatMaterial, glassMaterial, glowMaterial, metalMaterial, propMaterial } from "./cmats";
+import { drawLabel, flatMaterial, signMaterial, signSlot, glassMaterial, glowMaterial, metalMaterial, propMaterial } from "./cmats";
 import { PAL } from "../palette";
 import type { CityCtx } from "./context";
 import { centroid, obb, pointInFlat, ringPoints, signedArea, type P2 } from "./geo";
@@ -93,7 +93,19 @@ export function buildLandmarks(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     }
     g.add(grp);
   };
-  for (const [k, run] of viaductRuns(ctx, ts, ground).entries()) part(`viaduct-${k}`, (bag) => elevatedSpans(ctx, bag, ts, ground, run));
+  // grouped by 600 m tiles: few draw calls, still culled by distance
+  const tileOf = (s: number): string => {
+    const f = ts.f(s);
+    return `${Math.floor(f.x / 600)},${Math.floor(f.z / 600)}`;
+  };
+  const vGroups = new Map<string, [number, number][]>();
+  for (const run of viaductRuns(ctx, ts, ground)) {
+    const k = tileOf((run[0] + run[1]) / 2);
+    vGroups.set(k, [...(vGroups.get(k) ?? []), run]);
+  }
+  for (const [k, runs] of vGroups) part(`viaducts-${k}`, (bag) => {
+    for (const run of runs) elevatedSpans(ctx, bag, ts, ground, run);
+  });
   part("puente-real", (bag) => puenteReal(ctx, bag, ts));
   const siglo = L("torre-siglo-xxi");
   if (siglo?.footprint?.[0]) part("siglo-xxi", (bag) => sigloXXI(bag, cwRing(siglo.footprint![0]!), ctx.terrainAt(siglo.x ?? 0, siglo.z ?? 0), 80));
@@ -105,8 +117,15 @@ export function buildLandmarks(ctx: CityCtx, ground: GroundLayer): THREE.Group {
   if (pe?.footprint?.[0]) part("plaza-espana", (bag) => plazaEspana(ctx, bag, pe.footprint![0]!));
   part("murallas", (bag, fac, top) => murallas(ctx, bag, fac, top, false));
   // merlons and towers per wall, so each is culled on its own
+  // merlons and towers per 250 m tile (culled by distance at 420 m)
+  const wGroups = new Map<string, number[]>();
   (ctx.landmark("murallas")?.walls ?? []).forEach((w, i) => {
-    if (w.dist < 120) part(`muralla-${i}-detail`, (bag, fac, top) => murallas(ctx, bag, fac, top, true, i));
+    if (w.dist >= 80) return;
+    const k = `${Math.floor((w.line[0] ?? 0) / 250)},${Math.floor((w.line[1] ?? 0) / 250)}`;
+    wGroups.set(k, [...(wGroups.get(k) ?? []), i]);
+  });
+  for (const [k, list] of wGroups) part(`murallas-${k}-detail`, (bag, fac, top) => {
+    for (const i of list) murallas(ctx, bag, fac, top, true, i);
   });
   const esp = L("torre-espantaperros");
   if (esp?.x !== undefined && esp.z !== undefined) {
@@ -128,8 +147,18 @@ export function buildLandmarks(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     const l = L(id);
     if (l?.footprint?.[0]) part(id, (bag) => simpleBridge(bag, ctx, cwRing(l.footprint![0]!), id === "puente-universidad" ? 1.3 : Math.max(-1.9, ctx.waterLevel + 8)));
   }
-  for (const st of ctx.track.stretches) if (st.section.roundabout) part(`roundabout-${Math.round(st.fromS)}`, (bag) => roundabouts(ctx, bag, ts, st.fromS));
-  part("bar-el-puente", (bag, fac, top) => barElPuente(ctx, bag, fac, top, ts));
+  const rGroups = new Map<string, number[]>();
+  for (const st of ctx.track.stretches) if (st.section.roundabout) {
+    const k = tileOf(st.fromS);
+    rGroups.set(k, [...(rGroups.get(k) ?? []), st.fromS]);
+  }
+  for (const [k, list] of rGroups) part(`roundabouts-${k}`, (bag) => {
+    for (const fs of list) roundabouts(ctx, bag, ts, fs);
+  });
+  part("bar-el-puente", (bag, fac, top) => {
+    barElPuente(ctx, bag, fac, top, ts);
+    startSign(ctx, bag, ts);
+  });
   const tem = L("templete-san-francisco");
   if (tem?.x !== undefined && tem.z !== undefined) {
     const tx = tem.x;
@@ -610,7 +639,7 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
         top.quad(new THREE.Vector3(a.x - nx, ta, a.z - nz), new THREE.Vector3(b.x - nx, tb, b.z - nz), new THREE.Vector3(b.x + nx, tb, b.z + nz), new THREE.Vector3(a.x + nx, ta, a.z + nz), [0, 0], [1, 0], [1, 1], [0, 1], c, c, c, c, new THREE.Vector3(0, 1, 0));
         continue;
       }
-      if (near) merlons(p, a.x + nx * 0.7, a.z + nz * 0.7, b.x + nx * 0.7, b.z + nz * 0.7, Math.min(ta, tb), 1.4, 0xc4945e, 0.9);
+      if (near) merlons(p, a.x + nx * 0.7, a.z + nz * 0.7, b.x + nx * 0.7, b.z + nz * 0.7, Math.min(ta, tb), 2.0, 0xc4945e, 1.0);
     }
     // square towers at the corners of the near walls
     if (!near || !detail) continue;
@@ -627,10 +656,10 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
       const th = b.h + 3;
       p.push(xf(b.x, b.g - 3, b.z, 1, 1, 1, 0, -a1, 0));
       p.box(0, (th + 3) / 2, 0, tw, th + 3, tw, TAPIAL_COL, m);
-      merlons(p, -tw / 2, tw / 2 - 0.3, tw / 2, tw / 2 - 0.3, th + 3, 1.4, 0xc4945e, 0.9);
-      merlons(p, -tw / 2, -tw / 2 + 0.3, tw / 2, -tw / 2 + 0.3, th + 3, 1.4, 0xc4945e, 0.9);
-      merlons(p, tw / 2 - 0.3, -tw / 2, tw / 2 - 0.3, tw / 2, th + 3, 1.4, 0xc4945e, 0.9);
-      merlons(p, -tw / 2 + 0.3, -tw / 2, -tw / 2 + 0.3, tw / 2, th + 3, 1.4, 0xc4945e, 0.9);
+      merlons(p, -tw / 2, tw / 2 - 0.3, tw / 2, tw / 2 - 0.3, th + 3, 2.0, 0xc4945e, 1.0);
+      merlons(p, -tw / 2, -tw / 2 + 0.3, tw / 2, -tw / 2 + 0.3, th + 3, 2.0, 0xc4945e, 1.0);
+      merlons(p, tw / 2 - 0.3, -tw / 2, tw / 2 - 0.3, tw / 2, th + 3, 2.0, 0xc4945e, 1.0);
+      merlons(p, -tw / 2 + 0.3, -tw / 2, -tw / 2 + 0.3, tw / 2, th + 3, 2.0, 0xc4945e, 1.0);
       p.pop();
     }
   }
@@ -894,13 +923,13 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
   p.push(xf(face.x, y0, face.z, 1, 1, 1, 0, ry, 0));
   const w = s1 - s0;
   p.box(0, 3.55, 0.3, w + 0.4, 0.5, 0.6, 0xf4f1ea, m);
-  const sign = canvasSign("Bar El Puente");
-  p.quad(new THREE.Matrix4().makeScale(5.2, 0.8, 1).setPosition(0, 4.4, 0.08), 0xffffff, sign);
-  p.box(0, 4.4, 0.03, 5.4, 0.95, 0.06, 0x2d1a10, m);
+  const uv = signSlot("bar-el-puente", drawLabel("Bar El Puente", "#1f2328", "#ffd98a", { serif: true }));
+  p.quad(new THREE.Matrix4().makeScale(6.4, 1.2, 1).setPosition(0, 4.6, 0.08), 0xffffff, signMaterial(), uv);
+  p.box(0, 4.6, 0.03, 6.6, 1.35, 0.06, PAL.ink, m);
   // awning over the terrace
   for (let k = 0; k < 8; k++) {
     const x0 = -w / 2 + (k * w) / 8;
-    p.add(T.box, xf(x0 + w / 16, 3.05, 1.1, w / 8, 0.04, 2.3, -0.28, 0, 0), k % 2 ? 0x2f6b3a : 0xefeadf, m);
+    p.add(T.box, xf(x0 + w / 16, 3.05, 1.1, w / 8, 0.04, 2.3, -0.28, 0, 0), k % 2 ? PAL.red : PAL.white, m);
   }
   p.pop();
   // terrace: tables, chairs and parasols; the last one abandoned (plate, half beer, chair pushed back)
@@ -933,28 +962,24 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
   }
 }
 
-let barSign: THREE.Material | null = null;
-function canvasSign(text: string): THREE.Material {
-  if (barSign) return barSign;
-  const c = document.createElement("canvas");
-  c.width = 1024;
-  c.height = 160;
-  const g = c.getContext("2d");
-  if (g) {
-    g.fillStyle = "#2d1a10";
-    g.fillRect(0, 0, 1024, 160);
-    g.fillStyle = "#f4d27a";
-    g.font = "bold 104px Georgia, serif";
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.fillText(text, 512, 86);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 8;
-  barSign = new THREE.MeshBasicMaterial({ map: t });
-  return barSign;
+/** The blue direction sign at the start: "Puente Real · Badajoz centro", on two posts to the right. */
+export function startSign(ctx: CityCtx, bag: Bag, ts: TS): void {
+  const s = 70;
+  const lay = ctx.track.layoutAt(s);
+  let edge = lay.right;
+  for (const w of lay.sidewalks) edge = Math.max(edge, w.to);
+  const q = ts.p(s, edge + 1.4, 0.13);
+  const f = ts.f(s);
+  const ry = Math.atan2(-f.tx, -f.tz);
+  const p = bag.props;
+  p.push(xf(q.x, q.y, q.z, 1, 1, 1, 0, ry, 0));
+  for (const x of [-1.9, 1.9]) p.box(x, 1.6, 0.05, 0.12, 3.2, 0.12, PAL.darkGrey, flatMaterial());
+  p.box(0, 3.4, 0, 4.6, 1.0, 0.08, 0x1d4f9e, flatMaterial());
+  const uv = signSlot("start-sign", drawLabel("Puente Real · Badajoz centro", "#1d4f9e", "#ffffff", { border: "#ffffff" }));
+  p.quad(new THREE.Matrix4().makeScale(4.5, 0.85, 1).setPosition(0, 3.4, 0.05), 0xffffff, signMaterial(), uv);
+  p.pop();
 }
+
 
 /** Move a round object of radius r centred at (x, z) out of the runnable surface (+ margin). */
 function keepClear(ctx: CityCtx, x: number, z: number, r: number, nearS?: number): [number, number] {

@@ -73,7 +73,9 @@ export function fillBox(box: Box, spawn: ObstacleSpawn, pPrev: number, p: number
   box.xMin = x - halfW;
   box.xMax = x + halfW;
   box.yMin = def.yMin > 0 ? def.yMin + 0.05 : 0;
-  box.yMax = def.walkableTop ? def.yMax : def.yMax - OBSTACLE_SHRINK_TOP;
+  // Low barriers forgive a late or low jump a little more (the art keeps their visual height).
+  const forgiving = spawn.kind === "valla" || spawn.kind === "conos" || spawn.kind === "bolardos";
+  box.yMax = def.walkableTop ? def.yMax : def.yMax - OBSTACLE_SHRINK_TOP - (forgiving ? 0.12 : 0);
   box.dMin = c - half;
   box.dMax = c + half;
   box.pdMin = pc - half;

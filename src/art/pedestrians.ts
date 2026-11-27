@@ -90,22 +90,22 @@ export function buildPedestrian(seed: number, walking: boolean): THREE.Group {
   const shoe = old ? 0x2a2522 : r.pick([0xf2f2f2, 0x2a2522, 0x6b4a2e, 0x3c5a8a]);
   // legs (pivot at the hip, 0.88)
   for (const [lb, sx] of [[legL, -1], [legR, 1]] as const) {
-    lb.add(T.capsule(6.5, 3, 8), xf(sx * 0.095, 0.48, 0, 0.075, 0.1, 0.08), skirt ? skin : bottom, m);
+    lb.add(T.capsule(6.5, 1, 6), xf(sx * 0.095, 0.48, 0, 0.075, 0.1, 0.08), skirt ? skin : bottom, m);
     lb.add(T.box, xf(sx * 0.095, 0.045, 0.04, 0.11, 0.09, 0.26), shoe, m);
   }
   if (skirt) body.add(T.frustum(0.62, 10), xf(0, 0.72, 0, 0.24, 0.42, 0.2), bottom, m);
   // torso, hips, neck, head, hair
-  body.add(T.capsule(0.9, 4, 10), xf(0, 1.18, 0, 0.19, 0.25, 0.13), top, m);
+  body.add(T.capsule(0.9, 1, 6), xf(0, 1.18, 0, 0.19, 0.25, 0.13), top, m);
   if (!skirt) body.add(T.box, xf(0, 0.88, 0, 0.32, 0.18, 0.2), bottom, m);
-  body.add(T.cyl(8), xf(0, 1.5, 0, 0.055, 0.1, 0.055), skin, m);
-  body.add(T.sphere(10, 8), xf(0, 1.63, 0.005, 0.105, 0.125, 0.115), skin, m);
-  body.add(T.dome(10, 4), xf(0, 1.66, -0.005, 0.115, 0.1, 0.122), hair, m);
-  if (kind === 1 && !old) body.add(T.capsule(1.5, 3, 6), xf(0, 1.5, -0.08, 0.07, 0.1, 0.05), hair, m); // long hair
-  if (kind === 2) body.add(T.sphere(8, 6), xf(0, 1.71, -0.09, 0.055, 0.05, 0.05), hair, m); // bun
+  body.add(T.cyl(5), xf(0, 1.5, 0, 0.055, 0.1, 0.055), skin, m);
+  body.add(T.sphere(6, 4), xf(0, 1.63, 0.005, 0.105, 0.125, 0.115), skin, m);
+  body.add(T.dome(6, 2), xf(0, 1.66, -0.005, 0.115, 0.1, 0.122), hair, m);
+  if (kind === 1 && !old) body.add(T.capsule(1.5, 1, 5), xf(0, 1.5, -0.08, 0.07, 0.1, 0.05), hair, m); // long hair
+  if (kind === 2) body.add(T.sphere(5, 3), xf(0, 1.71, -0.09, 0.055, 0.05, 0.05), hair, m); // bun
   // arms (pivot at the shoulder, 1.4)
   for (const [ab, sx] of [[armL, -1], [armR, 1]] as const) {
-    ab.add(T.capsule(5.5, 3, 8), xf(sx * 0.235, 1.1, 0, 0.055, 0.065, 0.055), kind === 3 ? skin : top, m);
-    ab.add(T.sphere(6, 4), xf(sx * 0.24, 0.84, 0.01, 0.05, 0.06, 0.05), skin, m);
+    ab.add(T.capsule(5.5, 1, 6), xf(sx * 0.235, 1.1, 0, 0.055, 0.065, 0.055), kind === 3 ? skin : top, m);
+    ab.add(T.sphere(5, 3), xf(sx * 0.24, 0.84, 0.01, 0.05, 0.06, 0.05), skin, m);
   }
   // props by kind
   switch (kind) {
@@ -115,30 +115,30 @@ export function buildPedestrian(seed: number, walking: boolean): THREE.Group {
     case 2: // abuela: cardigan and the tartan shopping trolley beside her
       body.add(T.box, xf(0.32, 0.55, 0.18, 0.2, 0.55, 0.26), r.pick([0x7a2433, 0x2f4a6b, 0x3a5a3a]), m);
       body.add(T.box, xf(0.32, 0.58, 0.18, 0.205, 0.08, 0.265), 0xd8c27a, m);
-      body.add(T.cyl(8), xf(0.32, 0.08, 0.06, 0.08, 0.04, 0.08, 0, 0, Math.PI / 2), 0x1a1a1a, m);
+      body.add(T.cyl(5), xf(0.32, 0.08, 0.06, 0.08, 0.04, 0.08, 0, 0, Math.PI / 2), 0x1a1a1a, m);
       body.add(T.box, xf(0.32, 1.0, 0.06, 0.02, 0.55, 0.02), 0x8a8d91, m);
       break;
     case 3: // tourist: sun hat, camera, backpack, shorts
-      body.add(T.cyl(12), xf(0, 1.74, 0, 0.2, 0.02, 0.2), 0xe8dcb5, m);
-      body.add(T.cyl(10), xf(0, 1.79, 0, 0.12, 0.09, 0.12), 0xe8dcb5, m);
+      body.add(T.cyl(6), xf(0, 1.74, 0, 0.2, 0.02, 0.2), 0xe8dcb5, m);
+      body.add(T.cyl(6), xf(0, 1.79, 0, 0.12, 0.09, 0.12), 0xe8dcb5, m);
       body.add(T.box, xf(0, 1.15, -0.2, 0.28, 0.38, 0.16), r.pick([0x2a6f97, 0xd35400, 0x27ae60]), m);
       body.add(T.box, xf(0, 1.27, 0.15, 0.13, 0.08, 0.07), 0x1d1d1d, m);
-      body.add(T.cyl(8), xf(0, 1.27, 0.2, 0.03, 0.05, 0.03, Math.PI / 2, 0, 0), 0x333333, m);
+      body.add(T.cyl(5), xf(0, 1.27, 0.2, 0.03, 0.05, 0.03, Math.PI / 2, 0, 0), 0x333333, m);
       break;
     case 4: { // pram in front
       const pc = r.pick([0x2f3e4e, 0x6b4a6b, 0x3a5a40, 0xb9b2a5]);
       body.add(T.box, xf(0, 0.62, 0.42, 0.42, 0.3, 0.46), pc, m);
-      body.add(T.dome(10, 4), xf(0, 0.76, 0.28, 0.21, 0.3, 0.2, -0.3, 0, 0), pc, m);
-      for (const [dx, dz] of [[-0.18, 0.25], [0.18, 0.25], [-0.18, 0.6], [0.18, 0.6]] as const) body.add(T.cyl(10), xf(dx, 0.11, dz, 0.11, 0.03, 0.11, 0, 0, Math.PI / 2), 0x1a1a1a, m);
+      body.add(T.dome(6, 2), xf(0, 0.76, 0.28, 0.21, 0.3, 0.2, -0.3, 0, 0), pc, m);
+      for (const [dx, dz] of [[-0.18, 0.25], [0.18, 0.25], [-0.18, 0.6], [0.18, 0.6]] as const) body.add(T.cyl(6), xf(dx, 0.11, dz, 0.11, 0.03, 0.11, 0, 0, Math.PI / 2), 0x1a1a1a, m);
       body.add(T.box, xf(0, 0.98, 0.2, 0.4, 0.03, 0.03), 0x1a1a1a, m);
       break;
     }
     case 5: // teenager: phone to the face, headphones
       body.add(T.box, xf(0.13, 1.62, 0.1, 0.03, 0.14, 0.07), 0x111111, m);
-      body.add(T.torus(Math.PI, 0.15, 4, 10), xf(0, 1.66, 0, 0.13, 0.13, 0.13), 0xd62828, m);
+      body.add(T.torus(Math.PI, 0.15, 3, 6), xf(0, 1.66, 0, 0.13, 0.13, 0.13), 0xd62828, m);
       break;
     case 6: // old man: flat cap, cardigan, walking stick
-      body.add(T.dome(10, 3), xf(0, 1.7, 0.01, 0.125, 0.06, 0.13), 0x5a5048, m);
+      body.add(T.dome(6, 2), xf(0, 1.7, 0.01, 0.125, 0.06, 0.13), 0x5a5048, m);
       body.add(T.box, xf(0, 1.71, 0.11, 0.18, 0.02, 0.08), 0x5a5048, m);
       body.add(T.cyl(6), xf(0.3, 0.45, 0.12, 0.012, 0.9, 0.012), 0x5a3a22, m);
       break;

@@ -171,7 +171,10 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     const lay = st.layout;
     const sec = st.section;
     const zone = ctx.track.zoneAt(a).id;
-    const ss = samples(a, b, 2);
+    // 4 m samples on straights, 2 m on curves (fewer triangles, same shape)
+    let kmax = 0;
+    for (let q = a; q <= b; q += 4) kmax = Math.max(kmax, Math.abs(ts.f(q).curvature));
+    const ss = samples(a, b, kmax < 0.012 ? 4 : 2);
     const bridge = sec.bridge !== null;
     const ped = lay.carriageways.length === 0;
     const surf = surfaceOf(sec, zone);
@@ -227,8 +230,11 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     const yWalk = ped ? 0 : KERB;
     const shade = new THREE.Color(0.8, 0.79, 0.77);
     if (!bridge) {
-      P.strip(hyd, ss, E((l) => innerExtents(l)[1]), outerR, yWalk, GROUND_SCALE.hydraulic, C1, shade);
-      P.strip(hyd, ss, outerL, E((l) => innerExtents(l)[0]), yWalk, GROUND_SCALE.hydraulic, shade.clone(), C1);
+      // pedestrian streets: one flat surface wall to wall, in the path colour
+      const outerMat = ped ? groundMaterial("slabs") : hyd;
+      const sh = ped ? C1 : shade;
+      P.strip(outerMat, ss, E((l) => innerExtents(l)[1]), outerR, yWalk, GROUND_SCALE.hydraulic, C1, sh);
+      P.strip(outerMat, ss, outerL, E((l) => innerExtents(l)[0]), yWalk, GROUND_SCALE.hydraulic, sh.clone(), C1);
       // skirts so no gap shows where the terrain falls away
       P.face(groundMaterial("granite"), ss, outerR, yWalk - 4.5, yWalk, 1, new THREE.Color(0.6, 0.58, 0.55));
       P.face(groundMaterial("granite"), ss, outerL, yWalk - 4.5, yWalk, -1, new THREE.Color(0.6, 0.58, 0.55));
@@ -268,7 +274,8 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     for (const m of lay.median) {
       const w = m.to - m.from;
       const lane = lay.kinds.findIndex((k, i) => (k as string) === "median" && lay.offsets[i]! > m.from && lay.offsets[i]! < m.to);
-      if (bridge || w < 2.2) {
+      const mk = sec.medianKind;
+      if (bridge || w < 2.2 || (mk !== null && mk !== "planting" && mk !== "promenade" && mk !== "unmapped")) {
         P.strip(groundMaterial("granite"), ss, m.from, m.to, KERB + 0.04, 2, new THREE.Color(0.86, 0.85, 0.82));
         P.face(solidGroundMaterial("granite"), ss, m.from, 0, KERB + 0.04, -1);
         P.face(solidGroundMaterial("granite"), ss, m.to, 0, KERB + 0.04, 1);
@@ -292,7 +299,7 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
 
     // --- markings -----------------------------------------------------------------------------
     if (!ped && surf === "asphalt") markings(ctx, P, lay, sec, a, b, st);
-    legibility(P, lay, a, b, ped, ss);
+    legibility(P, lay, a, b, ped, ss, !bridge && (sec.medianKind === "planting" || sec.medianKind === "unmapped" || sec.medianKind === null), bridge);
 
     for (const s of ss) {
       edges.push({ s, outerL: outerL(s), outerR: outerR(s), kerbL: lay.carriageways[0]?.from ?? lo, kerbR: lay.carriageways[lay.carriageways.length - 1]?.to ?? hi, bridge, pedestrian: ped, layout: lay });
@@ -427,17 +434,14 @@ const HEDGE = PAL.trees[2];
  * lane in the "off" road tint; a red edge on oncoming lanes; railings where non-runnable pavement
  * continues beyond the runnable edge; hedges on medians the runner cannot use.
  */
-function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: boolean, ss: number[]): void {
+function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: boolean, ss: number[], planted: boolean, bridge: boolean): void {
   const lanes = lay.offsets.map((o, i) => ({ from: o - lay.widths[i]! / 2, to: o + lay.widths[i]! / 2, kind: lay.kinds[i] as string, flow: lay.flow[i]! }));
   // runnable path lanes
   for (const l of lanes) {
     if (l.kind === "road" || ped) continue;
     P.paint(a, b, l.from, l.to, RUN, KERB + 0.045);
   }
-  if (ped) {
-    P.paint(a, b, lay.left, lay.left + 0.08, RUN_EDGE);
-    P.paint(a, b, lay.right - 0.08, lay.right, RUN_EDGE);
-  } else {
+  if (!ped) {
     for (const l of lanes) {
       if (l.kind === "road") continue;
       P.paint(a, b, l.from, l.from + 0.07, RUN_EDGE, KERB + 0.05);
@@ -467,7 +471,7 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
   for (const side of [1, -1] as const) {
     const edge = side > 0 ? lay.right : lay.left;
     const pave = lay.sidewalks.some((w) => (side > 0 ? w.to > edge + 0.8 : w.from < edge - 0.8));
-    if (!pave || ped) continue;
+    if (!pave || ped || bridge) continue;
     for (let k = 0; k + 1 < ss.length; k += 1) {
       const s0 = ss[k]!;
       const s1 = ss[k + 1]!;
@@ -488,8 +492,8 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
       p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], 0.7, HEDGE, m);
     }
   }
-  // hedges along medians the runner cannot use
-  for (const md of lay.median) {
+  // hedges along planted medians the runner cannot use (concrete reservations stay bare)
+  if (planted) for (const md of lay.median) {
     const runnable = lanes.some((l) => l.kind !== "road" && l.from >= md.from - 0.1 && l.to <= md.to + 0.1);
     if (runnable) continue;
     const mid = (md.from + md.to) / 2;

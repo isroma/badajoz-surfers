@@ -194,7 +194,7 @@ export class PatternBuilder {
 
   /** Extra run-up (metres) for the line to move from the entry lane to `lane`: 0.45 s per lane (a lane change takes ~0.24 s). */
   approach(lane: number): number {
-    const lanes = Math.abs(lane - this.ctx.entryLane);
+    const lanes = Math.abs(lane - this.ctx.entryLane) + (this.ctx.lap === 1 && this.start < 1500 && lane !== this.ctx.entryLane ? 0.5 : 0);
     const across = Math.abs(this.xOf(lane) - this.xOf(this.ctx.entryLane)) > 3.8 * lanes ? 0.2 : 0;
     return this.s(0.45 * lanes + across);
   }
@@ -706,10 +706,15 @@ function shuffled<T>(rng: Rng, items: readonly T[]): T[] {
   return out;
 }
 
+/** The first 1.5 km of a first lap: forced jumps are rare, rows are spaced out. */
+function firstStretch(b: PatternBuilder): boolean {
+  return b.ctx.lap === 1 && b.start < 1500;
+}
+
 /** Gap after a row: one reaction window, longer when the line needed an action there. */
 function rowGap(b: PatternBuilder, action: boolean): number {
-  // Early on (low difficulty) rows breathe a little more: humans need time to read them.
-  const early = 0.25 * (1 - b.ctx.difficulty);
+  // Early on (low difficulty) rows breathe a little more, and more still on the first 1.5 km.
+  const early = 0.25 * (1 - b.ctx.difficulty) + (firstStretch(b) ? 0.2 : 0);
   // (+0.12 s: a lane change now takes ~0.24 s, not 0.125)
   return b.s(b.ctx.reaction + (action ? 0.35 : 0.05) + 0.12 + early);
 }
@@ -754,7 +759,7 @@ const single: PatternFn = (b) => {
   const kind = b.pick(role === "low" ? pal.low : role === "wall" ? pal.wall : pal.over);
   const front = b.start + b.approach(lane);
   const end = role === "wall" ? b.wall(kind, lane, front) : b.place(kind, lane, front);
-  const gentle = b.ctx.zone === "puente-real" && b.ctx.lap === 1;
+  const gentle = firstStretch(b);
   if (role !== "wall" && rng.chance(gentle ? 0.3 : 0.55)) {
     b.line = lane;
     lineCell(b, lane, kind, front);
@@ -977,7 +982,8 @@ const arcValla: PatternFn = (b) => {
   b.line = lane;
   lineCell(b, lane, kind, front);
   b.slot(lane, front + OBSTACLE_DEFS[kind].length / 2, 2.5, true);
-  if (!ctx.easy && rng.chance(0.3 + 0.5 * ctx.difficulty)) {
+  // Blocking every other lane forces the jump: not on the first 1.5 km, never on wide streets.
+  if (!ctx.easy && !firstStretch(b) && b.n <= 3 && rng.chance(0.3 + 0.5 * ctx.difficulty)) {
     for (const l of b.otherLanes(lane)) {
       const pl = palette(b, l);
       if ((rng.chance(0.5) || b.isLive(l)) && pl.wall.length > 0) b.wall(b.pick(pl.wall), l, front);
@@ -1199,7 +1205,7 @@ const lowZigzag: PatternFn = (b) => {
     const end = b.place(kind, lane, front);
     if (lane === line) {
       // Jump/roll it, or step aside.
-      if (rng.chance(0.5)) lineCell(b, lane, kind, front);
+      if (!firstStretch(b) && rng.chance(0.5)) lineCell(b, lane, kind, front);
       else {
         line = rng.pick(b.otherLanes(lane));
         b.trail(line, front - 1, end + 1);
@@ -1283,13 +1289,16 @@ const finale: PatternFn = (b) => {
     }
     b.trail(gap, front - b.s(0.45), front + rowLen + 1, 0.9, 1.5);
     b.line = gap;
-    front += rowLen + rowGap(b, true);
-    gap = rng.pick(b.neighbours(gap));
+    // Lap 1: an extra beat between rows, and the gap only shifts every other row.
+    const firstLap = ctx.lap === 1;
+    front += rowLen + rowGap(b, true) + (firstLap ? b.s(0.25) : 0);
+    if (!firstLap || r % 2 === 1) gap = rng.pick(b.neighbours(gap));
   }
   const kind = pal.full.some(([k]) => k === "valla-larga") || pal.full.length === 0 ? "valla-larga" : rng.weighted(pal.full);
-  // A beat to line up the jump over the closing barrier (left out where traffic would cross it).
-  front += b.s(0.35);
-  if (b.clearOfTraffic(kind, 0, front)) {
+  // A beat to line up the jump over the closing barrier (left out where traffic would cross it,
+  // and on the first 1.5 km: no forced jumps there). Lap 1 gets a longer run-up.
+  front += b.s(ctx.lap === 1 ? 0.6 : 0.35);
+  if (!firstStretch(b) && b.clearOfTraffic(kind, 0, front)) {
     b.place(kind, 0, front);
     for (const l of b.lanes) lineCell(b, l, kind, front);
   } else for (const l of b.lanes) b.trail(l, front - 2, front + 6);

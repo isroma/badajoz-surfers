@@ -261,9 +261,10 @@ export interface CityScenery {
   /**
    * Stream the world round track position `s`: builds what comes into view (nearest first, within a
    * small per-frame time budget) and drops what falls far behind. Call every frame; cheap when
-   * nothing changes. `lap` (1-based) selects day (odd) or night (even) dressing.
+   * nothing changes. `lap` (1-based) selects day (odd) or night (even) dressing. `alsoKeepS` keeps
+   * the chunks round another position built too (e.g. the start area while the menu shows s≈700).
    */
-  update(s: number, lap: number, camera: THREE.Camera): void;
+  update(s: number, lap: number, camera: THREE.Camera, alsoKeepS?: number): void;
   /** Atmosphere at a track position and lap (the zone's; blending between zones is the engine's job). */
   atmosphereAt(s: number, lap: number): Atmosphere;
   /** Build synchronously everything needed round `s` (before a run starts, for the menu). */

@@ -684,7 +684,8 @@ class Game implements GameApi {
       // Rolling on the patinete: crouch low on the deck (the rig's own pose if it has one).
       const crouch = s.roll > 0 && run.active("patinete") !== undefined;
       if (runner.setCrouch) runner.setCrouch(crouch);
-      this.crouch += ((crouch && !runner.setCrouch ? 1 : 0) - this.crouch) * Math.min(1, dt * 25);
+      // ~80 ms ease in and out (no pop).
+      this.crouch += ((crouch && !runner.setCrouch ? 1 : 0) - this.crouch) * (1 - Math.exp(-dt / 0.027));
       const cy = 1 - 0.38 * this.crouch;
       runner.root.scale.set((1 + 0.08 * q) * (1 + 0.1 * this.crouch), (1 - 0.14 * q) * cy, (1 + 0.08 * q) * (1 + 0.1 * this.crouch));
       runner.update(animDt, this.runnerAnim(run), speed);
@@ -758,7 +759,8 @@ class Game implements GameApi {
       lookBias: run ? this.bendBias(p) : 0,
     });
     world.setCamera(this.cam.camera);
-    world.updateScenery(p, lap, this.cam.camera);
+    // On the menu, keep the run's start built too (when the art can), so "Jugar" is instant.
+    world.updateScenery(p, lap, this.cam.camera, run ? undefined : 0);
     world.updateAtmosphere(p, lap);
     if (run) {
       this.chest.set(px, py + 1.1, -p);
