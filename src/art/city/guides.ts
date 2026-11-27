@@ -178,13 +178,20 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
     const road = m.kind === "road";
     const raisedKind = m.kind === "sidewalk" || m.kind === "median";
     const y = raisedKind ? KERB + 0.06 : 0.016;
-    const col = road ? new THREE.Color(PAL.roadOff) : m.kind === "median" ? new THREE.Color(PAL.grass) : new THREE.Color(PAL.pavement);
+    const colRoad = new THREE.Color(PAL.roadOff);
+    const colWalk = m.kind === "median" ? new THREE.Color(PAL.grass) : new THREE.Color(PAL.pavement);
     const acc = bag.acc(paintMaterial());
     const step = 2;
     for (let s = a; s < b - 1e-6; s += step) {
       const t = Math.min(b, s + step);
       const e0 = mergeEdgeAt(m, s);
       const e1 = mergeEdgeAt(m, t);
+      // a road lane funnelling into a street without carriageway (shared / pedestrian street) is
+      // drawn in that street's surface, not in asphalt tones
+      const lw = Math.min(e0, m.edgeFull);
+      const hw2 = Math.max(e0, m.edgeFull);
+      const onAsphalt = road && tr.layoutAt(s).carriageways.some((c) => c.to > lw && c.from < hw2);
+      const col = onAsphalt ? colRoad : colWalk;
       // the vanished part of the lane: no longer looks runnable
       const A = ts.p(s, e0, y);
       const B = ts.p(s, m.edgeFull, y);
@@ -197,7 +204,7 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
         else acc.quad(A, D, C, B, [0, 0], [0, 0], [0, 0], [0, 0], col, col, col, col, up);
       }
       // the closing line along the eased edge: painted only (nothing solid inside layout.left..right)
-      const lineCol = road ? (Math.round(s / step) % 2 === 1 ? new THREE.Color(PAL.white) : new THREE.Color(PAL.danger)) : new THREE.Color(PAL.kerb);
+      const lineCol = onAsphalt ? (Math.round(s / step) % 2 === 1 ? new THREE.Color(PAL.white) : new THREE.Color(PAL.danger)) : new THREE.Color(PAL.kerb);
       const L0 = ts.p(s, e0, y + 0.004);
       const L1 = ts.p(s, e0 - m.side * 0.25, y + 0.004);
       const L2 = ts.p(t, e1 - m.side * 0.25, y + 0.004);

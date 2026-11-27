@@ -160,11 +160,13 @@ export function laneEase(t: number): number {
 }
 
 /**
- * Lane-change duration for a lateral distance: 0.22 s up to 3 m, 0.24 s for a 3.3 m lane,
+ * Lane-change duration for a lateral distance: 0.18 s at 1.6 m, 0.22 s from 2.6 to 3 m, 0.24 s for a 3.3 m lane,
  * 0.34 s across Puente Real's 5 m cable-plane median (and no longer beyond).
  */
 export function laneChangeTime(distance: number): number {
-  return LANE_CHANGE_TIME + Math.min(0.12, Math.max(0, (Math.abs(distance) - 3) * 0.06));
+  const d = Math.abs(distance);
+  // Shorter hops (the old town's 1.6 m lanes) are quicker: 0.18 s at 1.6 m.
+  return LANE_CHANGE_TIME + Math.min(0.12, Math.max(0, (d - 3) * 0.06)) - Math.min(0.06, Math.max(0, (2.6 - d) * 0.04));
 }
 
 /** Gap (m) wider than this between neighbouring lanes is a non-runnable median (a vault across it). */
