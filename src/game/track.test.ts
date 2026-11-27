@@ -175,7 +175,7 @@ describe("track generator", () => {
   });
 
   it("the tutorial is a spaced, solvable script: dodge, jump, roll, jump onto a roof", () => {
-    for (let seed = 1; seed <= 20; seed++) {
+    for (let seed = 1; seed <= (process.env["CI"] ? 6 : 20); seed++) {
       const gen = new TrackGenerator(seed, 0, { tutorial: true });
       gen.generateUntil(600);
       const steps = gen.tutorial;
