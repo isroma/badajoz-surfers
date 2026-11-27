@@ -80,11 +80,11 @@ describe("player physics", () => {
     expect(jumps).toBe(2);
   });
 
-  it("changes lane in about 0.12 s and queues one more lane input", () => {
+  it("changes lane in about 0.22 s and queues one more lane input", () => {
     const s = createPlayer();
     run(s, LANE_CHANGE_TIME + 0.01, { 0: "left" });
     expect(s.x).toBeCloseTo(laneX(-1), 5);
-    run(s, 0.4, { 0: "right", 2: "right" });
+    run(s, 0.6, { 0: "right", 2: "right" });
     expect(s.lane).toBe(2);
     expect(s.x).toBeCloseTo(laneX(1), 5);
   });

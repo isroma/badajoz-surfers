@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import type { CityArea } from "../../city/data";
 import { Acc } from "./acc";
+import { PAL } from "../palette";
 import { groundMaterial, terrainMaterial, waterMaterial } from "./cmats";
 import type { CityCtx } from "./context";
 import { Grid, pointInFlat } from "./geo";
@@ -151,7 +152,7 @@ export function buildGround(ctx: CityCtx): GroundLayer {
   const uv = new Float32Array(nx * nz * 2);
   const c = new THREE.Color();
   // summer Extremadura: mown park lawns, dusty urban plots, ochre dry grass and stubble, dark riverside woods, sandy islands
-  const palette: Record<number, number> = { 0: 0xb5aa94, 1: 0x6f804a, 2: 0x5e5a4a, 3: 0xc8bfae, 4: 0xb29c66, 5: 0xa8925a, 6: 0x4c5634, 7: 0x7a7c4c, 8: 0xbaa680 };
+  const palette: Record<number, number> = { 0: PAL.land, 1: PAL.grass, 2: 0x8dbfe3, 3: PAL.pavement, 4: PAL.land, 5: 0xe3e6c0, 6: 0xbcd9a0, 7: 0xd6e6bc, 8: 0xf2ead8 };
   const grassW: Record<number, number> = { 0: 0.15, 1: 1, 2: 0, 3: 0, 4: 0.75, 5: 0.9, 6: 1, 7: 1, 8: 0.1 };
   const mix = new Float32Array(nx * nz);
   for (let iz = 0; iz < nz; iz++) {
@@ -237,7 +238,7 @@ export function buildGround(ctx: CityCtx): GroundLayer {
     ring.translate(1300, wl - 3, 500);
     const n = ring.getAttribute("position").count;
     const cols = new Float32Array(n * 3);
-    c.setHex(0xb6a57a);
+    c.setHex(PAL.land);
     for (let i = 0; i < n; i++) cols.set([c.r, c.g, c.b], i * 3);
     ring.setAttribute("color", new THREE.BufferAttribute(cols, 3));
     ring.userData["perInstance"] = true;
@@ -262,8 +263,8 @@ export function buildGround(ctx: CityCtx): GroundLayer {
 
   // water
   const wacc = new Acc();
-  const deep = new THREE.Color(0x3d5560);
-  const pond = new THREE.Color(0x4f6f78);
+  const deep = new THREE.Color(PAL.water);
+  const pond = new THREE.Color(PAL.water);
   // the river: a grid of cells at the water level, coloured by distance to the bank (shallow,
   // sandy-green margins → dark mid-river); the shoreline itself is where the banks rise out
   riverGrid(wacc, rivers, wl, river);
@@ -310,7 +311,7 @@ export function buildGround(ctx: CityCtx): GroundLayer {
 }
 
 function riverGrid(acc: Acc, rivers: readonly CityArea[], wl: number, idx: AreaIndex): void {
-  const G = 12;
+  const G = 24;
   let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
   const edges = new Grid<[number, number, number, number]>(40);
   for (const a of rivers) {
@@ -351,9 +352,9 @@ function riverGrid(acc: Acc, rivers: readonly CityArea[], wl: number, idx: AreaI
     }
     return false;
   };
-  const deep = new THREE.Color(0x24414a);
-  const mid = new THREE.Color(0x3c5a5c);
-  const shallow = new THREE.Color(0x6b7458);
+  const deep = new THREE.Color(PAL.water).multiplyScalar(0.9);
+  const mid = new THREE.Color(PAL.water);
+  const shallow = new THREE.Color(PAL.water).lerp(new THREE.Color(0xffffff), 0.18);
   const colAt = new Map<number, THREE.Color>();
   const vcol = (ix: number, iz: number): THREE.Color => {
     const k = iz * (nx + 1) + ix;

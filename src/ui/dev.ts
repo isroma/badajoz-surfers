@@ -387,6 +387,7 @@ if (root) {
     const street = params.get("street");
     if (street !== null) Object.assign(game.hud, { street: street === "" ? null : street });
     if (params.get("progress")) game.hud.zoneProgress = Number(params.get("progress"));
+    if (params.get("distance")) game.hud.distance = Number(params.get("distance"));
     if (params.get("zone")) game.hud.zone = ZONES.find((z) => z.id === params.get("zone")) ?? game.hud.zone;
   };
   switch (screen) {
@@ -435,6 +436,9 @@ if (root) {
       break;
     case "credits":
       clickButton("Créditos");
+      break;
+    case "howto":
+      clickButton("Cómo jugar");
       break;
     case "hint": {
       // Tutorial prompt: ?action=left|right|jump|roll|done|complete

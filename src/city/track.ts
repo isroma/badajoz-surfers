@@ -11,7 +11,8 @@
  * curvature = dθ/ds signed, + when turning towards the runner's right.
  */
 import type { CityData, CitySection, ZoneId } from "./data";
-import { buildStretches, type LaneLayout } from "./lanes";
+import { buildStretches, mapLanes, type LaneLayout, type LaneTransition } from "./lanes";
+import { findTurns, TURN_LOOKAHEAD, type Turn } from "./turns";
 
 export interface TrackFrame {
   /** s as passed to frameAt (not wrapped). */
@@ -69,9 +70,26 @@ export interface Track {
   streetNameAt(s: number): string | null;
   /** Index of the stretch containing s (wrapped). */
   stretchIndexAt(s: number): number;
+  /**
+   * Every stretch boundary where the layout changes (including the lap seam if it does), in s
+   * order: which lane continues into which, which end, which begin.
+   */
+  readonly transitions: readonly LaneTransition[];
+  /**
+   * Distance from s to where lane `laneIndex` (index in layoutAt(s)) ends, following it through
+   * transitions; null if it continues for at least LANE_END_LOOKAHEAD m.
+   */
+  laneEndsAhead(s: number, laneIndex: number): number | null;
+  /** Bends and roundabouts worth guiding (see turns.ts), in s order. */
+  readonly turns: readonly Turn[];
+  /** The turn s is in, else the next one starting within TURN_LOOKAHEAD m; null if none. */
+  turnAhead(s: number): Turn | null;
   /** Measured route noise and the smoothing passes it triggered. */
   readonly smoothing: { readonly chordNoise: number; readonly passes: number };
 }
+
+/** laneEndsAhead looks this far. */
+export const LANE_END_LOOKAHEAD = 400;
 
 /** Search half-window (m) for project() with a hint. */
 export const PROJECT_WINDOW = 80;
@@ -318,6 +336,61 @@ export function createTrack(city: CityData): Track {
 
   const stretchIndexAt = (s: number): number => floorIndex(stFrom, wrap(s));
   const sectionAt = (s: number): CitySection => sections[floorIndex(secFrom, wrap(s))]!;
+  const streetNameAt = (s: number): string | null => sectionAt(s).name;
+
+  // Transitions after each stretch (null when the next stretch has the same layout).
+  const NS = stretches.length;
+  const after: (LaneTransition | null)[] = [];
+  const transitions: LaneTransition[] = [];
+  for (let i = 0; i < NS; i++) {
+    const j = (i + 1) % NS;
+    const a = stretches[i]!.layout;
+    const b = stretches[j]!.layout;
+    if (a === b) {
+      after.push(null);
+      continue;
+    }
+    const { map, begins } = mapLanes(a, b);
+    const t: LaneTransition = { s: j === 0 ? 0 : stretches[j]!.fromS, fromIndex: i, toIndex: j, map, begins };
+    after.push(t);
+    transitions.push(t);
+  }
+  transitions.sort((x, y) => x.s - y.s);
+
+  function laneEndsAhead(s: number, laneIndex: number): number | null {
+    let i = stretchIndexAt(s);
+    let lane: number | null = laneIndex;
+    if (laneIndex < 0 || laneIndex >= stretches[i]!.layout.offsets.length) return 0;
+    let dist = stretches[i]!.toS - wrap(s);
+    for (let guard = 0; guard <= NS && dist < LANE_END_LOOKAHEAD; guard++) {
+      const t = after[i];
+      if (t) {
+        lane = t.map[lane] ?? null;
+        if (lane === null) return dist;
+      }
+      i = (i + 1) % NS;
+      dist += stretches[i]!.toS - stretches[i]!.fromS;
+    }
+    return null;
+  }
+
+  const turns = findTurns(lap, frameAt, sections, streetNameAt, createFrame());
+  function turnAhead(s: number): Turn | null {
+    const w = wrap(s);
+    let best: Turn | null = null;
+    let bestD = Infinity;
+    for (const t of turns) {
+      const len = t.endS - t.s;
+      const into = w - t.s - lap * Math.floor((w - t.s) / lap); // distance since the turn start
+      if (into <= len) return t;
+      const d = lap - into; // distance to the next start of this turn
+      if (d <= TURN_LOOKAHEAD && d < bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    return best;
+  }
 
   return {
     lapLength: lap,
@@ -335,6 +408,10 @@ export function createTrack(city: CityData): Track {
       const zn = zones[index]!;
       return { id: zn.id, fromS: zn.fromS, toS: zn.toS, index };
     },
-    streetNameAt: (s) => sectionAt(s).name,
+    streetNameAt,
+    transitions,
+    laneEndsAhead,
+    turns,
+    turnAhead,
   };
 }

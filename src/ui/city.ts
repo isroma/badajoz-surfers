@@ -4,6 +4,7 @@
  * shell keeps its stylised map and static credits.
  */
 import { loadCity, type CityData } from "../city/data";
+import { createTrack, type Track } from "../city/track";
 
 let city: CityData | null = null;
 let loading: Promise<CityData | null> | null = null;
@@ -43,4 +44,53 @@ export function loadShellCity(url?: string): Promise<CityData | null> {
     },
   );
   return loading;
+}
+
+let track: Track | null = null;
+let trackFailed = false;
+
+/** The track model for the loaded city, built once (null before the data arrives or if it fails). */
+export function getTrack(): Track | null {
+  if (track || trackFailed || !city) return track;
+  try {
+    track = createTrack(city);
+  } catch (err) {
+    trackFailed = true;
+    console.warn("[shell] could not build the track model", err);
+  }
+  return track;
+}
+
+/** What the HUD needs about the next turn. */
+export interface TurnInfo {
+  /** Metres from s to the start of the turn (negative once inside it). */
+  ahead: number;
+  /** Metres from s to the end of the turn. */
+  toEnd: number;
+  dir: "left" | "right" | "straight";
+  roundabout: boolean;
+  exitName: string | null;
+}
+
+/** The turn at or just ahead of lap distance `s`, from `track.turnAhead(s)`. */
+export function turnAt(s: number): TurnInfo | null {
+  const t = getTrack() as (Track & { turnAhead?: Track["turnAhead"] }) | null;
+  if (!t || typeof t.turnAhead !== "function") return null;
+  let turn: ReturnType<Track["turnAhead"]>;
+  try {
+    turn = t.turnAhead(s);
+  } catch {
+    return null;
+  }
+  if (!turn || !Number.isFinite(turn.s)) return null;
+  const lap = t.lapLength;
+  // Unwrap across the lap seam so "ahead" is the short way round.
+  let ahead = turn.s - s;
+  if (ahead < -lap / 2) ahead += lap;
+  if (ahead > lap / 2) ahead -= lap;
+  const toEnd = ahead + (turn.endS - turn.s);
+  const roundabout = turn.roundabout === true;
+  // Straight through a roundabout: the net heading change is about 0°.
+  const straight = roundabout && Number.isFinite(turn.angle) && Math.abs(turn.angle) < 20;
+  return { ahead, toEnd, dir: straight ? "straight" : turn.direction === "left" ? "left" : "right", roundabout, exitName: turn.exitName ?? null };
 }

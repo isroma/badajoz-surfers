@@ -12,7 +12,7 @@ export const CHUNK = 50;
 /** Arches and passages: nothing solid below this over the runnable surface. */
 export const CLEARANCE = 4.6;
 
-export type Typology = "brick" | "render" | "casco" | "modern" | "shed" | "stone" | "plazaAlta";
+export type Typology = "brick" | "render" | "casco" | "modern" | "shed" | "stone" | "plazaAlta" | "school" | "church" | "hospital" | "theatre" | "hotel" | "public" | "retail";
 
 export interface PreparedBuilding {
   src: CityBuilding;
@@ -35,6 +35,8 @@ export interface PreparedBuilding {
   near: boolean;
   /** Pitched (hip) roof. */
   pitched: boolean;
+  /** Name to show on a sign (OSM name, a POI inside the footprint, or the nearby school's). */
+  name: string | null;
 }
 
 export interface CityCtx {
@@ -107,15 +109,25 @@ export function makeTerrainSampler(city: CityData): (x: number, z: number) => nu
 
 const LANDMARK_MODELS = ["torre-siglo-xxi", "catedral", "ayuntamiento", "torre-espantaperros", "puerta-palmas", "puerta-capitel", "templete-san-francisco"];
 
-function classify(b: CityBuilding, zone: ZoneId, s: number, area: number, plazaAlta: boolean): Typology {
-  const tag = b.tags?.["building"] ?? "yes";
+/** Typology from the data's tags first (school, church, hospital…), then zone, height and footprint. */
+function classify(b: CityBuilding, zone: ZoneId, s: number, area: number, plazaAlta: boolean, poiCat: string | null): Typology {
+  const t = b.tags ?? {};
+  const tag = t["building"] ?? "yes";
+  const am = t["amenity"] ?? (poiCat?.startsWith("amenity:") ? poiCat.slice(8) : "");
+  const name = (t["name"] ?? "").toLowerCase();
   if (plazaAlta) return "plazaAlta";
-  if (["church", "cathedral", "chapel", "monastery"].includes(tag) || b.tags?.["amenity"] === "place_of_worship") return "stone";
-  if (["industrial", "retail", "commercial", "warehouse", "garage", "roof", "kiosk", "train_station"].includes(tag)) return b.height > 10 ? "modern" : "shed";
+  if (t["historic"] || /^torre |^muralla|^baluarte/.test(name)) return "stone";
+  if (["school", "college", "university", "kindergarten"].includes(tag) || ["school", "college", "university", "kindergarten"].includes(am) || /colegio|instituto|escuela|universidad|facultad/.test(name)) return "school";
+  if (["church", "cathedral", "chapel", "monastery"].includes(tag) || am === "place_of_worship" || /iglesia|parroquia|ermita|capilla|convento/.test(name)) return "church";
+  if (tag === "hospital" || am === "hospital" || am === "clinic" || /hospital|clínica|centro de salud/.test(name)) return "hospital";
+  if (am === "theatre" || /teatro/.test(name)) return "theatre";
+  if (t["tourism"] === "hotel" || /hotel/.test(name)) return "hotel";
+  if (["public", "government", "civic"].includes(tag) || ["townhall", "police", "post_office", "courthouse", "library"].includes(am) || t["office"] === "government") return "public";
+  if (["supermarket", "department_store", "mall"].includes(t["shop"] ?? "") || ["retail", "commercial", "supermarket"].includes(tag) || am === "fuel") return "retail";
+  if (["industrial", "warehouse", "garage", "roof", "kiosk", "train_station"].includes(tag)) return "shed";
   const r = hash01(b.ring.length * 131 + Math.round(b.ring[0] ?? 0), Math.round((b.ring[1] ?? 0) * 10));
   if (b.height < 4.2 && area < 120) return zone === "casco-antiguo" || zone === "alcazaba-palmas" ? "casco" : "shed";
   if (zone === "casco-antiguo" || (zone === "alcazaba-palmas" && s < 5780)) return b.height <= 13.5 ? "casco" : "render";
-  if (["school", "university", "college", "hospital", "public", "government"].includes(tag)) return r < 0.5 ? "modern" : "brick";
   if (b.height < 5 && area > 400) return "shed";
   switch (zone) {
     case "san-francisco":
@@ -199,7 +211,14 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
     const zone = track.zoneAt(b.s).id;
     const c = centroid(ring);
     const plazaAlta = plazaAltaFp !== undefined && b.height < 16 && !pointInFlat(c.x, c.z, plazaAltaFp) && ringNear(ring, plazaAltaFp, 2.5);
-    const typ = classify(b, zone, b.s, area, plazaAlta);
+    // a named POI inside the footprint names the building and helps its typology (schools…)
+    const poi = city.pois.find((p) => Math.abs(p.s - b.s) < 120 && pointInFlat(p.x, p.z, b.ring)) ?? null;
+    const nearSchool = city.pois.find((p) => p.category === "amenity:school" && Math.hypot(p.x - c.x, p.z - c.z) < 90) ?? null;
+    const isSchoolBuilding = (b.tags?.["building"] ?? "") === "school";
+    const typ = classify(b, zone, b.s, area, plazaAlta, poi?.category ?? null);
+    // building names: OSM's, or an institution inside (shops keep to their own ground-floor signs)
+    const institution = poi && /^amenity:(school|college|university|kindergarten|hospital|clinic|theatre|place_of_worship|townhall|police|post_office|library)$|^tourism:hotel$/.test(poi.category);
+    const name = b.tags?.["name"] ?? (institution ? poi.name : null) ?? (isSchoolBuilding && nearSchool ? nearSchool.name : null);
     // clip out of the runnable surface
     const near = b.dist < 25;
     let upperRing: P2[] | null = null;
@@ -220,7 +239,7 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
     const top = Math.max(b.h0 + b.height, G + 2.6);
     const pitched = typ === "casco" && b.height < 14;
     buildings.push({
-      src: b, index: bi, ring, extra: parts.slice(1), upperRing, streetGround, G, top, zone, typ, near, pitched,
+      src: b, index: bi, ring, extra: parts.slice(1), upperRing, streetGround, G, top, zone, typ, near, pitched, name,
       seed: hash01(bi, 77),
       chunk: b.dist < 60 ? Math.floor(wrapS(b.s) / CHUNK) : -1,
     });

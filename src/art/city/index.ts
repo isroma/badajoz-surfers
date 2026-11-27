@@ -8,6 +8,7 @@
  * under a per-frame time budget, and disposed when they fall out of range.
  */
 import * as THREE from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import type { CityScenery } from "../../contracts";
 import type { CityData } from "../../city/data";
 import { cityAtmosphere, refreshEnvironment } from "./atmosphere";
@@ -17,8 +18,9 @@ import { buildContext, CHUNK, type CityCtx } from "./context";
 import { buildGround, type GroundLayer } from "./ground";
 import { buildRoadChunk, type EdgeSample } from "./road";
 import { animateSigns } from "./relief";
+import { buildGuides } from "./guides";
+import { allCityMaterials, lightPoolMaterial } from "./cmats";
 import { U, clearChunkMask, setChunkMasked } from "./shared";
-import { skylineVariant } from "./cmats";
 import type { Track } from "./track";
 import { buildNetwork } from "./network";
 import { buildChunkDressing, buildPermanentDressing, setNightDressing, type DressingPass } from "./dressing";
@@ -32,18 +34,16 @@ export interface CityStats {
   tris: Map<number, number>;
 }
 
-const AHEAD = 440;
+let AHEAD = 360;
 const BEHIND = 90;
 const KEEP_AHEAD = 620;
 const KEEP_BEHIND = 160;
 /** Chunks this close get the full dressing (trees, relief, furniture); farther ones only the road. */
-const NEAR_AHEAD = 230;
+let NEAR_AHEAD = 180;
 const NEAR_BEHIND = 70;
 const BUDGET_MS = 4;
 /** Permanent meshes farther than this (beyond the fog) are hidden. */
-const CULL_FAR = 1050;
-/** Landmarks, bridges and terrain: the long view (needs the engine's camera far ≥ 3500 m). */
-const SKYLINE_FAR = 3400;
+const CULL_FAR = 1000;
 
 export interface CityInternals extends CityScenery {
   ctx: CityCtx;
@@ -54,6 +54,35 @@ export interface CityInternals extends CityScenery {
   buildChunkNow(i: number): number;
   /** Drop every chunk outside the wanted range round s (no hysteresis; leak test). */
   trim(s: number): void;
+}
+
+/** Merge a chunk's meshes per material (road pass + detail passes): fewer draw calls. */
+function mergeChunk(g: THREE.Group): void {
+  const byMat = new Map<THREE.Material, THREE.Mesh[]>();
+  g.traverse((o) => {
+    if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
+      const l = byMat.get(o.material) ?? [];
+      l.push(o);
+      byMat.set(o.material, l);
+    }
+  });
+  for (const [mat, meshes] of byMat) {
+    if (meshes.length < 2) continue;
+    const geos = meshes.map((m) => m.geometry as THREE.BufferGeometry);
+    const names = Object.keys(geos[0]!.attributes);
+    if (!geos.every((q) => Object.keys(q.attributes).length === names.length && names.every((n) => q.getAttribute(n) !== undefined) && !q.index)) continue;
+    const merged = mergeGeometries(geos, false);
+    if (!merged) continue;
+    merged.userData["perInstance"] = true;
+    for (const m of meshes) {
+      (m.geometry as THREE.BufferGeometry).dispose();
+      m.removeFromParent();
+    }
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.matrixAutoUpdate = false;
+    g.add(mesh);
+  }
+  for (const c of [...g.children]) if (c instanceof THREE.Group && c.children.length === 0) c.removeFromParent();
 }
 
 export function createCity(city: CityData, track: Track): CityInternals {
@@ -92,15 +121,6 @@ export function createCity(city: CityData, track: Track): CityInternals {
       o.updateMatrix();
     });
     root.add(permanent);
-    // the skyline (landmarks, bridges, the terrain) stays visible far beyond the city fog
-    for (const grp of [landmarks, ground.group, buildings]) {
-      grp.traverse((o) => {
-        if (o instanceof THREE.Mesh && o.material instanceof THREE.MeshLambertMaterial && !o.name.startsWith("far-")) {
-          o.material = skylineVariant(o.material);
-          o.userData["skyline"] = true;
-        }
-      });
-    }
     // distance culling list (bounding spheres in world space)
     permanent.updateMatrixWorld(true);
     permanent.traverse((o) => {
@@ -110,13 +130,15 @@ export function createCity(city: CityData, track: Track): CityInternals {
       const sph = geo.boundingSphere!.clone().applyMatrix4(o.matrixWorld);
       if (sph.radius > 2500) return;
       const detail = o.parent?.name.endsWith("-detail") ?? false;
-      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 420 : o.userData["skyline"] === true ? SKYLINE_FAR : CULL_FAR });
+      const tree = o.name === "trees";
+      const terrain = o.name === "terrain";
+      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 420 : tree ? 600 : terrain ? 650 : CULL_FAR });
     });
   };
 
   const edgesOf = new Map<number, EdgeSample[]>();
   /** Build a chunk's road (pass "road") or add its detail (pass "detail"). */
-  const DETAIL_PASSES: DressingPass[] = ["trees", "furniture", "relief"];
+  const DETAIL_PASSES: (DressingPass | "merge")[] = ["furniture", "relief", "merge"];
   const detailDone = new Map<number, number>();
   /** Build a chunk's road (pass "road") or its next detail pass (trees, furniture, relief: one per call, so no frame does too much). */
   const buildChunk = (i: number, pass: "road" | "detail" = "road"): number => {
@@ -131,6 +153,7 @@ export function createCity(city: CityData, track: Track): CityInternals {
       const road = buildRoadChunk(ctx, bag, ts, s0, s1);
       edgesOf.set(i, road.edges);
       if (ground) buildChunkDressing(ctx, bag, ts, i, s0, s1, road.edges, ground, "road");
+      buildGuides(ctx, bag, ts, s0, s1);
       bag.build(g);
       // the road pass (surfaces, kerbs, lamps) casts no shadows: half the shadow-pass draw calls
       for (const c of g.children) c.castShadow = false;
@@ -138,14 +161,16 @@ export function createCity(city: CityData, track: Track): CityInternals {
       chunks.set(i, g);
     } else {
       const step = detailDone.get(i) ?? 0;
-      const dp = DETAIL_PASSES[step] ?? "relief";
-      const d = new THREE.Group();
-      d.name = `chunk-${i}-${dp}`;
-      if (ground) buildChunkDressing(ctx, bag, ts, i, s0, s1, edgesOf.get(i) ?? [], ground, dp);
-      bag.build(d);
-      g.add(d);
+      const dp = DETAIL_PASSES[step] ?? "merge";
+      if (dp === "merge") mergeChunk(g);
+      else {
+        const d = new THREE.Group();
+        d.name = `chunk-${i}-${dp}`;
+        if (ground) buildChunkDressing(ctx, bag, ts, i, s0, s1, edgesOf.get(i) ?? [], ground, dp);
+        bag.build(d);
+        g.add(d);
+      }
       detailDone.set(i, step + 1);
-      if (dp === "trees") setChunkMasked(i, true);
       if (step + 1 >= DETAIL_PASSES.length) fullChunks.add(i);
     }
     g.updateMatrixWorld(true);
@@ -263,6 +288,43 @@ export function createCity(city: CityData, track: Track): CityInternals {
         const full = d + CHUNK > -NEAR_BEHIND && d < NEAR_AHEAD;
         if (!chunks.has(i)) buildChunk(i, "road");
         while (full && !fullChunks.has(i)) buildChunk(i, "detail");
+      }
+    },
+    setQuality(level) {
+      AHEAD = [360, 300, 250, 200][level] ?? 360;
+      NEAR_AHEAD = [180, 140, 100, 70][level] ?? 180;
+      lightPoolMaterial().visible = level < 2 && lastLap % 2 === 0;
+    },
+    async prewarm(renderer, camera, s = 0, lap = 1) {
+      api.preload(s, lap);
+      // draw every sign of the lap into the text atlas now (no texture re-uploads during the run)
+      if (ground) {
+        for (let i = 0; i < n; i++) {
+          if (chunks.has(i)) continue;
+          const s0 = i * CHUNK;
+          const s1 = Math.min(track.lapLength, s0 + CHUNK);
+          const bag = new Bag();
+          const road = buildRoadChunk(ctx, bag, ts, s0, s1);
+          buildChunkDressing(ctx, bag, ts, i, s0, s1, road.edges, ground, "furniture");
+          buildChunkDressing(ctx, bag, ts, i, s0, s1, road.edges, ground, "relief");
+          buildGuides(ctx, bag, ts, s0, s1);
+        }
+      }
+      // compile in the engine's scene (its lights and fog decide the shader variants)
+      let scene: THREE.Object3D | null = root;
+      while (scene && !(scene instanceof THREE.Scene)) scene = scene.parent;
+      const parent = root.parent;
+      const tmp = new THREE.Scene();
+      if (!scene) tmp.add(root);
+      root.updateMatrixWorld(true);
+      await renderer.compileAsync(scene ?? tmp, camera);
+      for (const m of allCityMaterials()) {
+        const map = (m as THREE.MeshBasicMaterial).map;
+        if (map) renderer.initTexture(map);
+      }
+      if (!scene) {
+        tmp.remove(root);
+        if (parent) parent.add(root);
       }
     },
     dispose() {

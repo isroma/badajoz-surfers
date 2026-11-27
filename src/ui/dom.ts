@@ -26,7 +26,7 @@ export function svg(markup: string, className = "icon"): HTMLSpanElement {
 }
 
 export interface ButtonOptions {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
+  variant?: "primary" | "secondary" | "ghost" | "danger" | "text" | "dark";
   size?: "xl" | "lg" | "md" | "sm";
   icon?: string;
   className?: string;

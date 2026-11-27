@@ -1,0 +1,69 @@
+/*
+ * Design tokens (docs/design.md): the only place interface colours, type, shape, spacing,
+ * the shadow and motion are defined. Sizes are rem; the root size scales with the window
+ * (1rem ≈ 16 px at 1280×720, 24 px at 1920×1080) so the 8-point grid scales with it.
+ */
+:root {
+  /* Palette */
+  --ink: #1f2328;
+  --white: #ffffff;
+  --cream: #fff8e7;
+  --sun: #ffc53d;
+  --amber: #f59e0b;
+  --danger: #e5484d;
+  --night: #141826;
+  --land: #f6eee2;
+  --pavement: #efe4d2;
+  --street: #ffffff;
+  --street-casing: #dad3c8;
+  --water: #9acbef;
+  --park: #cde5ae;
+  --stone: #d8c9a8;
+  /* Enamel street plaque: the one colour outside the palette, for Badajoz's own street signs. */
+  --plaque: #1f4fa3;
+
+  /* Derived tints (ink and cream at fixed opacities, never new hues) */
+  --ink-2: rgba(31, 35, 40, 0.64);
+  --ink-3: rgba(31, 35, 40, 0.42);
+  --line: rgba(31, 35, 40, 0.1);
+  --track: rgba(31, 35, 40, 0.08);
+  --chip: rgba(31, 35, 40, 0.92);
+  --cream-2: rgba(255, 248, 231, 0.68);
+  --cream-line: rgba(255, 248, 231, 0.18);
+  --scrim: rgba(20, 24, 38, 0.48);
+
+  /* Type */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", Roboto, system-ui, sans-serif;
+  --mono: "Courier New", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --w-title: 800;
+  --w-label: 600;
+  --w-body: 400;
+  --fs-xs: 0.75rem;
+  --fs-s: 0.875rem;
+  --fs-m: 1rem;
+  --fs-l: 1.25rem;
+  --fs-xl: 1.75rem;
+  --fs-xxl: 2.5rem;
+  --fs-hero: 3.25rem;
+
+  /* Shape and spacing (8-point grid: 1 step = 0.5rem) */
+  --r-card: 0.75rem;
+  --r-pill: 999px;
+  --s1: 0.5rem;
+  --s2: 1rem;
+  --s3: 1.5rem;
+  --s4: 2rem;
+  --s6: 3rem;
+  --control: 2.75rem;
+  --control-sm: 2.25rem;
+
+  /* The one shadow */
+  --shadow: 0 0.25rem 1rem rgba(31, 35, 40, 0.1);
+
+  /* Motion */
+  --t-hover: 150ms;
+  --t-panel: 220ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  font-size: clamp(11px, 2.2vmin, 40px);
+}

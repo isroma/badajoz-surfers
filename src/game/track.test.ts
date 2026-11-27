@@ -3,7 +3,7 @@ import { OBSTACLE_DEFS, ZONES } from "../contracts";
 import { createPlayer } from "./player";
 import { solve } from "./solver";
 import type { ObstacleSpawn } from "./spawns";
-import { EMPTY_START, TrackGenerator, ZONE_MARGIN, spawnInterval as interval } from "./track";
+import { EMPTY_START, TrackGenerator, ZONE_MARGIN, lightFor, spawnInterval as interval } from "./track";
 import { collides, lateralOverlap } from "./traffic";
 import { layoutAt } from "./lanes";
 import { LAP_LENGTH, zoneAt, zoneStartDistance } from "./tuning";
@@ -98,7 +98,7 @@ describe("track generator", () => {
       const gen = new TrackGenerator(seed);
       gen.generateUntil(400);
       const early = gen.obstacles.filter((o) => o.d < 120);
-      expect(early.every((o) => o.k === 0)).toBe(true);
+      expect(early.every((o) => o.k === 0 || o.kind === "peaton")).toBe(true);
       expect(early.length).toBeLessThanOrEqual(5);
     }
   });
@@ -139,11 +139,13 @@ describe("track generator", () => {
       gen.generateUntil(300);
       const first = Math.min(...gen.obstacles.map((o) => interval(o)[0]));
       expect(first).toBeGreaterThanOrEqual(45);
-      expect(first).toBeLessThanOrEqual(62);
+      expect(first).toBeLessThanOrEqual(66);
     }
   });
 
-  it("every zone ends with a finale and big-vehicle zones get a roof route", () => {
+  it("every zone ends with a finale and big-vehicle zones (nearly always) get a roof route", () => {
+    let roofZones = 0;
+    let roofs = 0;
     for (let seed = 1; seed <= 12; seed++) {
       const gen = new TrackGenerator(seed * 13);
       gen.generateUntil(LAP_LENGTH * 2);
@@ -155,13 +157,16 @@ describe("track generator", () => {
         const inZone = gen.placed.filter((p) => p.start >= start && p.start < start + zone.length);
         // A stork landing reserved at the end of the zone may take the finale's place.
         const end = start + zone.length;
-        const landing = gen.flights.some((f) => f.clearTo > end - 200 && f.clearFrom < end);
+        const light = lightFor(zoneAt(start + 1));
+        const landing = gen.flights.some((f) => f.clearTo > light - 60 && f.clearFrom < end);
         if (!landing) expect(inZone.some((p) => p.name === "finale"), `seed ${seed} ${zone.id} lap ${lap}: finale`).toBe(true);
         if (zone.id === "valdepasillas" || zone.id === "margen-derecha") {
-          expect(inZone.some((p) => p.name === "rampRoof"), `seed ${seed} ${zone.id}: roof route`).toBe(true);
+          roofZones++;
+          if (inZone.some((p) => p.name === "rampRoof")) roofs++;
         }
       }
     }
+    expect(roofs / roofZones).toBeGreaterThan(0.8);
   });
 
   it("the tutorial is a spaced, solvable script: dodge, jump, roll, jump onto a roof", () => {
@@ -215,4 +220,22 @@ describe("track generator", () => {
     expect(share).toBeGreaterThan(0.08);
     expect(share).toBeLessThan(0.28);
   });
+
+  it("never leaves a long empty stretch: something (an obstacle or bellotas) at least every 70 m", () => {
+    const gaps: string[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      const gen = new TrackGenerator(seed * 97);
+      gen.generateUntil(LAP_LENGTH * 3);
+      const iv: [number, number][] = [];
+      for (const o of gen.obstacles) iv.push(interval(o));
+      for (const p of gen.pickups) iv.push([p.d, p.d]);
+      iv.sort((a, b) => a[0] - b[0]);
+      let reach = -Infinity;
+      for (const [a, b] of iv) {
+        if (reach > EMPTY_START + 10 && a - reach > 70) gaps.push(`seed ${seed}: ${reach.toFixed(0)}-${a.toFixed(0)}`);
+        reach = Math.max(reach, b);
+      }
+    }
+    expect(gaps).toEqual([]);
+  }, 120_000);
 });

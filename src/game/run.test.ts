@@ -153,6 +153,24 @@ describe("run", () => {
     expect(run.rolls).toBeGreaterThanOrEqual(1);
   });
 
+  it("after pause and resume (3-2-1) the run continues at the speed it had", () => {
+    const { run } = startRunning(17);
+    ticks(run, 3);
+    const before = run.player.speed;
+    const p = run.player.p;
+    expect(before).toBeGreaterThan(10);
+    run.startCountdown(false, true);
+    let first = -1;
+    for (let i = 0; i < 2 / TICK; i++) {
+      run.tick(TICK);
+      // Through the countdown the runner keeps its speed (the world just waits).
+      if (run.countdown > 0) expect(run.player.speed).toBe(before);
+      else if (first < 0) first = run.player.speed;
+    }
+    expect(Math.abs(first - before)).toBeLessThan(0.2);
+    expect(run.player.p).toBeGreaterThan(p);
+  });
+
   it("resume countdowns are flagged", () => {
     const { run, events } = startRunning(10);
     run.startCountdown(false, true);

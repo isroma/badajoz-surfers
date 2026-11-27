@@ -44,6 +44,8 @@ export interface GameDebug {
   stats(): Record<string, unknown>;
   /** Where every live obstacle mesh is (verification). */
   obstacles(): unknown;
+  /** Visible renderables by owner, ≈ draw calls (verification). */
+  breakdown(): unknown;
   /** Camera position and look state (verification). */
   camera(): unknown;
   /** Verification: stop the real-time loop (true) and drive frames by hand with `frames`. */
@@ -110,11 +112,17 @@ class Game implements GameApi {
   /** Landing squash (0..1) and stumble knock-back (m), decaying. */
   private squash = 0;
   private knock = 0;
+  /** Lateral visual shove (m) when steering into a lane that does not exist; decays. */
+  private bump = 0;
+  /** 0..1 scooter crouch (fallback when the rig has no crouch pose). */
+  private crouch = 0;
   /** Waiter gap on the previous tick (interpolated when drawn). */
   private prevGap = 0;
   private readonly solids: SolidBox[] = [];
+  private readonly solidPool: SolidBox[] = [];
   private readonly chest = new THREE.Vector3();
   private readonly hudPowerups: { kind: PowerupKind; remaining: number; duration: number }[] = [];
+  private readonly hudLanes: { count: number; index: number; kinds: readonly string[]; ending: number | null } = { count: 0, index: 0, kinds: [], ending: null };
 
   private readonly space: TrackSpace;
   /** Lap to start runs on (?lap=2: a night lap for testing). */
@@ -144,11 +152,11 @@ class Game implements GameApi {
       this.contextLost = false;
     });
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    this.renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // Flat style: no shadow maps at all (blob shadows instead).
+    this.renderer.shadowMap.enabled = false;
 
     // The real lap: the course drives zones, lanes and the generator; the space maps to the world.
     if (world) setCourse(buildCourse(world.city, world.track));
@@ -156,6 +164,7 @@ class Game implements GameApi {
     this.world = new World(art, this.space, world?.city ?? null);
     try {
       art.configureRenderer?.(this.renderer, this.world.scene);
+      this.renderer.shadowMap.enabled = false;
     } catch (error) {
       console.error("Badajoz Surfers: configureRenderer failed", error);
     }
@@ -190,6 +199,80 @@ class Game implements GameApi {
       timeScale: () => this.timeScale(),
     });
     this.loop.start();
+    // Compile and build everything the menu and the first seconds of a run need before the page
+    // shows the menu (src/main.ts waits for this).
+    const t0 = performance.now();
+    const gameWorld = this.world;
+    const renderer = this.renderer;
+    const camera = this.cam.camera;
+    this.ready = (async () => {
+      this.render(0, 0);
+      await gameWorld.prewarm(renderer, camera, Game.MENU_DISTANCE, 1);
+      this.render(0, 0);
+      this.loadMs = performance.now() - t0;
+    })();
+  }
+
+  /** Resolves when the menu scene is built and every shader compiled. */
+  readonly ready: Promise<void>;
+  /** Milliseconds the prewarm took (stats). */
+  private loadMs = 0;
+
+  // --- Adaptive quality ----------------------------------------------------------------------
+  /** 0 = best .. 3 = lightest; `?quality=` pins it. */
+  private quality: 0 | 1 | 2 | 3 = 0;
+  private qualityPinned = false;
+  private frameAcc = 0;
+  private frameCount = 0;
+  private slowWindows = 0;
+  private fastWindows = 0;
+  private lastDowngrade = -1e9;
+  /** Average frame time (ms) over the last window. */
+  private frameMs = 16.7;
+
+  private pixelRatioFor(level: number): number {
+    const dpr = window.devicePixelRatio || 1;
+    return [Math.min(dpr, 1.5), Math.min(dpr, 1.25), 1, 0.85][level] ?? 1;
+  }
+
+  private applyQuality(level: 0 | 1 | 2 | 3): void {
+    this.quality = level;
+    this.renderer.setPixelRatio(this.pixelRatioFor(level));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.world.setQuality(level);
+  }
+
+  /**
+   * Measure the real frame time over ~1 s windows and step quality down when it is slow (two slow
+   * windows in a row) and back up only after 5 fast windows and 10 s since the last step down:
+   * hysteresis, never oscillating.
+   */
+  private governQuality(dt: number): void {
+    if (this.qualityPinned || dt <= 0 || dt > 0.25) return;
+    this.frameAcc += dt;
+    this.frameCount++;
+    if (this.frameAcc < 1) return;
+    this.frameMs = (this.frameAcc / this.frameCount) * 1000;
+    this.frameAcc = 0;
+    this.frameCount = 0;
+    if (this.frameMs > 18.5) {
+      this.slowWindows++;
+      this.fastWindows = 0;
+    } else if (this.frameMs < 12.5) {
+      this.fastWindows++;
+      this.slowWindows = 0;
+    } else {
+      this.slowWindows = 0;
+      this.fastWindows = 0;
+    }
+    if (this.slowWindows >= 2 && this.quality < 3) {
+      this.applyQuality((this.quality + 1) as 1 | 2 | 3);
+      this.lastDowngrade = this.time;
+      this.slowWindows = 0;
+    } else if (this.fastWindows >= 5 && this.quality > 0 && this.time - this.lastDowngrade > 10) {
+      this.applyQuality((this.quality - 1) as 0 | 1 | 2);
+      this.fastWindows = 0;
+    }
   }
 
   // --- GameApi -------------------------------------------------------------------------------
@@ -245,6 +328,12 @@ class Game implements GameApi {
     hud.chaser = run.countdown > 0 ? 0 : run.chaser.hudValue;
     hud.roofMetres = Math.round(run.roofMetres);
     hud.street = getCourse()?.streetNameAt(p) ?? null;
+    const layout = layoutAt(p);
+    this.hudLanes.count = layout.offsets.length;
+    this.hudLanes.index = run.player.lane;
+    this.hudLanes.kinds = layout.kinds ?? layout.offsets.map(() => "road");
+    this.hudLanes.ending = run.laneEnding;
+    hud.lanes = this.hudLanes;
     return hud;
   }
 
@@ -411,6 +500,10 @@ class Game implements GameApi {
       case "flash":
         this.world.flash(f.id);
         break;
+      case "bump":
+        // No lane there: a tiny shove against the kerb and back.
+        this.bump = 0.22 * Math.sign(f.dir);
+        break;
       case "remove": {
         const o = this.run?.gen.obstacles.find((x) => x.id === f.id);
         if (o) {
@@ -446,7 +539,7 @@ class Game implements GameApi {
   private readonly onResize = (): void => {
     const w = window.innerWidth;
     const h = Math.max(1, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    this.renderer.setPixelRatio(this.pixelRatioFor(this.quality));
     this.renderer.setSize(w, h);
     this.cam.camera.aspect = w / h;
     this.cam.camera.updateProjectionMatrix();
@@ -506,9 +599,12 @@ class Game implements GameApi {
     const s = run.player;
     if (run.phase === "countdown" && run.intro) return "idle";
     if (run.phase === "ending" || run.phase === "over") return run.cause === "caught" ? "caught" : "stumble";
-    if (this.state === "paused" || run.countdown > 0) return s.grounded ? "idle" : "fall";
+    // Paused, or counting down to resume: keep the run cycle going (no standstill pose), so the
+    // run picks up exactly where it stopped.
+    if (this.state === "paused" || run.countdown > 0) return s.grounded ? (s.speed > 0 ? "run" : "idle") : "fall";
     if (run.stumbleAnim > 0) return "stumble";
-    if (s.roll > 0) return "roll";
+    // On the patinete a "roll" is a crouch on the deck (see render), never a somersault.
+    if (s.roll > 0) return run.active("patinete") ? "run" : "roll";
     if (!s.grounded && !s.carried) {
       // No single-frame flickers at roof seams: a short drop off an edge keeps running.
       if (s.vy > 0.5) return "jump";
@@ -527,6 +623,7 @@ class Game implements GameApi {
   }
 
   private render(alpha: number, dt: number): void {
+    this.governQuality(dt);
     const world = this.world;
     const runner = world.runner;
     const run = this.run;
@@ -551,6 +648,8 @@ class Game implements GameApi {
       const layout = layoutAt(p);
       px = layout.offsets[layout.offsets.length - 1] ?? 0;
       this.space.place(runner.root, p, px, 0, 0.35, 0);
+      world.placeBlob("runner", p, px, 0, 0);
+      world.hideBlob("waiter");
       runner.root.scale.set(1, 1, 1);
       runner.update(dt, "idle", 0);
     } else {
@@ -575,10 +674,19 @@ class Game implements GameApi {
       // Crossing a non-runnable median (the cable plane, a kerb island): a little vault.
       const across = Math.abs(s.targetX - s.fromX);
       const hop = s.laneT < 1 && across > MEDIAN_GAP ? Math.sin(Math.PI * s.laneT) * 0.45 * Math.min(1, (across - 3.5) / 2) : 0;
-      this.space.place(runner.root, p - this.knock, px, py + hop, 0, 0);
+      this.bump *= Math.exp(-dt * 14);
+      // A visible diagonal run: the body yaws towards the lane being entered.
+      const yaw = Math.max(-0.38, Math.min(0.38, -vx * 0.045));
+      this.space.place(runner.root, p - this.knock, px + this.bump, py + hop, yaw, 0);
+      world.placeBlob("runner", p, px, s.carried ? 0 : this.groundY, py);
       runner.root.rotation.x = -this.knock * 0.25;
       runner.root.rotation.z = this.lean;
-      runner.root.scale.set(1 + 0.08 * q, 1 - 0.14 * q, 1 + 0.08 * q);
+      // Rolling on the patinete: crouch low on the deck (the rig's own pose if it has one).
+      const crouch = s.roll > 0 && run.active("patinete") !== undefined;
+      if (runner.setCrouch) runner.setCrouch(crouch);
+      this.crouch += ((crouch && !runner.setCrouch ? 1 : 0) - this.crouch) * Math.min(1, dt * 25);
+      const cy = 1 - 0.38 * this.crouch;
+      runner.root.scale.set((1 + 0.08 * q) * (1 + 0.1 * this.crouch), (1 - 0.14 * q) * cy, (1 + 0.08 * q) * (1 + 0.1 * this.crouch));
       runner.update(animDt, this.runnerAnim(run), speed);
       runner.root.visible = run.invulnerable > 0 ? Math.floor(this.time * 14) % 2 === 0 : true;
 
@@ -606,6 +714,7 @@ class Game implements GameApi {
         this.waiterX = wx;
       }
       this.space.place(waiter.root, wp, wx, wy, 0, 0);
+      world.placeBlob("waiter", wp, wx, 0, wy);
       this.waiterZ = -wp;
       waiter.update(animDt, this.waiterAnim(run), Math.max(speed, run.phase === "ending" ? 7 : 0));
       waiter.root.visible = gap < 40;
@@ -619,12 +728,22 @@ class Game implements GameApi {
       else mode = "chase";
 
       // Solids the lens must stay out of (vehicles, containers, scaffolds near the camera).
-      this.solids.length = 0;
+      // (pooled boxes: no allocation per frame)
+      let n = 0;
       for (let i = 0; i < run.boxes.count; i++) {
         const b = run.boxes.box(i);
         if (!b || b.yMax < 1 || run.ignore.has(b.spawn.id)) continue;
-        this.solids.push({ xMin: b.xMin, xMax: b.xMax, yMin: b.yMin, yMax: b.yMax, zMin: -b.dMax, zMax: -b.dMin });
+        let box = this.solidPool[n];
+        if (!box) this.solidPool.push((box = { xMin: 0, xMax: 0, yMin: 0, yMax: 0, zMin: 0, zMax: 0 }));
+        box.xMin = b.xMin;
+        box.xMax = b.xMax;
+        box.yMin = b.yMin;
+        box.yMax = b.yMax;
+        box.zMin = -b.dMax;
+        box.zMax = -b.dMin;
+        this.solids[n++] = box;
       }
+      this.solids.length = n;
     }
 
     const patinete = run?.active("patinete") !== undefined;
@@ -636,6 +755,7 @@ class Game implements GameApi {
       endSide: this.endSide, waiterZ: this.waiterZ, flight: run ? this.flight : 0, bank: run && this.flight > 0.05 ? this.lean * 0.35 * this.flight : 0,
       rolling: s ? s.roll > 0 : false, grounded: s ? s.grounded : false, solids: this.solids,
       clearance: getCourse()?.clearanceAt(p) ?? null,
+      lookBias: run ? this.bendBias(p) : 0,
     });
     world.setCamera(this.cam.camera);
     world.updateScenery(p, lap, this.cam.camera);
@@ -655,6 +775,17 @@ class Game implements GameApi {
     const lines = run && run.phase === "running" && !frozen ? (patinete ? 1 : Math.max(0, Math.min(1, (speed - 17) / 12))) : 0;
     this.effects.update(frozen ? 0 : animDt, lines, speed);
     if (!this.contextLost) this.renderer.render(world.scene, this.cam.camera);
+  }
+
+  /**
+   * Look a little into the inside of the bend ahead (heading change over the next 35 m), so the
+   * road the runner is about to take is on screen before the turn.
+   */
+  private bendBias(p: number): number {
+    const h0 = this.space.frame(p + 5).heading;
+    const h1 = this.space.frame(p + 40).heading;
+    // heading grows when the route turns left (towards -lateral)
+    return Math.max(-3, Math.min(3, -(h1 - h0) * 4));
   }
 
   /** A debug helper was used: if a run is under way, it must not count for the save. */
@@ -716,6 +847,7 @@ class Game implements GameApi {
       if (this.run) this.run.speedOverride = mps;
     },
     obstacles: () => this.world.debugObstacles(),
+    breakdown: () => this.world.drawBreakdown(),
     manual: (on) => {
       if (on) this.loop.stop();
       else this.loop.start();
@@ -734,6 +866,12 @@ class Game implements GameApi {
       return {
         state: this.state,
         fps: Math.round(this.loop.fps),
+        quality: this.quality,
+        qualityPinned: this.qualityPinned,
+        frameMs: Number(this.frameMs.toFixed(1)),
+        pixelRatio: this.renderer.getPixelRatio(),
+        programs: info.programs?.length ?? 0,
+        loadMs: Math.round(this.loadMs),
         drawCalls: info.render.calls,
         triangles: info.render.triangles,
         geometries: info.memory.geometries,
@@ -769,6 +907,11 @@ class Game implements GameApi {
     if (at !== null && Number.isFinite(Number(at)) && Number(at) >= 0) this.startS = Number(at);
     const lap = params.get("lap");
     if (lap !== null && Number(lap) >= 1) this.startLap = Math.floor(Number(lap));
+    const quality = params.get("quality");
+    if (quality !== null && /^[0-3]$/.test(quality)) {
+      this.qualityPinned = true;
+      this.applyQuality(Number(quality) as 0 | 1 | 2 | 3);
+    }
     const speed = params.get("speed");
     if (speed !== null && Number(speed) > 0) this.debug.setSpeed(Number(speed));
     // Defer so the shell can subscribe first.

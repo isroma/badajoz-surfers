@@ -8,6 +8,7 @@
  * A front contact that only clips the obstacle by a little (see MARGINAL_CLIP) is a "clip".
  */
 import { OBSTACLE_DEFS, type ObstacleKind } from "../contracts";
+import { getCourse, mapLane } from "./course";
 import { layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
 import type { ObstacleSpawn } from "./spawns";
 import { obstacleCentre } from "./spawns";
@@ -106,6 +107,11 @@ export class BoxSet implements PlayerWorld {
 
   layout(p: number): LaneLayout {
     return this.layoutFn(p);
+  }
+
+  mapLane(fromS: number, toS: number, lane: number): number | null | undefined {
+    if (this.layoutFn !== layoutAt) return undefined;
+    return mapLane(getCourse(), fromS, toS, lane);
   }
 
   setSpawns(spawns: readonly ObstacleSpawn[]): void {

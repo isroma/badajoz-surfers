@@ -8,10 +8,11 @@
 import * as THREE from "three";
 import type { CitySection } from "../../city/data";
 import { Bag, TS, samples } from "./bag";
-import { groundMaterial, paintMaterial, roadAtlasMaterial, solidGroundMaterial, surfaceIndexOf } from "./cmats";
+import { SURFACE_COLOUR, flatMaterial, groundMaterial, paintMaterial, solidGroundMaterial } from "./cmats";
 import type { CityCtx } from "./context";
 import { hash01 } from "./shared";
 import { GROUND_SCALE, type GroundName } from "./textures";
+import { PAL } from "../palette";
 import type { LaneLayout, TrackStretch } from "./track";
 
 export const KERB = 0.13;
@@ -19,7 +20,7 @@ export const KERB = 0.13;
 const TRANSITION = 12;
 
 const WHITE = new THREE.Color(0xf2f0ea);
-const YELLOW = new THREE.Color(0xe9b824);
+const YELLOW = new THREE.Color(0xffffff); // bus-stop zigzags in white: sun yellow is reserved for guidance
 const C1 = new THREE.Color(1, 1, 1);
 
 /** Per-sample pavement extents, kept for the furniture (lamps at the kerb, terraces). */
@@ -37,10 +38,9 @@ export interface EdgeSample {
 }
 
 function surfaceOf(sec: CitySection, zone: string): GroundName {
-  if (sec.surface === "sett") return "sett";
-  if (sec.surface === "paving_stones") return "paving";
-  if (sec.pedestrian) return zone === "casco-antiguo" || zone === "alcazaba-palmas" ? "slabs" : "slabs";
-  return "asphalt";
+  // the flat style: carriageways are road colour whatever their paving; pedestrian ways are the runnable path colour
+  void zone;
+  return sec.pedestrian ? "slabs" : "asphalt";
 }
 
 class RoadPainter {
@@ -52,14 +52,17 @@ class RoadPainter {
 
   /** Horizontal strip between laterals l0 < l1 (per sample functions allowed) at height y. */
   /** The accumulator for a surface: road-side surfaces all go to the road atlas (one draw call). */
-  private accFor(mat: THREE.Material): ReturnType<Bag["acc"]> {
-    const idx = surfaceIndexOf(mat);
-    if (idx < 0) return this.bag.acc(mat);
-    return this.bag.acc(roadAtlasMaterial(), { aSurf: 1 }).set("aSurf", idx);
+  private accFor(mat: THREE.Material): { acc: ReturnType<Bag["acc"]>; tint: THREE.Color } {
+    // every road-side surface goes into the one flat material, its palette colour in the vertices
+    const surf = mat.userData["surface"] as GroundName | undefined;
+    if (!surf) return { acc: this.bag.acc(mat), tint: C1 };
+    return { acc: this.bag.acc(flatMaterial()), tint: new THREE.Color(SURFACE_COLOUR[surf]) };
   }
 
   strip(mat: THREE.Material, ss: number[], l0: number | ((s: number) => number), l1: number | ((s: number) => number), y: number, scale: number, col = C1, colOuter?: THREE.Color): void {
-    const acc = this.accFor(mat);
+    const { acc, tint } = this.accFor(mat);
+    col = col.clone().multiply(tint);
+    if (colOuter) colOuter = colOuter.clone().multiply(tint);
     const L0 = typeof l0 === "number" ? () => l0 : l0;
     const L1 = typeof l1 === "number" ? () => l1 : l1;
     for (let i = 0; i + 1 < ss.length; i++) {
@@ -77,7 +80,8 @@ class RoadPainter {
 
   /** Vertical face at lateral l from y0 to y1, facing +n (dir 1) or -n (dir -1). */
   face(mat: THREE.Material, ss: number[], l: number | ((s: number) => number), y0: number, y1: number, dir: 1 | -1, col = C1): void {
-    const acc = this.accFor(mat);
+    const { acc, tint } = this.accFor(mat);
+    col = col.clone().multiply(tint);
     const Lf = typeof l === "number" ? () => l : l;
     for (let i = 0; i + 1 < ss.length; i++) {
       const s0 = ss[i]!;
@@ -103,14 +107,14 @@ class RoadPainter {
   }
 
   /** Paint rectangle in track space (s0..s1 along, l0..l1 across). */
-  paint(s0: number, s1: number, l0: number, l1: number, col = WHITE): void {
+  paint(s0: number, s1: number, l0: number, l1: number, col = WHITE, y = 0.006): void {
     const acc = this.bag.acc(paintMaterial());
     const ss = samples(s0, s1, 2);
     for (let i = 0; i + 1 < ss.length; i++) {
-      const a = this.ts.p(ss[i]!, l0, 0.006, this.a);
-      const b = this.ts.p(ss[i]!, l1, 0.006, this.b);
-      const c = this.ts.p(ss[i + 1]!, l1, 0.006, this.c);
-      const d = this.ts.p(ss[i + 1]!, l0, 0.006, this.d);
+      const a = this.ts.p(ss[i]!, l0, y, this.a);
+      const b = this.ts.p(ss[i]!, l1, y, this.b);
+      const c = this.ts.p(ss[i + 1]!, l1, y, this.c);
+      const d = this.ts.p(ss[i + 1]!, l0, y, this.d);
       acc.quad(a, b, c, d, [a.x / 2, a.z / 2], [b.x / 2, b.z / 2], [c.x / 2, c.z / 2], [d.x / 2, d.z / 2], col, col, col, col, UP);
     }
   }
@@ -288,6 +292,7 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
 
     // --- markings -----------------------------------------------------------------------------
     if (!ped && surf === "asphalt") markings(ctx, P, lay, sec, a, b, st);
+    legibility(P, lay, a, b, ped, ss);
 
     for (const s of ss) {
       edges.push({ s, outerL: outerL(s), outerR: outerR(s), kerbL: lay.carriageways[0]?.from ?? lo, kerbR: lay.carriageways[lay.carriageways.length - 1]?.to ?? hi, bridge, pedestrian: ped, layout: lay });
@@ -408,4 +413,93 @@ function zebra(P: RoadPainter, s: number, from: number, to: number): void {
 function arrow(P: RoadPainter, s: number, l: number): void {
   P.paint(s, s + 3.2, l - 0.08, l + 0.08);
   P.paintTri([[s + 3.2, l - 0.4], [s + 3.2, l + 0.4], [s + 5, l]]);
+}
+
+const RUN = new THREE.Color(PAL.runnable);
+const RUN_EDGE = new THREE.Color(PAL.runnable).multiplyScalar(0.82);
+const OFF = new THREE.Color(PAL.roadOff);
+const DANGER = new THREE.Color(PAL.danger);
+const HEDGE = PAL.trees[2];
+
+/**
+ * Make the runnable surface unmistakable (docs/design.md): runnable sidewalk / median /
+ * pedestrian lanes in the path colour with a subtle edge line; carriageway not covered by any
+ * lane in the "off" road tint; a red edge on oncoming lanes; railings where non-runnable pavement
+ * continues beyond the runnable edge; hedges on medians the runner cannot use.
+ */
+function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: boolean, ss: number[]): void {
+  const lanes = lay.offsets.map((o, i) => ({ from: o - lay.widths[i]! / 2, to: o + lay.widths[i]! / 2, kind: lay.kinds[i] as string, flow: lay.flow[i]! }));
+  // runnable path lanes
+  for (const l of lanes) {
+    if (l.kind === "road" || ped) continue;
+    P.paint(a, b, l.from, l.to, RUN, KERB + 0.045);
+  }
+  if (ped) {
+    P.paint(a, b, lay.left, lay.left + 0.08, RUN_EDGE);
+    P.paint(a, b, lay.right - 0.08, lay.right, RUN_EDGE);
+  } else {
+    for (const l of lanes) {
+      if (l.kind === "road") continue;
+      P.paint(a, b, l.from, l.from + 0.07, RUN_EDGE, KERB + 0.05);
+      P.paint(a, b, l.to - 0.07, l.to, RUN_EDGE, KERB + 0.05);
+    }
+  }
+  // carriageway the runner cannot use
+  for (const c of lay.carriageways) {
+    const cover = lanes.filter((l) => l.kind === "road" && l.to > c.from && l.from < c.to);
+    const lo = Math.min(...cover.map((l) => l.from), c.to);
+    const hi = Math.max(...cover.map((l) => l.to), c.from);
+    if (cover.length === 0) P.paint(a, b, c.from, c.to, OFF);
+    else {
+      if (lo - c.from > 0.4) P.paint(a, b, c.from, lo, OFF);
+      if (c.to - hi > 0.4) P.paint(a, b, hi, c.to, OFF);
+    }
+  }
+  // oncoming lanes: red edge at their outer side
+  const onc = lanes.filter((l) => l.kind === "road" && l.flow === -1);
+  if (onc.length) {
+    const outer = Math.min(...onc.map((l) => l.from));
+    P.paint(a, b, outer + 0.05, outer + 0.2, DANGER);
+  }
+  // separation: railing beyond the runnable edge where more (non-runnable) pavement continues
+  const p = P.bag.props;
+  const m = flatMaterial();
+  for (const side of [1, -1] as const) {
+    const edge = side > 0 ? lay.right : lay.left;
+    const pave = lay.sidewalks.some((w) => (side > 0 ? w.to > edge + 0.8 : w.from < edge - 0.8));
+    if (!pave || ped) continue;
+    for (let k = 0; k + 1 < ss.length; k += 1) {
+      const s0 = ss[k]!;
+      const s1 = ss[k + 1]!;
+      const A = P.ts.p(s0, edge + side * 0.15, KERB);
+      const B = P.ts.p(s1, edge + side * 0.15, KERB);
+      p.beam([A.x, A.y + 0.9, A.z], [B.x, B.y + 0.9, B.z], 0.06, PAL.darkGrey, m);
+      if (k % 2 === 0) p.beam([A.x, A.y, A.z], [A.x, A.y + 0.92, A.z], 0.06, PAL.darkGrey, m);
+    }
+  }
+  // carriageways nobody runs on (the far side of an avenue): a hedge along their edge facing the route
+  for (const c of lay.carriageways) {
+    if (lanes.some((l) => l.kind === "road" && l.to > c.from && l.from < c.to)) continue;
+    const at = c.to <= lay.left + 0.6 ? c.to - 0.45 : c.from >= lay.right - 0.6 ? c.from + 0.45 : null;
+    if (at === null) continue;
+    for (let k = 0; k + 1 < ss.length; k++) {
+      const A = P.ts.p(ss[k]!, at, KERB);
+      const B = P.ts.p(ss[k + 1]!, at, KERB);
+      p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], 0.7, HEDGE, m);
+    }
+  }
+  // hedges along medians the runner cannot use
+  for (const md of lay.median) {
+    const runnable = lanes.some((l) => l.kind !== "road" && l.from >= md.from - 0.1 && l.to <= md.to + 0.1);
+    if (runnable) continue;
+    const mid = (md.from + md.to) / 2;
+    const w = Math.min(0.9, (md.to - md.from) - 0.5);
+    if (w < 0.3) continue;
+    for (let k = 0; k + 1 < ss.length; k++) {
+      const A = P.ts.p(ss[k]!, mid, KERB);
+      const B = P.ts.p(ss[k + 1]!, mid, KERB);
+      p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], w, HEDGE, m);
+    }
+  }
+  void b;
 }

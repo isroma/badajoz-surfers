@@ -10,7 +10,7 @@ const f1 = (v: number): string => v.toFixed(1);
 export function formatLayoutTable(track: Track): string {
   const rows: string[] = [];
   rows.push(
-    [pad("s from-to", 15), pad("len", 5), pad("zone", 15), pad("street (longest section)", 36), pad("kind", 18), "n", pad("flows", 12), pad("kinds", 10), pad("offsets", 34), pad("widths", 24), "gaps"].join(" "),
+    [pad("s from-to", 15), pad("len", 5), pad("zone", 15), pad("street (longest section)", 36), pad("kind", 18), "n", pad("flows", 12), pad("ids", 40), pad("offsets", 34), pad("widths", 24), "gaps"].join(" "),
   );
   for (const st of track.stretches) {
     const l = st.layout;
@@ -25,11 +25,29 @@ export function formatLayoutTable(track: Track): string {
         pad(`${kind} ${sec.highway}`.slice(0, 18), 18),
         String(l.offsets.length),
         pad(l.flow.map((x) => (x > 0 ? "+" : x < 0 ? "-" : "0")).join(""), 12),
-        pad(l.kinds.map((k) => (k === "road" ? "R" : k === "sidewalk" ? "S" : k === "median" ? "M" : "P")).join(""), 10),
+        pad(l.ids.join(" "), 40),
         pad(l.offsets.map(f1).join(" "), 34),
         pad(l.widths.map(f1).join(" "), 24),
         l.gaps.map(f1).join(" "),
       ].join(" "),
+    );
+  }
+  rows.push("", "Transitions (s: ends | begins | continues as another id)");
+  for (const t of track.transitions) {
+    const a = track.stretches[t.fromIndex]!.layout;
+    const b = track.stretches[t.toIndex]!.layout;
+    const ends = a.ids.filter((_, i) => t.map[i] === null);
+    const begins = t.begins.map((j) => b.ids[j]!);
+    const renamed = a.ids.flatMap((id, i) => {
+      const j = t.map[i];
+      return j !== null && j !== undefined && b.ids[j] !== id ? [`${id}→${b.ids[j]!}`] : [];
+    });
+    rows.push(`${pad(f1(t.s), 8)} ${pad((track.stretches[t.toIndex]!.section.name ?? "(unnamed)").slice(0, 30), 30)} ends: ${pad(ends.join(",") || "-", 24)} begins: ${pad(begins.join(",") || "-", 24)} ${renamed.join(" ")}`);
+  }
+  rows.push("", "Turns");
+  for (const t of track.turns) {
+    rows.push(
+      `${pad(`${f1(t.s)}-${f1(t.endS)}`, 16)} ${pad(t.direction, 6)} ${pad(`${Math.round(t.angle)}°`, 5)} r ${pad(f1(t.radius), 7)} ${t.roundabout ? `ROUNDABOUT ring ${f1(t.entryS ?? 0)}-${f1(t.exitS ?? 0)} ` : ""}→ ${t.exitName ?? "-"}`,
     );
   }
   return rows.join("\n");

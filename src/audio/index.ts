@@ -105,7 +105,7 @@ export class AudioEngine {
     const vol = Math.min(1, Math.max(0, settings.volume));
     // Perceptual curve so the slider feels even.
     this.master.gain.setTargetAtTime(vol * vol, now, 0.03);
-    this.musicGain.gain.setTargetAtTime(settings.music ? 0.5 : 0, now, 0.05);
+    this.musicGain.gain.setTargetAtTime(settings.music ? 0.4 : 0, now, 0.05);
     this.sfxGain.gain.setTargetAtTime(settings.sfx ? 0.9 : 0, now, 0.03);
     this.music?.setEnabled(settings.music);
   }

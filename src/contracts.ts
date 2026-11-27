@@ -196,6 +196,11 @@ export interface Actor {
   /** Runner only: show or hide the "patinete" (electric scooter) under the runner. */
   setRiding?(riding: boolean): void;
   /**
+   * Runner only, while riding the patinete: crouch low on the deck (the "roll" of a rider: same
+   * low hitbox and duration, no somersault). The engine never sends anim "roll" while riding.
+   */
+  setCrouch?(crouch: boolean): void;
+  /**
    * Runner only: show or hide a white stork gripping the runner by the shoulders and flapping
    * above them; while carried the runner dangles (legs swinging) whatever `anim` says.
    */
@@ -263,6 +268,13 @@ export interface CityScenery {
   atmosphereAt(s: number, lap: number): Atmosphere;
   /** Build synchronously everything needed round `s` (before a run starts, for the menu). */
   preload(s: number, lap: number): void;
+  /**
+   * Preload round `s` and compile every material the city uses (renderer.compileAsync), so the
+   * first seconds of a run never hitch on shader compilation or texture uploads.
+   */
+  prewarm(renderer: THREE.WebGLRenderer, camera: THREE.Camera, s?: number, lap?: number): Promise<void>;
+  /** 0 = full; higher = shorter detail distance and fewer extras (the engine drives it from frame time). */
+  setQuality(level: 0 | 1 | 2 | 3): void;
   dispose(): void;
 }
 
@@ -270,11 +282,17 @@ export interface ArtApi {
   /** The real city from city.json and the shared track model. */
   createCity(city: CityData, track: Track): CityScenery;
   /**
-   * Renderer settings the city art is tuned for; the engine calls it once after creating the
-   * renderer and scene: ACES filmic tone mapping (exposure 1), PCF soft shadows, sRGB output and a
-   * sky environment map (scene.environment) for glass, water and car paint.
+   * Renderer settings for the flat style (docs/design.md); the engine calls it once after creating
+   * the renderer and scene: no shadow maps (shadowMap.enabled = false), no tone mapping, sRGB
+   * output, no environment map.
    */
   configureRenderer(renderer: THREE.WebGLRenderer, scene: THREE.Scene): void;
+  /**
+   * A soft dark blob shadow (no shadow maps in the flat style): a ground quad width x length
+   * centred under its parent, origin at the ground. Obstacles already include one; the engine
+   * attaches one to the runner and the waiter.
+   */
+  createBlobShadow(width: number, length: number): THREE.Mesh;
   /** `outfit` defaults to "clasico". */
   createRunner(outfit?: OutfitId): Actor;
   createWaiter(): Actor;
@@ -355,6 +373,13 @@ export type GameEvent =
   | { type: "zone"; zone: ZoneDef; lap: number; first: boolean } // entered a zone; `first` at run start
   /** Entered a street with a (new) real name, e.g. "Avenida Sinforiano Madroñero". */
   | { type: "street"; name: string }
+  /**
+   * A bend or a roundabout ~120 m ahead (once per turn): which way the route goes ("straight"
+   * through a roundabout), the street after it and how far ahead it starts (metres).
+   */
+  | { type: "turn"; direction: "left" | "right" | "straight"; roundabout: boolean; street: string | null; distance: number }
+  /** The runner's lane ends within 80 m: move to the lane on this side. */
+  | { type: "lane-ends"; side: "left" | "right" }
   | { type: "gameover"; summary: RunSummary };
 
 export interface HudSnapshot {
@@ -376,6 +401,12 @@ export interface HudSnapshot {
   roofMetres: number;
   /** Real name of the street the runner is on (null on unnamed links and roundabouts). */
   street?: string | null;
+  /**
+   * The runnable lanes here (left to right) and which one the runner is in, so the shell never
+   * draws a lane that does not exist; `ending` = metres until the runner's lane ends (null if it
+   * continues), `kinds` = road/sidewalk/median/pedestrian per lane.
+   */
+  lanes?: { count: number; index: number; kinds: readonly string[]; ending: number | null };
 }
 
 /** Supplied by the shell (from save data) when the game is created; read at the start of each run. */

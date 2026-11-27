@@ -1,9 +1,11 @@
-/** Builders for the menu, panels (how to play, missions, shop), pause and game-over screens. */
+/**
+ * Builders for the menu, panels (how to play, missions, shop, achievements, records, credits),
+ * pause and game over. Flat style from docs/design.md: white cards with ink text over a dimmed
+ * scene, one sun-yellow primary action per screen.
+ */
 import { OUTFITS, POWERUPS, ZONES, type OutfitId, type PowerupKind, type RunSummary } from "../contracts";
 import { outfitPreview } from "./outfits";
 import { shareText } from "./feel";
-
-export const APP_VERSION = "0.4";
 import { ACHIEVEMENTS, type MetaStore, type MissionView, type RunResult } from "../meta";
 import { formatDay, zoneReached } from "../meta/progress";
 import { MAX_UPGRADE_LEVEL, powerupDuration, upgradeCost } from "../meta/economy";
@@ -13,17 +15,13 @@ import { Minimap, shortZoneName, streetFromMap } from "./minimap";
 import { getCity } from "./city";
 import { button, h, svg, type Child } from "./dom";
 import {
-  GLYPH_BACK,
   GLYPH_CALENDAR,
-  GLYPH_LIST,
-  GLYPH_LOCK,
-  GLYPH_MAP,
-  GLYPH_MEDAL,
   GLYPH_CHECK,
+  GLYPH_CLOSE,
   GLYPH_COPY,
-  GLYPH_FLAG,
-  GLYPH_HELP,
   GLYPH_HOME,
+  GLYPH_LOCK,
+  GLYPH_MEDAL,
   GLYPH_MUSIC,
   GLYPH_PLAY,
   GLYPH_REPLAY,
@@ -36,9 +34,10 @@ import {
   ICON_PATINETE,
   ICON_WAITER,
   ICON_ZAPATILLAS,
-  POWERUP_COLORS,
   powerupIcon,
 } from "./icons";
+
+export const APP_VERSION = "0.4";
 
 export type PanelId = "howto" | "missions" | "shop" | "achievements" | "records" | "credits";
 
@@ -64,47 +63,12 @@ export interface ScreenCtx {
 
 // ------------------------------------------------------------------ shared pieces
 
-/**
- * The "BADAJOZ SURFERS" wordmark: two stacked lines of heavy rounded type with a terracotta
- * extrusion, speed lines and the acorn. Type is SVG text with fixed `textLength`, so the block
- * keeps its proportions whatever rounded/black face the platform supplies.
- */
+/** The flat wordmark: "Badajoz Surfers" in ink with the sun-yellow acorn as its one accent. */
 export function logo(): HTMLElement {
-  const wrap = h("div", "logo-wrap");
-  // Each line: dark extrusion rim, terracotta extrusion, then the face with its ink outline.
-  const line = (text: string, attrs: string, fill: string): string => `
-      <text ${attrs} fill="#1d1020" stroke="#1d1020" stroke-width="34" transform="translate(5 15)">${text}</text>
-      <text ${attrs} fill="#b8361b" stroke="#b8361b" stroke-width="20" transform="translate(4 10)">${text}</text>
-      <text ${attrs} fill="${fill}" stroke="#1d1020" stroke-width="20" paint-order="stroke">${text}</text>`;
-  const top = 'x="26" y="142" font-size="146" textLength="566" lengthAdjust="spacingAndGlyphs" stroke-linejoin="round"';
-  const bottom = 'x="132" y="268" font-size="118" textLength="460" lengthAdjust="spacingAndGlyphs" stroke-linejoin="round"';
-  wrap.innerHTML = `
-  <svg class="logo" viewBox="0 0 660 300" role="img" aria-label="${GAME_TITLE}">
-    <defs>
-      <linearGradient id="logo-gold" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#FFF5CC"/>
-        <stop offset="0.46" stop-color="#FFE08A"/>
-        <stop offset="0.47" stop-color="#FFC53D"/>
-        <stop offset="1" stop-color="#F28A0C"/>
-      </linearGradient>
-      <linearGradient id="logo-cream" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#FFFFFF"/>
-        <stop offset="0.5" stop-color="#FFF4DC"/>
-        <stop offset="0.51" stop-color="#FFE6BC"/>
-        <stop offset="1" stop-color="#F7CF95"/>
-      </linearGradient>
-    </defs>
-    <g transform="rotate(-4 330 150)">
-      ${line("BADAJOZ", top, "url(#logo-gold)")}
-      <g stroke-linecap="round" fill="none">
-        <path d="M30 188 H98 M14 222 H90 M44 256 H100" stroke="#1d1020" stroke-width="20"/>
-        <path d="M30 188 H98 M14 222 H90 M44 256 H100" stroke="#FFF4DC" stroke-width="9"/>
-      </g>
-      ${line("SURFERS", bottom, "url(#logo-cream)")}
-    </g>
-    <g transform="translate(566 -18) rotate(20 40 40) scale(1.3)">${ICON_BELLOTA.replace("<svg ", '<svg width="64" height="64" ')}</g>
-  </svg>`;
-  return wrap;
+  const el = h("div", "logo-wrap", svg(ICON_BELLOTA, "logo-mark"), h("div", "wordmark", "Badajoz", h("br"), "Surfers"));
+  el.setAttribute("role", "img");
+  el.setAttribute("aria-label", GAME_TITLE);
+  return el;
 }
 
 const keys = (...labels: string[]): HTMLElement[] => labels.map((l) => h("kbd", undefined, l));
@@ -118,12 +82,12 @@ function joinKeys(groups: string[][]): HTMLElement {
   return el;
 }
 
-export function soundToggles(ctx: ScreenCtx, withVolume: boolean): HTMLElement {
+export function soundToggles(ctx: ScreenCtx, withVolume: boolean, variant: "ghost" | "secondary" = "ghost"): HTMLElement {
   const s = ctx.store.settings;
-  const music = button("Música", () => ctx.actions.toggle("music"), { variant: "ghost", size: "sm", icon: GLYPH_MUSIC, className: "toggle" });
+  const music = button("Música", () => ctx.actions.toggle("music"), { variant, size: "sm", icon: GLYPH_MUSIC, className: "toggle" });
   music.dataset["toggle"] = "music";
   music.classList.toggle("off", !s.music);
-  const sfx = button("Efectos", () => ctx.actions.toggle("sfx"), { variant: "ghost", size: "sm", icon: GLYPH_SOUND_ON, className: "toggle" });
+  const sfx = button("Efectos", () => ctx.actions.toggle("sfx"), { variant, size: "sm", icon: GLYPH_SOUND_ON, className: "toggle" });
   sfx.dataset["toggle"] = "sfx";
   sfx.classList.toggle("off", !s.sfx);
   const el = h("div", "toggles", music, sfx);
@@ -163,48 +127,51 @@ export function syncBindings(root: HTMLElement, store: MetaStore): void {
   });
 }
 
-function walletPill(store: MetaStore): HTMLElement {
+function walletPill(store: MetaStore, dark = false): HTMLElement {
   const num = h("span", undefined, formatInt(store.save.wallet));
   num.dataset["bind"] = "wallet";
-  return h("div", "pill", svg(ICON_BELLOTA), num);
+  const el = h("div", `pill${dark ? " dark" : ""}`, svg(ICON_BELLOTA), num);
+  el.title = "Bellotas";
+  return el;
+}
+
+function progressBar(ratio: number): HTMLElement {
+  const fill = h("i");
+  fill.style.transform = `scaleX(${Math.min(1, Math.max(0, ratio))})`;
+  return h("div", "bar", fill);
 }
 
 function missionRow(v: MissionView, index: number, fresh = false): HTMLElement {
-  const fill = h("i");
-  fill.style.transform = `scaleX(${v.ratio})`;
   return h(
-    "div",
+    "li",
     `mission${v.done ? " done" : ""}${fresh ? " fresh" : ""}`,
     h("div", "num", v.done ? svg(GLYPH_CHECK) : String(index + 1)),
     h("div", "mission-text", v.text),
     h("div", "mission-label", v.label),
-    h("div", "bar", fill),
+    progressBar(v.ratio),
   );
 }
 
-function miniMission(v: MissionView): HTMLElement {
-  const fill = h("i");
-  fill.style.transform = `scaleX(${v.ratio})`;
-  return h(
-    "div",
-    `mini-mission${v.done ? " done" : ""}`,
-    h("div", "check", v.done ? svg(GLYPH_CHECK) : null),
-    h("div", "mini-text", h("span", undefined, v.text), h("small", undefined, v.label)),
-    h("div", "bar", fill),
-  );
-}
-
+/** A modal panel: white card over the dimmed scene. */
 function modal(className: string, ...children: Child[]): HTMLElement {
-  return h("div", "screen modal-backdrop", h("div", `modal panel ${className}`, ...children));
+  return h("div", "screen modal-backdrop", h("div", `modal ${className}`, ...children));
 }
 
-function modalHead(title: string, sub: string, right?: Child): HTMLElement {
+/** Title, one-line subtitle, optional right-hand item and the close button. */
+function modalHead(title: string, sub: string, onClose: () => void, right?: Child): HTMLElement {
+  const close = button(null, onClose, { variant: "text", icon: GLYPH_CLOSE, ariaLabel: "Cerrar", className: "close" });
   return h(
     "div",
     "modal-head",
-    h("div", undefined, h("h2", "modal-title display tilt", title), h("p", "modal-sub", sub)),
+    h("div", "modal-titles", h("h2", "modal-title", title), sub ? h("p", "modal-sub", sub) : null),
     right ?? null,
+    close,
   );
+}
+
+/** Footer: the Esc hint and, at most, the screen's one primary action. */
+function modalFoot(primary?: HTMLElement): HTMLElement {
+  return h("div", "modal-foot", h("div", "hint", ...keys("Esc"), "para cerrar"), primary ?? null);
 }
 
 // ------------------------------------------------------------------ main menu
@@ -212,45 +179,13 @@ function modalHead(title: string, sub: string, right?: Child): HTMLElement {
 export function menuScreen(ctx: ScreenCtx): HTMLElement {
   const { store, actions } = ctx;
   const save = store.save;
-  const premise = h("p", "premise");
-  premise.innerHTML = PREMISE.replace(" El camarero no perdona.", " <b>El camarero no perdona.</b>");
   const firstRun = !save.tutorialDone;
 
-  const tile = (label: string, icon: string, panel: PanelId, badge?: string): HTMLButtonElement => {
-    const b = button(label, () => actions.openPanel(panel), { icon, className: "tile" });
-    if (badge) b.append(h("span", "tile-badge", badge));
+  const link = (label: string, panel: PanelId, extra?: string): HTMLButtonElement => {
+    const b = button(label, () => actions.openPanel(panel), { variant: "text", className: "menu-link" });
+    if (extra) b.append(h("span", "menu-link-extra", extra));
     return b;
   };
-
-  // Everything lives in one left column: the right half belongs to the 3D runner.
-  const left = h(
-    "div",
-    "menu-left",
-    h("div", "brand", logo(), h("div", "ribbon", SUBTITLE)),
-    premise,
-    h(
-      "div",
-      "play-row",
-      button("Jugar", actions.play, { variant: "primary", size: "xl", icon: GLYPH_PLAY, className: "btn-play" }),
-      h(
-        "div",
-        "hint",
-        h("span", undefined, "Pulsa", ...keys("Espacio"), "o", ...keys("Intro")),
-        firstRun ? h("small", undefined, "La primera carrera te enseña los controles") : null,
-      ),
-    ),
-    h(
-      "div",
-      "menu-actions",
-      tile("Misiones", GLYPH_FLAG, "missions", `×${formatInt(store.multiplier)}`),
-      tile("Tienda", GLYPH_SHOP, "shop"),
-      tile("Logros", GLYPH_MEDAL, "achievements"),
-      tile("Récords", GLYPH_LIST, "records"),
-      tile("Cómo jugar", GLYPH_HELP, "howto"),
-    ),
-    dailyCard(store),
-    bestLine(store),
-  );
 
   const credits = h("button", "link-btn", "Créditos");
   credits.type = "button";
@@ -260,54 +195,73 @@ export function menuScreen(ctx: ScreenCtx): HTMLElement {
     credits.blur();
     actions.openPanel("credits");
   });
-  return h(
+
+  // One card on the left; the right of the screen belongs to the 3D runner.
+  const card = h(
     "div",
-    "screen menu",
-    left,
-    h("div", "menu-top", walletPill(store), soundToggles(ctx, false)),
+    "menu-card",
+    h("div", "brand", logo(), h("div", "tagline", SUBTITLE)),
+    h("p", "premise", PREMISE),
+    h(
+      "div",
+      "play-row",
+      button("Jugar", actions.play, { variant: "primary", size: "lg", icon: GLYPH_PLAY, className: "btn-play" }),
+      h(
+        "div",
+        "hint",
+        h("span", undefined, "o pulsa", ...keys("Espacio")),
+        firstRun ? h("small", undefined, "La primera carrera te enseña los controles") : null,
+      ),
+    ),
+    h(
+      "nav",
+      "menu-links",
+      link("Misiones", "missions", `×${formatInt(store.multiplier)}`),
+      link("Tienda", "shop"),
+      link("Logros", "achievements"),
+      link("Récords", "records"),
+      link("Cómo jugar", "howto"),
+    ),
+    dailyCard(store),
+    bestLine(store),
     h("div", "credit", `Hecho en Badajoz · v${APP_VERSION} · `, credits),
   );
+
+  return h("div", "screen menu", card, h("div", "menu-top", walletPill(store, true), soundToggles(ctx, false)));
 }
 
-/** One line under the daily card: best score, best distance and how far the best escape got. */
+/** Best score, distance and how far the best escape got, as a caption. */
 function bestLine(store: MetaStore): HTMLElement {
   const save = store.save;
-  if (save.lifetime.totals.runs === 0) {
-    return h("div", "best-line", svg(GLYPH_TROPHY), "Aún no has salido corriendo. ¡Estrena el récord!");
-  }
+  if (save.lifetime.totals.runs === 0) return h("p", "best-line", "Aún no has salido corriendo.");
   const best = zoneReached(save.lifetime.bestZones);
   return h(
-    "div",
+    "p",
     "best-line",
     svg(GLYPH_TROPHY),
     h("b", undefined, formatInt(save.bestScore)),
-    h("span", "dot", "·"),
-    formatMetres(save.bestDistance),
-    h("span", "dot", "·"),
-    `Mejor huida: ${best.name}, vuelta ${formatInt(best.lap)}`,
+    ` · ${formatMetres(save.bestDistance)} · hasta ${best.name}, vuelta ${formatInt(best.lap)}`,
   );
 }
 
 function dailyCard(store: MetaStore): HTMLElement {
   const d = store.dailyView();
-  const fill = h("i");
-  fill.style.transform = `scaleX(${d.ratio})`;
   return h(
     "div",
-    `daily panel${d.done ? " done" : ""}`,
+    `daily${d.done ? " done" : ""}`,
     h(
       "div",
-      "mini-head",
-      h("div", "mini-title", svg(GLYPH_CALENDAR), "Reto del día"),
-      h("div", "pill reward", svg(ICON_BELLOTA), `+${formatInt(d.reward)}`),
+      "daily-row",
+      svg(d.done ? GLYPH_CHECK : GLYPH_CALENDAR),
+      h("div", "daily-text", h("small", undefined, "Reto del día"), h("span", undefined, d.text)),
+      h("div", "daily-reward", d.done ? "Hecho" : d.label, h("span", "reward", svg(ICON_BELLOTA), `+${formatInt(d.reward)}`)),
     ),
-    h("div", "mini-text", h("span", undefined, d.text), h("small", undefined, d.label)),
-    h("div", "bar", fill),
+    progressBar(d.ratio),
   );
 }
 
-function stat(label: string, value: HTMLElement): HTMLElement {
-  return h("div", "stat", h("div", "stat-label", label), value);
+function stat(label: string, value: Child): HTMLElement {
+  return h("div", "stat", h("div", "stat-label", label), h("div", "stat-value", value));
 }
 
 // ------------------------------------------------------------------ how to play
@@ -331,24 +285,19 @@ export function howtoScreen(onDone: () => void): HTMLElement {
     "tips",
     tip(ICON_PATINETE, "<b>Súbete a los coches</b> y contenedores: por arriba también se corre."),
     tip(ICON_ZAPATILLAS, "Usa las <b>rampas de la grúa</b> para correr por los techos de furgonetas y autobuses."),
-    tip(ICON_WAITER, "<b>Dos tropiezos seguidos</b> y te pilla el camarero. ¡Ni se te ocurra!"),
-    tip(ICON_JAMON, "Recoge las letras de <b>BADAJOZ</b> y gasta tus <b>bellotas</b> en la Tienda."),
+    tip(ICON_WAITER, "<b>Dos tropiezos seguidos</b> y te pilla el camarero."),
+    tip(ICON_JAMON, "Recoge las letras de <b>BADAJOZ</b> y gasta tus <b>bellotas</b> en la tienda."),
   );
   return modal(
     "howto",
-    modalHead("Cómo se juega", "Lo básico para escapar del camarero."),
+    modalHead("Cómo se juega", "Lo básico para escapar del camarero.", onDone),
     h("div", "howto-grid", controls, tips),
-    h(
-      "div",
-      "modal-foot",
-      h("div", "hint", ...keys("Esc"), "para volver"),
-      button("¡Entendido!", onDone, { variant: "primary", size: "lg", icon: GLYPH_CHECK }),
-    ),
+    modalFoot(button("Entendido", onDone, { variant: "primary", size: "lg" })),
   );
 }
 
 function control(keysEl: HTMLElement, label: string): HTMLElement {
-  return h("div", "control", keysEl, h("div", "control-label", label));
+  return h("div", "control", h("div", "control-label", label), keysEl);
 }
 
 // ------------------------------------------------------------------ missions
@@ -357,24 +306,24 @@ export function missionsScreen(ctx: ScreenCtx): HTMLElement {
   const { store, actions } = ctx;
   const m = store.multiplier;
   const sets = store.save.missions.setsCompleted;
-  const hero = h("div", "mult-hero", h("div", "big display", `×${formatInt(m)}`));
-  const p = h("p");
-  p.innerHTML =
-    m >= 10
-      ? "¡Multiplicador al máximo! Sigue completando misiones para presumir."
-      : `Completa las tres misiones para subir tu multiplicador a <b>×${formatInt(m + 1)}</b>. Cada serie es un poco más difícil.`;
-  hero.append(p);
+  const hero = h(
+    "div",
+    "mult-hero",
+    h("div", "big", `×${formatInt(m)}`),
+    h(
+      "p",
+      undefined,
+      m >= 10
+        ? "Multiplicador al máximo. Sigue completando misiones para presumir."
+        : `Completa las tres misiones para subir tu multiplicador a ×${formatInt(m + 1)}. Cada serie es un poco más difícil.`,
+    ),
+  );
   return modal(
     "missions",
-    modalHead("Misiones", `Serie ${formatInt(sets + 1)}`, walletPill(store)),
+    modalHead("Misiones", `Serie ${formatInt(sets + 1)}`, actions.closePanel, walletPill(store)),
     hero,
-    h("div", "mission-list", ...store.missionViews().map((v, i) => missionRow(v, i))),
-    h(
-      "div",
-      "modal-foot",
-      h("div", "hint", ...keys("Esc"), "para volver"),
-      button("Volver", actions.closePanel, { icon: GLYPH_BACK, size: "lg" }),
-    ),
+    h("ul", "mission-list", ...store.missionViews().map((v, i) => missionRow(v, i))),
+    modalFoot(),
   );
 }
 
@@ -394,19 +343,14 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
     const pips = h("div", "pips", ...Array.from({ length: MAX_UPGRADE_LEVEL }, () => h("i", "pip")));
     const dur = h("div", "shop-dur");
     const cant = h("div", "cant");
-    const btn = button("", () => actions.buy(kind), { variant: "primary", size: "md" });
-    const iconWrap = h("div", "icon-wrap", svg(powerupIcon(kind)));
-    iconWrap.style.background = `radial-gradient(circle at 50% 40%, ${POWERUP_COLORS[kind]}55, rgba(255,255,255,0.04) 70%)`;
+    const btn = button("", () => actions.buy(kind), { variant: "dark", size: "sm" });
     const el = h(
-      "div",
-      "shop-card",
-      iconWrap,
-      h("div", "shop-name", info.name),
-      h("div", "shop-desc", info.description),
-      pips,
-      dur,
-      btn,
-      cant,
+      "li",
+      "shop-row",
+      h("div", "icon-wrap", svg(powerupIcon(kind))),
+      h("div", "shop-body", h("div", "shop-name", info.name), h("div", "shop-desc", info.description)),
+      h("div", "shop-level", pips, dur),
+      h("div", "shop-buy", btn, cant),
     );
     const update = (): void => {
       const level = store.save.upgrades[kind];
@@ -422,23 +366,23 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
         cant.textContent = "";
       } else {
         dur.append(h("span", undefined, now), h("span", "arrow", "→"), h("span", "next", formatSeconds(powerupDuration(kind, level + 1))));
-        btn.replaceChildren(h("span", "btn-label", "Mejorar"), svg(ICON_BELLOTA), h("span", undefined, formatInt(cost)));
+        btn.replaceChildren(h("span", "btn-label", "Mejorar"), svg(ICON_BELLOTA, "btn-icon"), h("span", undefined, formatInt(cost)));
         const short = store.save.wallet < cost;
         btn.disabled = short;
-        cant.textContent = short ? `Te faltan ${formatInt(cost - store.save.wallet)} bellotas` : "";
+        cant.textContent = short ? `Te faltan ${formatInt(cost - store.save.wallet)}` : "";
       }
     };
     return { el, update };
   });
-  const upgradesBody = h("div", "shop-grid", ...cards.map((c) => c.el));
+  const upgradesBody = h("ul", "shop-list", ...cards.map((c) => c.el));
 
   // Outfits ("Atuendos"): the 3D runner in the menu behind is the real preview, so this tab
   // moves the panel to the left and leaves the right of the screen clear.
   const outfitRows = OUTFITS.map((o) => {
-    const btn = button("", () => {}, { size: "md" });
+    const btn = button("", () => {}, { size: "sm" });
     const price = h("div", "of-price");
     const el = h(
-      "div",
+      "li",
       "of-row",
       h("div", "of-preview", svg(outfitPreview(o.id))),
       h("div", "of-body", h("div", "of-name", o.name), Object.assign(h("div", "of-desc", o.description), { title: o.description })),
@@ -451,7 +395,7 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
       el.classList.toggle("equipped", equipped);
       el.classList.toggle("owned", owned);
       price.replaceChildren(...(owned ? [] : [svg(ICON_BELLOTA), h("span", undefined, formatInt(o.price))]));
-      btn.className = `btn btn-md ${equipped ? "btn-ghost" : owned ? "btn-secondary" : "btn-primary"}`;
+      btn.className = `btn btn-sm ${equipped ? "btn-text" : owned ? "btn-secondary" : "btn-dark"}`;
       btn.disabled = equipped || (!owned && store.save.wallet < o.price);
       btn.replaceChildren(
         ...(equipped ? [svg(GLYPH_CHECK, "btn-icon")] : []),
@@ -464,30 +408,14 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
     };
     return { el, update };
   });
-  const outfitsBody = h("div", "of-list", ...outfitRows.map((r) => r.el));
+  const outfitsBody = h("ul", "of-list", ...outfitRows.map((r) => r.el));
   outfitsBody.hidden = true;
 
-  const tabUpgrades = button("Mejoras", () => setTab("upgrades"), { variant: "ghost", size: "sm", className: "tab on" });
-  const tabOutfits = button("Atuendos", () => setTab("outfits"), { variant: "ghost", size: "sm", icon: GLYPH_SHIRT, className: "tab" });
-  const sub = h("p", "modal-sub", "Mejora tus potenciadores para que duren más.");
-  const el = modal(
-    "shop",
-    h(
-      "div",
-      "modal-head",
-      h("div", undefined, h("h2", "modal-title display tilt", "Tienda"), sub),
-      walletPill(store),
-    ),
-    h("div", "tabs", tabUpgrades, tabOutfits),
-    upgradesBody,
-    outfitsBody,
-    h(
-      "div",
-      "modal-foot",
-      h("div", "hint", ...keys("Esc"), "para volver"),
-      button("Volver", actions.closePanel, { icon: GLYPH_BACK, size: "lg" }),
-    ),
-  );
+  const tabUpgrades = button("Mejoras", () => setTab("upgrades"), { variant: "text", size: "sm", className: "tab on" });
+  const tabOutfits = button("Atuendos", () => setTab("outfits"), { variant: "text", size: "sm", icon: GLYPH_SHIRT, className: "tab" });
+  const head = modalHead("Tienda", "Mejora tus potenciadores para que duren más.", actions.closePanel, walletPill(store));
+  const sub = head.querySelector(".modal-sub");
+  const el = modal("shop", head, h("div", "tabs", tabUpgrades, tabOutfits), upgradesBody, outfitsBody, modalFoot());
   const setTab = (tab: "upgrades" | "outfits"): void => {
     const outfits = tab === "outfits";
     upgradesBody.hidden = outfits;
@@ -495,7 +423,7 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
     tabUpgrades.classList.toggle("on", !outfits);
     tabOutfits.classList.toggle("on", outfits);
     el.classList.toggle("peek", outfits);
-    sub.textContent = outfits ? "Ropa nueva para huir con estilo. Mírate a la derecha." : "Mejora tus potenciadores para que duren más.";
+    if (sub) sub.textContent = outfits ? "Ropa nueva para huir con estilo. Mírate a la derecha." : "Mejora tus potenciadores para que duren más.";
   };
   const update = (): void => {
     for (const c of cards) c.update();
@@ -511,10 +439,10 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
 export function achievementsScreen(ctx: ScreenCtx): HTMLElement {
   const { store, actions } = ctx;
   const have = store.achievementsUnlocked();
-  const cards = ACHIEVEMENTS.map((a) => {
+  const rows = ACHIEVEMENTS.map((a) => {
     const on = have.has(a.id);
     return h(
-      "div",
+      "li",
       `ach${on ? " on" : ""}`,
       h("div", "ach-icon", svg(on ? GLYPH_MEDAL : GLYPH_LOCK)),
       h("div", "ach-body", h("div", "ach-name", a.name), h("div", "ach-desc", a.description)),
@@ -523,14 +451,9 @@ export function achievementsScreen(ctx: ScreenCtx): HTMLElement {
   });
   return modal(
     "achievements",
-    modalHead("Logros", `${formatInt(have.size)} de ${formatInt(ACHIEVEMENTS.length)} conseguidos · cada uno trae bellotas de premio`, walletPill(store)),
-    h("div", "ach-grid", ...cards),
-    h(
-      "div",
-      "modal-foot",
-      h("div", "hint", ...keys("Esc"), "para volver"),
-      button("Volver", actions.closePanel, { icon: GLYPH_BACK, size: "lg" }),
-    ),
+    modalHead("Logros", `${formatInt(have.size)} de ${formatInt(ACHIEVEMENTS.length)} conseguidos. Cada uno trae bellotas de premio.`, actions.closePanel, walletPill(store)),
+    h("ul", "ach-grid", ...rows),
+    modalFoot(),
   );
 }
 
@@ -544,9 +467,7 @@ export function recordsScreen(ctx: ScreenCtx): HTMLElement {
   table.append(
     h("div", "rec-row rec-head", h("span", undefined, "#"), h("span", undefined, "Puntos"), h("span", undefined, "Distancia"), h("span", undefined, "Hasta"), h("span", undefined, "Fecha")),
   );
-  if (save.records.length === 0) {
-    table.append(h("div", "rec-empty", "Aún no hay récords. ¡Sal corriendo y estrena la lista!"));
-  }
+  if (save.records.length === 0) table.append(h("div", "rec-empty", "Aún no hay récords. Sal corriendo y estrena la lista."));
   save.records.forEach((r, i) => {
     const z = zoneReached(r.zones);
     table.append(
@@ -564,23 +485,12 @@ export function recordsScreen(ctx: ScreenCtx): HTMLElement {
   const life = h(
     "div",
     "life-grid",
-    stat("Carreras", h("div", "stat-value", formatInt(t.runs))),
-    stat("Distancia total", h("div", "stat-value", formatMetres(t.distance))),
-    stat("Bellotas recogidas", h("div", "stat-value", svg(ICON_BELLOTA), formatInt(t.bellotas))),
-    stat("Por los techos", h("div", "stat-value", formatMetres(t.roofMetres))),
+    stat("Carreras", formatInt(t.runs)),
+    stat("Distancia total", formatMetres(t.distance)),
+    stat("Bellotas recogidas", formatInt(t.bellotas)),
+    stat("Por los techos", formatMetres(t.roofMetres)),
   );
-  return modal(
-    "records",
-    modalHead("Récords", "Tus cinco mejores huidas en este ordenador."),
-    table,
-    h("div", "panel-sub life", life),
-    h(
-      "div",
-      "modal-foot",
-      h("div", "hint", ...keys("Esc"), "para volver"),
-      button("Volver", actions.closePanel, { icon: GLYPH_BACK, size: "lg" }),
-    ),
-  );
+  return modal("records", modalHead("Récords", "Tus cinco mejores huidas en este ordenador.", actions.closePanel), table, life, modalFoot());
 }
 
 // ------------------------------------------------------------------ credits
@@ -615,14 +525,9 @@ function creditItem(line: string): HTMLElement {
 export function creditsScreen(ctx: ScreenCtx): HTMLElement {
   return modal(
     "credits",
-    modalHead("Créditos", `${GAME_TITLE} · v${APP_VERSION}`),
+    modalHead("Créditos", `${GAME_TITLE} · v${APP_VERSION}`, ctx.actions.closePanel),
     h("ul", "credit-list", ...creditLines().map(creditItem)),
-    h(
-      "div",
-      "modal-foot",
-      h("div", "hint", ...keys("Esc"), "para volver"),
-      button("Volver", ctx.actions.closePanel, { icon: GLYPH_BACK, size: "lg" }),
-    ),
+    modalFoot(),
   );
 }
 
@@ -635,22 +540,23 @@ export interface MapPosition {
   lap: number;
 }
 
-function routeCard(pos: MapPosition | null, title: string): HTMLElement {
+function routeCard(pos: MapPosition | null): HTMLElement {
   const map = new Minimap({ labels: true, className: "big-map" });
   map.update(pos?.zoneIndex ?? 0, pos?.progress ?? 0);
   const zone = ZONES[pos?.zoneIndex ?? 0];
+  const street = pos ? streetFromMap(pos.zoneIndex, pos.progress) : null;
   return h(
     "div",
     "route-card",
-    h("div", "mini-head", h("div", "mini-title", svg(GLYPH_MAP), title), pos ? h("div", "pill lap-pill", `Vuelta ${formatInt(pos.lap)}`) : null),
     map.el,
-    zone ? h("div", "route-where", "Estás en ", h("b", undefined, zoneInSentence(zone.id, zone.name))) : null,
-    pos ? streetLine(streetFromMap(pos.zoneIndex, pos.progress)) : null,
+    h(
+      "div",
+      "route-where",
+      zone ? h("span", undefined, "Estás en ", h("b", undefined, zoneInSentence(zone.id, zone.name))) : null,
+      pos ? h("span", "lap-pill", `Vuelta ${formatInt(pos.lap)}`) : null,
+    ),
+    street ? h("div", "route-street", street) : null,
   );
-}
-
-function streetLine(name: string | null): HTMLElement | null {
-  return name ? h("div", "route-street", name) : null;
 }
 
 export function pauseScreen(ctx: ScreenCtx, pos: MapPosition | null): HTMLElement {
@@ -660,23 +566,22 @@ export function pauseScreen(ctx: ScreenCtx, pos: MapPosition | null): HTMLElemen
     "screen modal-backdrop",
     h(
       "div",
-      "modal panel pause",
+      "modal pause",
       h(
         "div",
         "pause-main",
-        h("h2", "modal-title display tilt", "Pausa"),
-        h("p", "pause-sub", "El camarero también se ha parado a respirar."),
+        h("h2", "modal-title", "Pausa"),
+        h("p", "modal-sub", "El camarero también se ha parado a respirar."),
         h(
           "div",
           "pause-buttons",
           button("Continuar", actions.resume, { variant: "primary", size: "lg", icon: GLYPH_PLAY }),
-          button("Salir al menú", actions.toMenu, { size: "md", icon: GLYPH_HOME }),
+          button("Salir al menú", actions.toMenu, { variant: "secondary", size: "lg", icon: GLYPH_HOME }),
         ),
-        h("div", "hint", ...keys("Esc"), "para continuar"),
         h(
           "div",
           "pause-settings",
-          soundToggles(ctx, true),
+          soundToggles(ctx, true, "secondary"),
           h(
             "div",
             "mini-controls",
@@ -685,8 +590,9 @@ export function pauseScreen(ctx: ScreenCtx, pos: MapPosition | null): HTMLElemen
             h("span", undefined, ...keys("S"), "rodar"),
           ),
         ),
+        h("div", "hint", ...keys("Esc"), "para continuar"),
       ),
-      routeCard(pos, "Tu huida"),
+      routeCard(pos),
     ),
   );
 }
@@ -733,44 +639,35 @@ export function gameoverScreen(ctx: ScreenCtx, summary: RunSummary, result: RunR
   const completedIds = new Set(result.completed.map((c) => c.id));
   const missionsCard = h(
     "div",
-    "go-missions panel",
-    h("div", "mini-head", h("div", "mini-title", "Misiones"), h("div", "mult-badge", `×${formatInt(result.multiplier)}`)),
+    "go-card go-missions",
+    h("div", "card-head", h("div", "card-title", "Misiones"), h("div", "mult-badge", `×${formatInt(result.multiplier)}`)),
   );
+  const list = h("ul", "mission-list compact");
   if (result.setCompleted) {
-    missionsCard.append(h("div", "set-done", `¡Serie completada! Multiplicador ×${formatInt(result.multiplier)}`));
-    for (const c of result.completed) missionsCard.append(miniMission(c));
-    missionsCard.append(h("div", "hint", "Nuevas misiones en el menú."));
+    missionsCard.append(h("div", "set-done", `Serie completada: multiplicador ×${formatInt(result.multiplier)}`));
+    result.completed.forEach((c, i) => list.append(missionRow(c, i)));
+    missionsCard.append(list, h("div", "card-note", "Nuevas misiones en el menú."));
   } else {
-    for (const v of store.missionViews()) {
-      const row = miniMission(v);
-      if (completedIds.has(v.id)) row.classList.add("fresh");
-      missionsCard.append(row);
-    }
+    store.missionViews().forEach((v, i) => list.append(missionRow(v, i, completedIds.has(v.id))));
+    missionsCard.append(list);
   }
 
   const walletNum = h("span", undefined, formatInt(result.wallet));
   walletNum.dataset["bind"] = "wallet";
+  const bonusText = [result.daily ? "Reto del día" : null, result.achievements.length ? `${formatInt(result.achievements.length)} ${result.achievements.length === 1 ? "logro" : "logros"}` : null]
+    .filter(Boolean)
+    .join(" y ");
   const earned = h(
     "div",
-    "earned panel",
+    "go-card earned",
     h(
       "div",
       "stat",
       h("div", "stat-label", result.debug ? "De prueba, no cuenta" : "Has ganado"),
-      h("div", `stat-value ${result.debug ? "muted" : "sun"}`, svg(ICON_BELLOTA), `+${formatInt(result.bellotasEarned)}`),
+      h("div", `stat-value big${result.debug ? " muted" : ""}`, svg(ICON_BELLOTA), `+${formatInt(result.bellotasEarned)}`),
     ),
-    h("div", "stat", h("div", "stat-label", "En tu bolsillo"), h("div", "stat-value", svg(ICON_BELLOTA), walletNum)),
-    result.bonus > 0
-      ? h(
-          "div",
-          "bonus-line",
-          svg(GLYPH_MEDAL),
-          [result.daily ? "Reto del día" : null, result.achievements.length ? `${formatInt(result.achievements.length)} ${result.achievements.length === 1 ? "logro" : "logros"}` : null]
-            .filter(Boolean)
-            .join(" y "),
-          h("b", undefined, `+${formatInt(result.bonus)}`),
-        )
-      : null,
+    h("div", "stat", h("div", "stat-label", "En tu bolsillo"), h("div", "stat-value big", svg(ICON_BELLOTA), walletNum)),
+    result.bonus > 0 ? h("div", "bonus-line", svg(GLYPH_MEDAL), bonusText, h("b", undefined, `+${formatInt(result.bonus)}`)) : null,
   );
 
   const side = h(
@@ -785,28 +682,27 @@ export function gameoverScreen(ctx: ScreenCtx, summary: RunSummary, result: RunR
       h(
         "div",
         "row",
-        button("Tienda", () => actions.openPanel("shop"), { icon: GLYPH_SHOP }),
-        button("Menú", actions.toMenu, { icon: GLYPH_HOME }),
+        button("Tienda", () => actions.openPanel("shop"), { variant: "secondary", icon: GLYPH_SHOP }),
+        button("Menú", actions.toMenu, { variant: "secondary", icon: GLYPH_HOME }),
       ),
-      h("div", "hint", "Pulsa", ...keys("Espacio"), "o", ...keys("Intro"), "para volver a correr"),
-      button("Copiar resultado", () => actions.share(shareText(summary.distance, zoneInSentence(ZONES[pos.zoneIndex]?.id ?? "", ZONES[pos.zoneIndex]?.name ?? ""), pos.lap)), {
-        variant: "ghost",
-        size: "sm",
-        icon: GLYPH_COPY,
-        className: "share-btn",
-      }),
+      h(
+        "div",
+        "go-foot",
+        h("div", "hint", ...keys("Espacio"), "otra vez"),
+        button("Copiar resultado", () => actions.share(shareText(summary.distance, zoneInSentence(ZONES[pos.zoneIndex]?.id ?? "", ZONES[pos.zoneIndex]?.name ?? ""), pos.lap)), {
+          variant: "text",
+          size: "sm",
+          icon: GLYPH_COPY,
+          className: "share-btn",
+        }),
+      ),
     ),
   );
 
   return h(
     "div",
     "screen gameover",
-    h(
-      "div",
-      "go-head",
-      h("h1", `go-title display${summary.cause === "caught" ? " caught" : ""}${head.title.length > 26 ? " long" : ""}`, head.title),
-      h("p", "go-sub", head.sub),
-    ),
+    h("div", "go-head", h("h1", `go-title${summary.cause === "caught" ? " caught" : ""}`, head.title), h("p", "go-sub", head.sub)),
     h("div", "go-body", receiptWrap, side),
   );
 }

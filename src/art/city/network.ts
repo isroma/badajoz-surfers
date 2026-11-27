@@ -6,7 +6,8 @@
 import * as THREE from "three";
 import type { CityStreet } from "../../city/data";
 import { Acc } from "./acc";
-import { groundMaterial, paintMaterial } from "./cmats";
+import { decalMaterial, paintMaterial } from "./cmats";
+import { PAL } from "../palette";
 import type { CityCtx } from "./context";
 import type { GroundLayer } from "./ground";
 import { newFrame } from "./track";
@@ -98,13 +99,13 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
         if (cy < 0) acc.quad(pA0, pB0, pB1, pA1, uv(pA0), uv(pB0), uv(pB1), uv(pA1), col, col, col, col, UP);
         else acc.quad(pA0, pA1, pB1, pB0, uv(pA0), uv(pA1), uv(pB1), uv(pB0), col, col, col, col, UP);
       };
-      const c1 = new THREE.Color(1, 1, 1);
-      if (w.ped) band(slabs, w.road / 2, 0.02, GROUND_SCALE.slabs, c1);
+      // far streets in the guide's style: white streets on a pale casing, pedestrian ways in pavement colour
+      if (w.ped) band(slabs, w.road / 2, 0.02, GROUND_SCALE.slabs, new THREE.Color(PAL.pavement));
       else {
-        if (w.walk > 0) band(walk, w.road / 2 + w.walk, 0.03, GROUND_SCALE.hydraulic, new THREE.Color(0.92, 0.91, 0.89));
-        band(asphalt, w.road / 2, 0.05, GROUND_SCALE.asphalt, c1);
+        band(walk, w.road / 2 + Math.max(0.6, w.walk), 0.03, GROUND_SCALE.hydraulic, new THREE.Color(PAL.streetCasing));
+        band(asphalt, w.road / 2, 0.05, GROUND_SCALE.asphalt, new THREE.Color(PAL.street));
         // dashed centre line on two-way streets
-        if (!st.oneway && !st.roundabout && w.road > 5.5) {
+        if (false && !st.oneway && !st.roundabout && w.road > 5.5) {
           for (let d = 0; d < len; d += 9) {
             const t0 = d / len;
             const t1 = Math.min(1, (d + 3.5) / len);
@@ -123,9 +124,9 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     }
   }
   for (const [acc, mat, name] of [
-    [walk, groundMaterial("hydraulic", 1), "net-walk"],
-    [slabs, groundMaterial("slabs", 1), "net-slabs"],
-    [asphalt, groundMaterial("asphalt", 2), "net-asphalt"],
+    [walk, decalMaterial(1), "net-walk"],
+    [slabs, decalMaterial(1), "net-slabs"],
+    [asphalt, decalMaterial(2), "net-asphalt"],
     [paint, paintMaterial(), "net-paint"],
   ] as const) {
     const m = acc.mesh(mat, name);
@@ -148,7 +149,7 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
       return Math.abs(pr.lateral) < 12 ? f.h + 0.01 : Math.max(f.h + 0.01, ground.heightAt(p.x, p.y) + 0.25);
     };
     const ys = contour.map(yOf);
-    const c1 = new THREE.Color(1, 1, 1);
+    const c1 = new THREE.Color(PAL.pavement);
     for (const t of tris) {
       const P = (k: number): THREE.Vector3 => new THREE.Vector3(contour[k]!.x, ys[k]!, contour[k]!.y);
       const p0 = P(t[0]!);
@@ -160,7 +161,7 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
       sq.tri(p0, p1, p2, [p0.x / s, p0.z / s], [p1.x / s, p1.z / s], [p2.x / s, p2.z / s], c1, UP);
     }
   }
-  const sm = sq.mesh(groundMaterial("slabs", 1), "plazas");
+  const sm = sq.mesh(decalMaterial(1), "plazas");
   if (sm) g.add(sm);
   return g;
 }

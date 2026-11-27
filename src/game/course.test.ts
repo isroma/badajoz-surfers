@@ -24,7 +24,7 @@ describe("the real course", () => {
     // Real zone lengths in the zone definitions handed to the shell.
     const z = zoneAt(1500);
     expect(z.zone.length).toBeCloseTo(z.end - z.start, 6);
-    expect(layoutAt(600).offsets.length).toBe(4);
+    expect(layoutAt(600).offsets.length).toBe(5);
     expect(layoutAt(4700).offsets.length).toBe(2);
   });
 

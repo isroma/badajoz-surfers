@@ -11,7 +11,6 @@ import * as THREE from "three";
 import { art } from "./art";
 import { createCity, configureRenderer, type CityInternals } from "./art/city";
 import { checkRunnableClear, CHUNK } from "./art/city/context";
-import { facadeAtlas } from "./art/city/textures";
 import { createTrack, loadCity, type Track } from "./city";
 import type { Atmosphere } from "./contracts";
 
@@ -27,32 +26,6 @@ interface Env {
 
 export async function showCityView(env: Env, view: string): Promise<void> {
   const { renderer, scene, camera, label, params } = env;
-  if (view === "cityatlas") {
-    // the facade atlas, and its alpha channel (glass mask) below
-    const img = facadeAtlas().image as HTMLCanvasElement;
-    const c = document.createElement("canvas");
-    c.width = 1024;
-    c.height = 1024;
-    c.style.cssText = "position:fixed;left:0;top:0;width:1280px;height:1280px;background:#f0f";
-    const g = c.getContext("2d");
-    if (g) {
-      g.drawImage(img, 0, 0, 1024, 512);
-      const d = img.getContext("2d")?.getImageData(0, 0, img.width, img.height);
-      if (d) {
-        const out = g.createImageData(1024, 512);
-        for (let y = 0; y < 512; y++) for (let x = 0; x < 1024; x++) {
-          let mn = 255;
-          for (let k = 0; k < 4; k++) for (let j = 0; j < 4; j++) mn = Math.min(mn, d.data[((y * 4 + k) * img.width + x * 4 + j) * 4 + 3] ?? 255);
-          const o = (y * 1024 + x) * 4;
-          out.data[o] = out.data[o + 1] = out.data[o + 2] = mn;
-          out.data[o + 3] = 255;
-        }
-        g.putImageData(out, 0, 512);
-      }
-    }
-    document.body.appendChild(c);
-    return;
-  }
   label.id = "city-label";
   for (const c of [...scene.children]) if (c instanceof THREE.Light) c.visible = false;
   env.controls.enableDamping = false;
