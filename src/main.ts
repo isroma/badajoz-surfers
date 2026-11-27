@@ -1,6 +1,5 @@
 import { createGame } from "./game";
 import { createShell } from "./ui";
-import { setCity } from "./ui/city";
 import { createTrack, loadCity } from "./city";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
@@ -47,7 +46,8 @@ async function boot(): Promise<void> {
     const city = await loadCity();
     progress("las calles");
     world = { city, track: createTrack(city) };
-    setCity(city);
+    // The shell reuses the engine's track (no second build).
+    shell.setCity?.(city, world.track);
   } catch (error) {
     showError(NO_CITY, error);
     return;

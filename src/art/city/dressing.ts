@@ -47,7 +47,7 @@ let treeCacheCtx: CityCtx | null = null;
 
 function speciesFor(ctx: CityCtx, ground: GroundLayer, x: number, z: number, h: number, palm: boolean, s: number, lateral: number, zone: ZoneId, seed: number): Species {
   if (palm) return h > 11 && seed < 0.5 ? "washingtonia" : "palm";
-  const lay = ctx.track.layoutAt(s);
+  const lay = ctx.wideLayout(s);
   const inMedian = lay.median.some((m) => lateral > m.from - 0.5 && lateral < m.to + 0.5);
   if (inMedian && (zone === "margen-derecha" || zone === "puente-real")) return seed < 0.4 ? "washingtonia" : seed < 0.75 ? "palm" : "plane";
   if (inMedian && zone === "valdepasillas") return seed < 0.35 ? "palm" : seed < 0.5 ? "jacaranda" : "plane";
@@ -81,7 +81,7 @@ export function allTrees(ctx: CityCtx, ground: GroundLayer): TreeSpec[] {
     const r = T[i + 3]!;
     const palm = T[i + 4]! > 0;
     const pr = ctx.track.project(x, z);
-    const lay = ctx.track.layoutAt(pr.s);
+    const lay = ctx.wideLayout(pr.s);
     let lat = pr.lateral;
     // keep trunks out of the runnable lanes: nudge to the nearest edge, or drop
     if (lat > lay.left - 0.6 && lat < lay.right + 0.6) {
@@ -219,12 +219,12 @@ function lampWall(b: Bag, x: number, y: number, z: number, ry: number): void {
   const m = propMaterial(true);
   const ax = Math.sin(ry);
   const az = Math.cos(ry);
-  p.beam([x, y + 5.4, z], [x + ax * 0.75, y + 5.55, z + az * 0.75], 0.05, IRON, m);
+  p.beam([x, y + 5.9, z], [x + ax * 0.75, y + 6.05, z + az * 0.75], 0.05, IRON, m);
   const lx = x + ax * 0.75;
   const lz = z + az * 0.75;
-  p.cyl(lx, y + 4.95, lz, 0.13, 0.5, 0xffffff, 6, glowMaterial(), 0.2);
-  p.cone(lx, y + 5.45, lz, 0.25, 0.25, IRON, 6, m);
-  p.cyl(lx, y + 4.85, lz, 0.08, 0.1, IRON, 6, m);
+  p.cyl(lx, y + 5.45, lz, 0.13, 0.5, 0xffffff, 6, glowMaterial(), 0.2);
+  p.cone(lx, y + 5.95, lz, 0.25, 0.25, IRON, 6, m);
+  p.cyl(lx, y + 5.35, lz, 0.08, 0.1, IRON, 6, m);
   pool(b, lx, y + 0.02 - 0.0, lz, 4);
 }
 
@@ -336,7 +336,7 @@ function plaque(b: Bag, x: number, y: number, z: number, ry: number, name: strin
  * surface: the street lamps) and "detail" (once the chunk comes near: trees, furniture, plaques,
  * parked cars and the building relief).
  */
-export type DressingPass = "road" | "trees" | "furniture" | "relief";
+export type DressingPass = "road" | "trees" | "furniture" | "relief" | "relief2";
 
 export function buildChunkDressing(ctx: CityCtx, bag: Bag, ts: TS, chunk: number, s0: number, s1: number, edges: EdgeSample[], ground: GroundLayer, pass: DressingPass): void {
   if (pass === "trees") return; // trees are one permanent, single-LOD layer in the flat style
@@ -344,8 +344,9 @@ export function buildChunkDressing(ctx: CityCtx, bag: Bag, ts: TS, chunk: number
     chunkDetail(ctx, bag, ts, chunk, s0, s1, edges, ground);
     return;
   }
-  if (pass === "relief") {
-    buildRelief(ctx, bag, chunk, s0, s1);
+  if (pass === "relief" || pass === "relief2") {
+    // the facade relief in two halves (one per frame)
+    buildRelief(ctx, bag, chunk, s0, s1, pass === "relief" ? 0 : 1);
     return;
   }
 
@@ -459,9 +460,13 @@ function chunkDetail(ctx: CityCtx, bag: Bag, ts: TS, _chunk: number, s0: number,
       case "waste_disposal":
         bin(bag, p.x, p.y, p.z);
         break;
-      case "recycling":
-        containers(bag, p.x, p.y, p.z, towards + Math.PI / 2);
+      case "recycling": {
+        // a row of containers 1.1–1.6 m deep: stand it well back from the runnable edge
+        const back = lat > 0 ? Math.max(lat, lay.right + 1.5) : Math.min(lat, lay.left - 1.5);
+        const q = ts.p(fu.s, back, y);
+        containers(bag, q.x, q.y, q.z, towards);
         break;
+      }
       case "bollard":
         bollard(bag, p.x, p.y, p.z);
         break;
@@ -500,8 +505,9 @@ function chunkDetail(ctx: CityCtx, bag: Bag, ts: TS, _chunk: number, s0: number,
     const fac = ctx.facadeAt(sb, side);
     const lay = e.layout;
     const edge = side > 0 ? lay.right + 0.5 : lay.left - 0.5;
-    const onWall = fac !== null && Math.abs(fac) < Math.abs(edge) + 4;
-    const lat = onWall && fac !== null ? fac - side * 0.1 : side > 0 ? Math.min(e.outerR - 0.3, edge + 0.3) : Math.max(e.outerL + 0.3, edge - 0.3);
+    const onWall = fac !== null && Math.abs(fac) < Math.abs(edge) + 4 && Math.abs(fac) > Math.abs(edge) + 0.4;
+    if (!onWall && (side > 0 ? e.outerR - edge < 1.9 : edge - e.outerL < 1.9)) continue; // no room for a pole
+    const lat = onWall && fac !== null ? fac - side * 0.1 : side > 0 ? edge + 1.0 : edge - 1.0;
     const p = ts.p(sb, lat, e.pedestrian ? 0 : KERB);
     // faces back towards the runner so it can be read approaching
     // on a wall the plaque goes above the shop signs (which sit at ~3.25 m)
@@ -557,12 +563,12 @@ function parkingLot(bag: Bag, ctx: CityCtx, ground: GroundLayer, ring: number[],
   };
   for (let v = minV + 3; v < maxV - 2; v += 6) {
     for (let u = minU + 1.5; u < maxU - 1.5; u += 2.6) {
-      if (count > 14) return;
+      if (count > 6) return;
       const x = u * ux - v * uz;
       const z = u * uz + v * ux;
       if (!inside(x, z)) continue;
       const pr = ctx.track.project(x, z);
-      const lay = ctx.track.layoutAt(pr.s);
+      const lay = ctx.wideLayout(pr.s);
       if (pr.lateral > lay.left - 3 && pr.lateral < lay.right + 3) continue;
       if (hash01(seed + count, Math.round(u)) < 0.25) continue;
       const y = ground.heightAt(x, z) + 0.05;
@@ -586,4 +592,14 @@ function nearestEdge(edges: EdgeSample[], s: number): EdgeSample | undefined {
     }
   }
   return best;
+}
+
+/** Draw the street plaques and bus-stop names of the lap into the text atlas (prewarm). */
+export function prewarmDressingText(ctx: CityCtx): void {
+  for (const j of ctx.city.junctions) {
+    if (!j.name) continue;
+    const zone = ctx.track.zoneAt(j.s).id;
+    plaqueUv(j.name, zone === "casco-antiguo" || zone === "alcazaba-palmas");
+  }
+  for (const fu of ctx.city.furniture) if (fu.type === "bus_stop") signSlot(`bus-${fu.name ?? "Parada"}`, drawLabel(fu.name ?? "Parada", "#e5484d", "#ffffff", { upper: true }));
 }

@@ -133,7 +133,7 @@ export const ACHIEVEMENTS: readonly AchievementDef[] = [
   { id: "arco-del-peso", name: "Bajo el Arco del Peso", description: "Pasa bajo el Arco del Peso", reward: 300, check: reached(ROUTE_MARKS.arcoDelPeso) },
   { id: "puente-palmas", name: "Por el Puente de Palmas", description: "Cruza el Puente de Palmas", reward: 400, check: reached(ROUTE_MARKS.puentePalmas) },
   { id: "turista", name: "Turista", description: "Llega a cada una de las seis zonas", reward: 400, check: (l) => (l.zonesSeen & ALL_ZONES_MASK) === ALL_ZONES_MASK },
-  { id: "vuelta-al-ruedo", name: "Vuelta al ruedo", description: `Da una vuelta completa a Badajoz (${formatMetres(8169)})`, reward: 1500, check: (l) => l.bestZones >= 6 },
+  { id: "vuelta-al-ruedo", name: "Vuelta al ruedo", description: "Da una vuelta completa a Badajoz", reward: 1500, check: (l) => l.bestZones >= 6 },
   { id: "ni-el-camarero", name: "Ni el camarero te sigue", description: "Da dos vueltas en una sola carrera", reward: 4000, check: (l) => l.bestZones >= 12 },
   { id: "simpa-profesional", name: "Simpa profesional", description: `Corre ${formatMetres(5000)} en una carrera`, reward: 800, check: (l) => l.bestRun.distance >= 5000 },
   { id: "maraton", name: "Maratón del Guadiana", description: `Corre ${formatMetres(42195)} en total`, reward: 500, check: (l) => l.totals.distance >= 42195 },

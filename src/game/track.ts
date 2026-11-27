@@ -10,8 +10,8 @@
  * there, so the traffic can flow; street clutter goes in the other lanes.
  */
 import { OBSTACLE_DEFS, POWERUPS, type PowerupKind, type TutorialAction, type ZoneId } from "../contracts";
-import { getCourse, inRange, mapLane, underArch } from "./course";
-import { centreLane, laneOffset, layoutAt, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
+import { PASSAGE_PICKUP_Y, getCourse, inPassage, inRange, mapLane, underArch, type Course } from "./course";
+import { centreLane, laneOffset, layoutAt, merges, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
 import {
   PATTERNS,
   PatternBuilder,
@@ -39,6 +39,60 @@ import {
 
 /** A lane that ends is closed to the generator this far before its end (≥ 80 m: the art tapers it over 60 m). */
 const LANE_CLOSE_AHEAD = 160;
+/** No obstacle and no pickup in a tapering lane's last metres (up to where it is gone)... */
+export const MERGE_CLOSED = 80;
+/** ...and none in its merge target from this far before the merge end to this far after it. */
+export const TARGET_CLEAR_BEFORE = 40;
+export const TARGET_CLEAR_AFTER = 25;
+
+/** A stretch of one lane closed to the generator (lap-relative s, lateral centre x). */
+export interface Closure {
+  from: number;
+  to: number;
+  x: number;
+  /** The ending lane itself (true): moving vehicles may not even drive through its taper... */
+  ending: boolean;
+  /** ...which starts here. */
+  taper: number;
+}
+
+const closuresByTrack = new WeakMap<object, Closure[]>();
+
+/** The lane closures of the real lap's merges (see lanes.ts `merges`). */
+export function mergeClosures(course: Course): readonly Closure[] {
+  const track = course.track;
+  const known = closuresByTrack.get(track);
+  if (known) return known;
+  const out: Closure[] = [];
+  const st = track.stretches;
+  for (const m of merges(track)) {
+    const lay = st[m.fromStretch]!.layout;
+    out.push({ from: m.s1 - MERGE_CLOSED, to: m.end, x: lay.offsets[m.lane] ?? 0, ending: true, taper: m.s0 });
+    const tx = lay.offsets[m.into] ?? 0;
+    out.push({ from: m.s1 - TARGET_CLEAR_BEFORE, to: Math.min(m.end, m.s1 + TARGET_CLEAR_AFTER), x: tx, ending: false, taper: Infinity });
+    if (m.s1 + TARGET_CLEAR_AFTER > m.end) {
+      // The target carries on past the boundary (where it may sit a little elsewhere).
+      const t = track.transitions.find((x) => x.fromIndex === m.fromStretch);
+      let lane = m.into;
+      for (let g = 0; g < 8; g++) {
+        const next = merges(track).find((x) => x.fromStretch === m.fromStretch && x.lane === lane);
+        if (!next) break;
+        lane = next.into;
+      }
+      const j = t?.map[lane];
+      const after = t ? st[t.toIndex]?.layout.offsets[j ?? -1] : undefined;
+      const base = m.end >= track.lapLength ? 0 : m.end;
+      if (after !== undefined) out.push({ from: base, to: base + (m.s1 + TARGET_CLEAR_AFTER - m.end), x: after, ending: false, taper: Infinity });
+    }
+  }
+  closuresByTrack.set(track, out);
+  return out;
+}
+
+/** Lateral reach of a closure (a lane is about 3 m wide; this keeps the runner's line clear). */
+const CLOSURE_HALF = 0.7;
+const PICKUP_CLOSURE_HALF = 1.0;
+
 /** Nothing is placed this close to the start or end of a zone (room for the zone banner). */
 export const ZONE_MARGIN = 25;
 /** A fresh run starts with this much empty road... */
@@ -138,7 +192,9 @@ export function lightFor(span: ZoneSpan): number {
     const st = stretches[i];
     if (!st) continue;
     const from = lapBase + st.fromS + 16;
-    const to = Math.min(lapBase + st.toS - 6, span.end - ZONE_MARGIN);
+    let to = Math.min(lapBase + st.toS - 6, span.end - ZONE_MARGIN);
+    // The finale stays clear of the lane tapers at the end of the stretch.
+    for (const c of mergeClosures(course)) if (c.from > st.fromS && c.from < st.toS) to = Math.min(to, lapBase + c.from - 4);
     if (to <= span.start || from >= span.end) continue;
     const light = to - finaleLength - before;
     if (light - 25 >= Math.max(from, span.start + ZONE_MARGIN)) return light;
@@ -406,6 +462,70 @@ export class TrackGenerator {
     yield* this.movers;
   }
 
+  /** The real lap's closures and passages apply (the generator runs on the installed course). */
+  private course(): Course | null {
+    return this.layoutFn === layoutAt ? getCourse() : null;
+  }
+
+  /** Would this obstacle sit (or drive) in a tapering lane, a merge target or a passage? */
+  private blockedObstacle(o: ObstacleDraft): boolean {
+    const course = this.course();
+    if (!course) return false;
+    const [f0, f1] = footprintOf(o);
+    let [w0, w1] = [f0, f1];
+    if (o.k !== 0) {
+      const [s0, s1] = sweep(o);
+      const half = OBSTACLE_DEFS[o.kind].length / 2;
+      w0 = Math.min(w0, s0 - half);
+      w1 = Math.max(w1, s1 + half);
+    }
+    if (inPassage(course, w0, w1)) return true;
+    const half = (o.span ?? OBSTACLE_DEFS[o.kind].width) / 2;
+    const L = course.lapLength;
+    const hits = (a: number, b: number, from: number, to: number): boolean => {
+      for (let k = Math.floor(a / L) - 1; k <= Math.floor(b / L) + 1; k++) if (b > from + k * L && a < to + k * L) return true;
+      return false;
+    };
+    for (const c of mergeClosures(course)) {
+      if (Math.abs(o.x - c.x) >= half + CLOSURE_HALF) continue;
+      // Where the runner meets it; and a vehicle never drives through the taper's barriers.
+      if (hits(f0, f1, c.from, c.to) || (o.k !== 0 && hits(w0, w1, c.taper, c.to))) return true;
+    }
+    return false;
+  }
+
+  /** Would a pickup at (x, d, y) sit in a tapering lane, a merge target, or high in a passage? */
+  private blockedPickup(x: number, d: number, y: number): boolean {
+    const course = this.course();
+    if (!course) return false;
+    if (y > PASSAGE_PICKUP_Y && inPassage(course, d, d)) return true;
+    const L = course.lapLength;
+    const w = d - L * Math.floor(d / L);
+    for (const c of mergeClosures(course)) {
+      if (Math.abs(x - c.x) >= PICKUP_CLOSURE_HALF) continue;
+      for (const at of [w - L, w, w + L]) if (at >= c.from - 1 && at <= c.to + 1) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A pattern is refused whole when anything it places sits in a closure or a passage; a plain
+   * moving vehicle there (background traffic: nothing rides on it, the pattern does not need it)
+   * is just left out.
+   */
+  private blocked(b: PatternBuilder, name: PatternName): boolean {
+    const essential = name === "rampRoof" || name === "finale";
+    for (let i = b.obstacles.length - 1; i >= 0; i--) {
+      const o = b.obstacles[i]!;
+      if (!this.blockedObstacle(o)) continue;
+      const rides = b.pickups.some((p) => p.ride?.spawn === o) || b.slots.some((p) => p.ride?.spawn === o);
+      if (o.k !== 0 && !essential && !rides) b.obstacles.splice(i, 1);
+      else return true;
+    }
+    for (const p of b.pickups) if (this.blockedPickup(p.x, p.d, p.y)) return true;
+    return false;
+  }
+
   private canDrive(o: ObstacleDraft, layout: LaneLayout): boolean {
     if (!flowAllows(o, this.layoutFn, layout)) return false;
     for (const other of this.near(o)) {
@@ -509,8 +629,8 @@ export class TrackGenerator {
       if (!PATTERNS[name].fn(b) || !b.ok) continue;
       const flightLimit = this.flights.reduce((m, f) => (f.clearFrom > this.cursor ? Math.min(m, f.clearFrom - 2) : m), Infinity);
       if (b.end > Math.min(name === "finale" ? limit : normalLimit, flightLimit)) continue;
-      if (this.conflicts(b)) {
-        if (!b.mirror() || this.conflicts(b)) continue;
+      if (this.blocked(b, name) || this.conflicts(b)) {
+        if (!b.mirror() || this.blocked(b, name) || this.conflicts(b)) continue;
       }
       if (name === "rampRoof") this.roofSerial = span.serial;
       this.commit(name, b, limit, easy, span);
@@ -570,7 +690,7 @@ export class TrackGenerator {
       const layout = this.layoutFn(d);
       // The line's lane (or the nearest one), else the nearest lane no vehicle drives through.
       const order = layout.offsets.map((_, i) => i).sort((p, q) => Math.abs((layout.offsets[p] ?? 0) - this.lineX) - Math.abs((layout.offsets[q] ?? 0) - this.lineX));
-      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, []));
+      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, []) && !this.blockedPickup(laneOffset(layout, l), d, 0.9));
       if (lane === undefined) continue;
       pickups.push({ id: this.nextId++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: 0.9 });
     }
@@ -613,15 +733,17 @@ export class TrackGenerator {
     if (last && first && first.d < last.d) this.obstacles.sort((a, c) => a.d - c.d);
 
     const pickups: PickupSpawn[] = b.pickups
-      .filter((p) => p.ride !== undefined || !this.runOver(p.x, p.d, p.y, b.obstacles))
+      .filter((p) => (p.ride !== undefined || !this.runOver(p.x, p.d, p.y, b.obstacles)) && !this.blockedPickup(p.x, p.d, p.y))
       .map((p) => ({ ...p, id: this.nextId++ }));
 
     // Letters and power-ups.
     const gapLane = b.line;
     const gapD = b.end + gap * 0.5;
     const gapSpot: RewardSlot | null =
-      gapD <= limit && !this.runOver(laneOffset(ctx.layout, gapLane), gapD, 1.0, b.obstacles) ? { lane: gapLane, d: gapD, y: 1.0, risky: false } : null;
-    const slots = b.slots.filter((s) => s.ride !== undefined || !this.runOver(laneOffset(ctx.layout, s.lane), s.d, s.y, b.obstacles));
+      gapD <= limit && !this.runOver(laneOffset(ctx.layout, gapLane), gapD, 1.0, b.obstacles) && !this.blockedPickup(laneOffset(ctx.layout, gapLane), gapD, 1.0)
+        ? { lane: gapLane, d: gapD, y: 1.0, risky: false }
+        : null;
+    const slots = b.slots.filter((s) => (s.ride !== undefined || !this.runOver(laneOffset(ctx.layout, s.lane), s.d, s.y, b.obstacles)) && !this.blockedPickup(laneOffset(ctx.layout, s.lane), s.d, s.y));
     const used = new Set<RewardSlot>();
     const takeSlot = (preferRisky: boolean): RewardSlot | null => {
       const candidates = slots.filter((s) => !used.has(s) && s.d <= limit);

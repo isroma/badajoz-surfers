@@ -18,7 +18,8 @@ import {
 import { art } from "../art";
 import { Bot } from "./bot";
 import { ChaseCamera, type CameraMode, type SolidBox } from "./camera";
-import { laneOffset, layoutAt } from "./lanes";
+import { layoutAt } from "./lanes";
+import { QualityGovernor, type QualityLevel } from "./quality";
 import { MEDIAN_GAP } from "./player";
 import { buildCourse, getCourse, setCourse } from "./course";
 import { TrackSpace } from "./space";
@@ -27,6 +28,7 @@ import type { Track } from "../city/track";
 import { PathRecorder, type PathSample } from "./chaser";
 import { Effects } from "./effects";
 import { Input, type Command } from "./input";
+import type { PlayerAction } from "./player";
 import { Loop } from "./loop";
 import { COUNTDOWN_TIME, Run, type RunFx } from "./run";
 import { LAP_LENGTH, TICK, zoneAt } from "./tuning";
@@ -52,6 +54,13 @@ export interface GameDebug {
   manual(on: boolean): void;
   /** Verification: render `count` frames of `1/hz` seconds each (manual mode). */
   frames(count: number, hz?: number): void;
+  /** Verification: press an input now (also while the autopilot drives). */
+  press(action: PlayerAction): void;
+  /**
+   * Verification: scripted inputs, each pressed on the first tick the runner reaches `at`
+   * (metres along the run). Replaces any script still pending; [] clears it.
+   */
+  inputs(sequence: readonly { at: number; action: PlayerAction }[]): void;
 }
 
 declare global {
@@ -189,6 +198,7 @@ class Game implements GameApi {
     window.addEventListener("resize", this.onResize);
     document.addEventListener("visibilitychange", this.onVisibility);
     window.addEventListener("blur", this.onBlur);
+    window.addEventListener("focus", this.onFocus);
     window.addEventListener("simpa:outfit", this.onOutfit);
     new Input(canvas, (c) => this.onCommand(c));
 
@@ -197,6 +207,7 @@ class Game implements GameApi {
       tick: (dt) => this.tick(dt),
       render: (alpha, dt) => this.render(alpha, dt),
       timeScale: () => this.timeScale(),
+      measured: (interval, work) => this.governQuality(interval, work),
     });
     this.loop.start();
     // Compile and build everything the menu and the first seconds of a run need before the page
@@ -210,8 +221,17 @@ class Game implements GameApi {
       await gameWorld.prewarm(renderer, camera, Game.MENU_DISTANCE, 1);
       this.render(0, 0);
       this.loadMs = performance.now() - t0;
+      this.isReady = true;
+      this.readyAt = performance.now();
+      this.programsAtReady = renderer.info.programs?.length ?? 0;
     })();
   }
+
+  /** Inputs (start, confirm, lanes) are ignored until `ready` resolved: nothing starts under the loading screen. */
+  private isReady = false;
+  private readyAt = Infinity;
+  /** Shader programs right after the prewarm (stats: nothing should compile after this). */
+  private programsAtReady = 0;
 
   /** Resolves when the menu scene is built and every shader compiled. */
   readonly ready: Promise<void>;
@@ -219,60 +239,30 @@ class Game implements GameApi {
   private loadMs = 0;
 
   // --- Adaptive quality ----------------------------------------------------------------------
-  /** 0 = best .. 3 = lightest; `?quality=` pins it. */
-  private quality: 0 | 1 | 2 | 3 = 0;
+  /** 0 = best .. 3 = lightest; `?quality=` pins it (see quality.ts). */
+  private quality: QualityLevel = 0;
   private qualityPinned = false;
-  private frameAcc = 0;
-  private frameCount = 0;
-  private slowWindows = 0;
-  private fastWindows = 0;
-  private lastDowngrade = -1e9;
-  /** Average frame time (ms) over the last window. */
-  private frameMs = 16.7;
+  private governor = new QualityGovernor();
+  private focused = typeof document !== "undefined" && typeof document.hasFocus === "function" ? document.hasFocus() : true;
 
   private pixelRatioFor(level: number): number {
     const dpr = window.devicePixelRatio || 1;
     return [Math.min(dpr, 1.5), Math.min(dpr, 1.25), 1, 0.85][level] ?? 1;
   }
 
-  private applyQuality(level: 0 | 1 | 2 | 3): void {
+  private applyQuality(level: QualityLevel): void {
     this.quality = level;
     this.renderer.setPixelRatio(this.pixelRatioFor(level));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.world.setQuality(level);
   }
 
-  /**
-   * Measure the real frame time over ~1 s windows and step quality down when it is slow (two slow
-   * windows in a row) and back up only after 5 fast windows and 10 s since the last step down:
-   * hysteresis, never oscillating.
-   */
-  private governQuality(dt: number): void {
-    if (this.qualityPinned || dt <= 0 || dt > 0.25) return;
-    this.frameAcc += dt;
-    this.frameCount++;
-    if (this.frameAcc < 1) return;
-    this.frameMs = (this.frameAcc / this.frameCount) * 1000;
-    this.frameAcc = 0;
-    this.frameCount = 0;
-    if (this.frameMs > 18.5) {
-      this.slowWindows++;
-      this.fastWindows = 0;
-    } else if (this.frameMs < 12.5) {
-      this.fastWindows++;
-      this.slowWindows = 0;
-    } else {
-      this.slowWindows = 0;
-      this.fastWindows = 0;
-    }
-    if (this.slowWindows >= 2 && this.quality < 3) {
-      this.applyQuality((this.quality + 1) as 1 | 2 | 3);
-      this.lastDowngrade = this.time;
-      this.slowWindows = 0;
-    } else if (this.fastWindows >= 5 && this.quality > 0 && this.time - this.lastDowngrade > 10) {
-      this.applyQuality((this.quality - 1) as 0 | 1 | 2);
-      this.fastWindows = 0;
-    }
+  /** One real frame for the governor: decisions only while playing, from 2 s after `ready`. */
+  private governQuality(intervalMs: number, workMs: number): void {
+    if (this.qualityPinned) return;
+    const active = this.isReady && performance.now() - this.readyAt > 2000 && this.state === "playing" && this.run !== null && this.run.countdown <= 0;
+    const level = this.governor.frame({ intervalMs, workMs, hidden: document.hidden, focused: this.focused, active });
+    if (level !== this.quality) this.applyQuality(level);
   }
 
   // --- GameApi -------------------------------------------------------------------------------
@@ -330,7 +320,7 @@ class Game implements GameApi {
     hud.street = getCourse()?.streetNameAt(p) ?? null;
     const layout = layoutAt(p);
     this.hudLanes.count = layout.offsets.length;
-    this.hudLanes.index = run.player.lane;
+    this.hudLanes.index = Math.max(0, Math.min(layout.offsets.length - 1, run.player.lane));
     this.hudLanes.kinds = layout.kinds ?? layout.offsets.map(() => "road");
     this.hudLanes.ending = run.laneEnding;
     hud.lanes = this.hudLanes;
@@ -338,6 +328,7 @@ class Game implements GameApi {
   }
 
   start(): void {
+    if (!this.isReady) return;
     if (this.state !== "menu" && this.state !== "gameover") return;
     this.newRun();
   }
@@ -523,6 +514,7 @@ class Game implements GameApi {
   }
 
   private onCommand(c: Command): void {
+    if (!this.isReady) return;
     switch (c) {
       case "pause":
         if (this.state === "playing") this.pause();
@@ -553,7 +545,12 @@ class Game implements GameApi {
   };
 
   private readonly onBlur = (): void => {
+    this.focused = false;
     if (this.autoPause && this.state === "playing") this.pause();
+  };
+
+  private readonly onFocus = (): void => {
+    this.focused = true;
   };
 
   /** The shell's shop can ask for the menu runner to be re-dressed: `window` event "simpa:outfit". */
@@ -561,12 +558,19 @@ class Game implements GameApi {
     if (this.state === "menu") this.world.setOutfit(this.options.outfit?.());
   };
 
+  private script: { at: number; action: PlayerAction }[] = [];
+
   private tick(dt: number): void {
     this.time += dt;
     const run = this.run;
     if (!run || this.state === "paused" || this.state === "menu") return;
     if (this.botOn) this.bot.update(run);
     const s = run.player;
+    // Scripted inputs (debug.inputs): pressed on the first tick the runner reaches their distance.
+    while (this.script.length > 0 && run.phase === "running" && run.countdown <= 0 && s.p >= (this.script[0]?.at ?? Infinity)) {
+      const next = this.script.shift();
+      if (next) run.push(next.action);
+    }
     const wasGrounded = s.grounded;
     const vy = s.vy;
     this.prevGap = run.chaser.distance;
@@ -575,7 +579,8 @@ class Game implements GameApi {
       // Landing: squash, dust, and a camera dip that grows with the impact.
       const impact = Math.min(1, Math.max(0, -vy - 4) / 16);
       this.squash = Math.max(this.squash, 0.35 + 0.65 * impact);
-      this.effects.dust(s.x, s.y, -s.p, Math.round(5 + 12 * impact), 0.8 + impact);
+      const w = this.space.point(s.p, s.x, s.y, this.vA);
+      this.effects.dust(w.x, w.y, w.z, Math.round(5 + 12 * impact), 0.8 + impact);
       this.cam.dip(0.6 + 2.2 * impact);
     }
     // While the runner flies, the waiter stays on the street below.
@@ -623,7 +628,6 @@ class Game implements GameApi {
   }
 
   private render(alpha: number, dt: number): void {
-    this.governQuality(dt);
     const world = this.world;
     const runner = world.runner;
     const run = this.run;
@@ -660,7 +664,7 @@ class Game implements GameApi {
       px = s.px + (s.x - s.px) * a;
       py = s.py + (s.y - s.py) * a;
       speed = s.speed;
-      laneX = laneOffset(run.layoutFn(s.p), s.lane);
+      laneX = run.boxes.laneX(s.lane, s.p);
 
       // Lean into lane changes (the lane ease's overshoot shows as a little settle).
       const vx = (s.x - s.px) / TICK;
@@ -840,7 +844,7 @@ class Game implements GameApi {
       const run = this.run;
       if (!run || run.phase !== "running") return;
       const s = run.player;
-      run.gen.pickups.push({ id: 900_000_000 + Math.floor(this.time * 1000), kind, lane: s.lane, x: laneOffset(run.layoutFn(s.p), s.lane), d: s.p + 8, y: 1 });
+      run.gen.pickups.push({ id: 900_000_000 + Math.floor(this.time * 1000), kind, lane: s.lane, x: run.boxes.laneX(s.lane, s.p + 8), d: s.p + 8, y: 1 });
       run.gen.pickups.sort((a, b) => a.d - b.d);
     },
     setSpeed: (mps) => {
@@ -857,6 +861,14 @@ class Game implements GameApi {
     frames: (count, hz = 60) => {
       for (let i = 0; i < count; i++) this.loop.step(1 / hz);
     },
+    press: (action) => {
+      this.markDebugRun();
+      this.run?.push(action);
+    },
+    inputs: (sequence) => {
+      this.markDebugRun();
+      this.script = [...sequence].filter((x) => Number.isFinite(x.at)).sort((a, b) => a.at - b.at);
+    },
     camera: () => {
       const c = this.cam.camera;
       return { x: c.position.x, y: c.position.y, z: c.position.z, fov: c.fov, p: this.run?.player.p ?? 0 };
@@ -870,9 +882,13 @@ class Game implements GameApi {
         fps: Math.round(this.loop.fps),
         quality: this.quality,
         qualityPinned: this.qualityPinned,
-        frameMs: Number(this.frameMs.toFixed(1)),
+        frameMs: Number(this.governor.frameMs.toFixed(1)),
+        refreshMs: this.governor.refreshMs === null ? null : Number(this.governor.refreshMs.toFixed(2)),
         pixelRatio: this.renderer.getPixelRatio(),
         programs: info.programs?.length ?? 0,
+        programsAtReady: this.programsAtReady,
+        /** Programs compiled since the prewarm (should stay 0). */
+        programsSinceReady: (info.programs?.length ?? 0) - this.programsAtReady,
         loadMs: Math.round(this.loadMs),
         drawCalls: info.render.calls,
         triangles: info.render.triangles,
@@ -888,7 +904,7 @@ class Game implements GameApi {
         player: s
           ? {
               phase: run?.phase, distance: Number(s.p.toFixed(1)), speed: Number(s.speed.toFixed(2)), lane: s.lane,
-              x: Number(s.x.toFixed(2)), y: Number(s.y.toFixed(2)), grounded: s.grounded, rolling: s.roll > 0,
+              x: Number(s.x.toFixed(2)), y: Number(s.y.toFixed(2)), laneT: Number(s.laneT.toFixed(2)), grounded: s.grounded, rolling: s.roll > 0,
               onRoof: s.supportId >= 0, zone: zoneAt(s.p).zone.id, lap: zoneAt(s.p).lap, chaser: Number(run?.chaser.value.toFixed(2)),
               powerups: run?.powerups.map((x) => x.kind), score: Math.round(run?.score ?? 0),
             }
@@ -912,13 +928,14 @@ class Game implements GameApi {
     const quality = params.get("quality");
     if (quality !== null && /^[0-3]$/.test(quality)) {
       this.qualityPinned = true;
-      this.applyQuality(Number(quality) as 0 | 1 | 2 | 3);
+      this.governor = new QualityGovernor(Number(quality) as QualityLevel, true);
+      this.applyQuality(Number(quality) as QualityLevel);
     }
     const speed = params.get("speed");
     if (speed !== null && Number(speed) > 0) this.debug.setSpeed(Number(speed));
     // Defer so the shell can subscribe first.
     if (params.get("nopause") === "1") this.autoPause = false;
-    if (params.get("autostart") === "1") setTimeout(() => this.start(), 60);
+    if (params.get("autostart") === "1") void this.ready.then(() => setTimeout(() => this.start(), 60));
   }
 }
 

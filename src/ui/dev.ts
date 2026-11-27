@@ -99,7 +99,7 @@ function paintBackground(): void {
     g.fill();
     const colors = night
       ? ["#1d2040", "#262446", "#1a1c33", "#2b2140", "#232a4a", "#1f1f38", "#2a2a44"]
-      : ["#f4d7a1", "#e9a46b", "#f6efe0", "#d86f45", "#f2c14e", "#ffffff", "#c9a27a"];
+      : ["#f4d7a1", "#e9a46b", "#f6efe0", "#d86f45", "#f2c14e", "#e7dccb", "#c9a27a"];
     for (let i = 0; i < 14; i++) {
       const bw = w * 0.09;
       const bh = hgt * (0.18 + ((i * 37) % 11) / 30);
@@ -474,6 +474,8 @@ if (root) {
         game.emit({ type: "word-complete" });
         game.emit({ type: "near-miss" });
         if (params.get("horn") === "1") game.emit({ type: "horn", obstacle: "coche", ahead: 40 });
+        const lane = params.get("lane");
+        if (lane === "left" || lane === "right") game.emit({ type: "lane-ends", side: lane });
       }, Number(params.get("delay") ?? 3000));
       break;
     case "countdown":

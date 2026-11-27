@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { LANE_WIDTH, OBSTACLE_DEFS, POWERUPS, ZONES } from "../contracts";
 import { Bot, HUMAN } from "./bot";
 import { BoxSet } from "./collision";
-import { FOUR_LANES, layoutAt, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
+import { BLEND_LENGTH, FOUR_LANES, MERGE_LENGTH, laneOffsetAt, layoutAt, merges, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
 import { createEvents, createPlayer, stepPlayer, type PlayerAction } from "./player";
 import { Run } from "./run";
 import { solve } from "./solver";
 import { TrackGenerator } from "./track";
 import { collides, flowAllows, lateralOverlap } from "./traffic";
-import { TICK, zoneStartDistance } from "./tuning";
+import { TICK, speedAt, zoneStartDistance } from "./tuning";
 import { setCourse } from "./course";
 import { realCourse } from "./test-course";
 
@@ -138,40 +138,135 @@ describe("lane layouts", () => {
     }
   }, 120_000);
 
-  it("on the real lap the runner is never dragged sideways: lanes follow the road's own lane map", () => {
+  it("on the real lap lanes are continuous: no input, the runner only moves inside a blend or a taper", () => {
     const course = realCourse();
     setCourse(course);
     try {
+      const track = course.track;
       const world = new BoxSet([]);
-      const track = course.track as typeof course.track & { laneEndsAhead?: (s: number, lane: number) => number | null };
-      const start = layoutAt(0);
+      const ms = merges(track);
+      const L = track.lapLength;
+      const near = (s: number): boolean => {
+        const w = ((s % L) + L) % L;
+        if (track.transitions.some((t) => Math.abs(w - t.s) < BLEND_LENGTH / 2 + 0.5 || Math.abs(w - t.s - L) < 7)) return true;
+        return ms.some((m) => w > m.s0 - 0.5 && w < m.s1 + 0.5);
+      };
       const failures: string[] = [];
+      const start = layoutAt(0);
       for (let lane0 = 0; lane0 < start.offsets.length; lane0++) {
-        const s = createPlayer(0, lane0, start);
+        const s = createPlayer(0.5, lane0, start);
         const ev = createEvents();
-        const xs: number[] = [];
-        let announced = -Infinity;
-        let shifted = -Infinity;
-        for (let i = 0; i < Math.round(course.lapLength / 20 / TICK); i++) {
+        while (s.p < L + 50) {
           s.speed = 20;
-          const ending = track.laneEndsAhead?.(s.p, s.lane) ?? null;
-          if (ending !== null && ending < 80) announced = s.p + ending;
+          const x0 = s.x;
           stepPlayer(s, [], TICK, world, ev);
-          xs.push(s.x);
-          const back = xs.length - 1 - Math.round(1 / TICK);
-          // Over one second without input the runner moves < 0.5 m sideways, except where its
-          // lane was announced as ending.
-          // (where the road itself narrows into the old town's 2 narrow lanes, the core maps a lane
-          // onto one up to ~1 m off: that eases over the 12 m transition and is allowed)
-          if (ev.laneRemapped) shifted = Math.abs(s.targetX - s.fromX) <= 1.2 ? s.p : shifted;
-          const moved = Math.abs(s.x - (xs[back] ?? s.x));
-          if (back >= 0 && moved > 0.5 && Math.abs(s.p - announced) > 45 && !(s.p - shifted < 45 && moved < 1.2)) {
-            failures.push(`lane ${lane0}: moved ${(s.x - (xs[back] ?? 0)).toFixed(2)} m at s ${s.p.toFixed(0)}`);
-            break;
-          }
+          const lay = layoutAt(s.p);
+          if (s.lane < 0 || s.lane >= lay.offsets.length) failures.push(`lane ${lane0}: index ${s.lane} out of range at ${s.p.toFixed(1)}`);
+          const v = Math.abs(s.x - x0) / TICK;
+          if (v > 3.2) failures.push(`lane ${lane0}: ${v.toFixed(2)} m/s sideways at ${s.p.toFixed(1)}`);
+          if (v > 1e-6 && !near(s.p)) failures.push(`lane ${lane0}: moved at ${s.p.toFixed(1)} outside blends and tapers`);
+          if (failures.length > 5) break;
         }
       }
       expect(failures).toEqual([]);
+    } finally {
+      setCourse(null);
+    }
+  }, 120_000);
+
+  it("lane endings are merges: a runner who stays in an ending lane is carried smoothly onto its target", () => {
+    const course = realCourse();
+    setCourse(course);
+    try {
+      const track = course.track;
+      const world = new BoxSet([]);
+      const L = track.lapLength;
+      const ms = merges(track);
+      expect(ms.length).toBeGreaterThan(10);
+      // Puente Real: the two oncoming lanes taper in sequence into own-2.
+      const pr = ms.filter((m) => Math.abs(m.end - 1010) < 2);
+      const ids = track.stretches[pr[0]!.fromStretch]!.layout.ids;
+      const opp2 = pr.find((m) => ids[m.lane] === "opp-2")!;
+      const opp1 = pr.find((m) => ids[m.lane] === "opp-1")!;
+      expect(ids[opp2.into]).toBe("opp-1");
+      expect(ids[opp1.into]).toBe("own-2");
+      expect(opp2.s1).toBeCloseTo(opp1.s0, 6);
+      expect(opp1.s1 - opp1.s0).toBeCloseTo(MERGE_LENGTH, 6);
+      expect(opp1.end - opp2.s0).toBeCloseTo(2 * MERGE_LENGTH, 6);
+      const report: string[] = [];
+      for (const lap of [0, 1]) {
+        for (const m of ms) {
+          const st = track.stretches[m.fromStretch]!;
+          const lay = st.layout;
+          // Never into oncoming traffic, except an oncoming lane merging into its inner neighbour first.
+          if (lay.flow[m.into] === -1) expect(lay.flow[m.lane]).toBe(-1);
+          const from = lap * L + Math.max(st.fromS + 8, m.s0 - 30);
+          const s = createPlayer(from, m.lane, lay);
+          const ev = createEvents();
+          let vmax = 0;
+          let x0 = s.x;
+          while (s.p < lap * L + m.end + 20) {
+            s.speed = speedAt(s.p);
+            stepPlayer(s, [], TICK, world, ev);
+            const step = Math.abs(s.x - x0);
+            vmax = Math.max(vmax, step / TICK);
+            x0 = s.x;
+          }
+          // Ended exactly on (the continuation of) the target lane, which is not an oncoming one.
+          const after = layoutAt(s.p);
+          expect(s.x, `lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)} lap ${lap} now ${(after as { ids?: readonly string[] }).ids?.[s.lane]} at ${s.p.toFixed(1)}`).toBeCloseTo(laneOffsetAt(track, s.lane, s.p), 6);
+          expect(after.flow[s.lane]).not.toBe(-1);
+          if (lap === 0) expect(vmax, `lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}`).toBeLessThan(2.7);
+          report.push(`${lay.ids[m.lane]}@${m.end.toFixed(0)}: ${vmax.toFixed(2)}`);
+        }
+      }
+      // (lap-2 speeds are reported, not asserted: ~25 m/s over Puente Real's 5 m taper is ~3 m/s)
+      void report;
+    } finally {
+      setCourse(null);
+    }
+  }, 120_000);
+
+  it("lane input is never blocked or re-timed by a layout change (Plaza de España, the rings)", () => {
+    const course = realCourse();
+    setCourse(course);
+    try {
+      const track = course.track;
+      const world = new BoxSet([]);
+      const slow: string[] = [];
+      for (const t of track.transitions) {
+        const lay = layoutAt(t.s - 5);
+        for (let lane = 0; lane < lay.offsets.length; lane++) {
+          for (const pressAt of [-2, 0.6, 3]) {
+            const s = createPlayer(t.s - 6, lane, lay);
+            const ev = createEvents();
+            let pressed = false;
+            let took = -1;
+            let ticks = 0;
+            while (s.p < t.s + 30) {
+              s.speed = 18;
+              const press = !pressed && s.p >= t.s + pressAt;
+              const n = layoutAt(s.p).offsets.length;
+              stepPlayer(s, press ? [s.lane > 0 ? "left" : "right"] : [], TICK, world, ev);
+              if (press) {
+                pressed = true;
+                // The press acts at once: a lane change starts or the edge bumps (no queueing).
+                if (!ev.laneChanged && !ev.edgeBump) slow.push(`s ${t.s.toFixed(0)} lane ${lane}/${n}: press at ${pressAt} queued`);
+                if (!ev.laneChanged) break;
+              }
+              if (pressed) {
+                ticks++;
+                if (s.laneT >= 1) {
+                  took = ticks * TICK;
+                  break;
+                }
+              }
+            }
+            if (took > 0.36) slow.push(`s ${t.s.toFixed(0)} lane ${lane}: change took ${took.toFixed(2)} s`);
+          }
+        }
+      }
+      expect(slow).toEqual([]);
     } finally {
       setCourse(null);
     }

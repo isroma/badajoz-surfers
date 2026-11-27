@@ -54,6 +54,14 @@ export function button(label: Child, onClick: () => void, opts: ButtonOptions = 
   if (opts.ariaLabel) b.setAttribute("aria-label", opts.ariaLabel);
   b.disabled = opts.disabled ?? false;
   b.addEventListener("mousedown", (e) => e.preventDefault());
+  b.addEventListener("pointerup", () => b.blur());
+  // Firefox clicks a focused button on Space keyup even when keydown was prevented: the game owns
+  // Space and Enter, so a button must never react to them (the events still reach the window).
+  const swallow = (e: KeyboardEvent): void => {
+    if (e.code === "Space" || e.code === "Enter" || e.code === "NumpadEnter") e.preventDefault();
+  };
+  b.addEventListener("keydown", swallow);
+  b.addEventListener("keyup", swallow);
   b.addEventListener("pointerenter", () => {
     if (!b.disabled) uiSound("hover");
   });

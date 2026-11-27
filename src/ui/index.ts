@@ -14,8 +14,10 @@ import { Fx } from "./fx";
 import { Combo, comboStep, lapCaption, milestoneText, milestonesCrossed } from "./feel";
 import { Hud } from "./hud";
 import { shortZoneName, streetFromMap, zoneIndexOf } from "./minimap";
-import { getTrack, loadShellCity, onCity, turnAt } from "./city";
-import type { TurnHint } from "./hud";
+import { getTrack, hasCity, loadShellCity, onCity, setCity, turnAt } from "./city";
+import type { CityData } from "../city/data";
+import type { Track } from "../city/track";
+import { chooseTurn, eventTurn, type EventTurn, type TurnHint } from "./guidance";
 import { copyText } from "./clipboard";
 import { GLYPH_CHECK, GLYPH_COPY, GLYPH_MEDAL, GLYPH_RUN, GLYPH_SHIRT, ICON_BELLOTA, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
 import {
@@ -57,9 +59,12 @@ interface OpenPanel {
 /** Keys the engine uses; swallowed while a shell-only panel is open. */
 const SWALLOW = new Set(["Space", "Enter", "NumpadEnter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD", "KeyP", "Escape"]);
 
-export function createShell(root: HTMLElement): Shell {
-  // Real map, street names and credits; the shell works without it (stylised map, static credits).
-  void loadShellCity();
+export interface ShellWithCity extends Shell {
+  /** The engine's city data and Track: the shell then fetches and builds nothing itself. */
+  setCity(city: CityData, track?: Track | null): void;
+}
+
+export function createShell(root: HTMLElement): ShellWithCity {
   const store = new MetaStore();
   const audio = new AudioEngine(store.settings);
   setUiSound((k) => audio.play(k));
@@ -90,9 +95,7 @@ export function createShell(root: HTMLElement): Shell {
   let stingTimer = 0;
   let lastHorn = -Infinity;
   /** The engine's latest `turn` event, pinned to the run distance where the turn is. */
-  let turnFromEvent: { hint: TurnHint | null; at: number } | null = null;
-  /** Once the engine sends `turn` events, they replace the track-model fallback. */
-  let engineTurns = false;
+  let turnFromEvent: EventTurn | null = null;
   /** Street from the engine's `street` events (until HudSnapshot.street exists). */
   let streetFromEvent: string | null | undefined;
   const combo = new Combo();
@@ -287,6 +290,11 @@ export function createShell(root: HTMLElement): Shell {
   };
   const renderBase = (): void => {
     let el: HTMLElement | null = null;
+    // Nothing to click until the engine is attached: the page shows "Cargando Badajoz…".
+    if (!game) {
+      baseLayer.replaceChildren();
+      return;
+    }
     if (state === "menu") el = menuScreen(ctx);
     else if (state === "paused") el = pauseScreen(ctx, currentPos());
     else if (state === "gameover" && run.result) el = gameoverScreen(ctx, run.result.summary, run.result.result, endPos(run.result.summary));
@@ -295,6 +303,7 @@ export function createShell(root: HTMLElement): Shell {
 
   /** Start a run from the menu or game over. The engine ignores it in any other state. */
   function startRun(): void {
+    if (!game) return;
     if (state !== "menu" && state !== "gameover") return;
     closePanel(false);
     try {
@@ -306,7 +315,7 @@ export function createShell(root: HTMLElement): Shell {
   }
 
   function openPanel(id: PanelId): void {
-    if (state === "playing" || state === "paused") return;
+    if (!game || state === "playing" || state === "paused") return;
     closePanel(false);
     if (id === "shop") {
       const s = shopScreen(ctx);
@@ -343,6 +352,7 @@ export function createShell(root: HTMLElement): Shell {
   }, { variant: "ghost", className: "corner-btn", ariaLabel: "Silenciar" });
   const pauseBtn = button(null, () => game?.pause(), { variant: "ghost", className: "corner-btn", icon: GLYPH_PAUSE, ariaLabel: "Pausa" });
   const corner = h("div", "corner hud-br", pauseBtn, muteBtn);
+  corner.hidden = true; // until attach(): nothing to click while loading
   const syncMute = (): void => {
     const s = store.settings;
     const muted = !s.music && !s.sfx;
@@ -422,22 +432,14 @@ export function createShell(root: HTMLElement): Shell {
       hud.setStreet(streetFromEvent);
       return;
     }
-    // `turn` ({ direction, roundabout, street, distance }): preferred over the track model.
+    // `turn` ({ direction, roundabout, street, distance, endDistance? }): the engine's next turn.
     if (loose.type === "turn") {
-      const d = loose.direction;
-      const dir = d === "left" || d === "right" || d === "straight" ? d : null;
-      const ahead = typeof loose.distance === "number" && Number.isFinite(loose.distance) ? loose.distance : 0;
-      engineTurns = true;
-      turnFromEvent = {
-        hint: dir ? { dir, roundabout: loose.roundabout === true, name: typeof loose.street === "string" && loose.street ? loose.street : null } : null,
-        at: fin(lastHud?.distance ?? 0) + ahead,
-      };
+      turnFromEvent = eventTurn(fin(lastHud?.distance ?? 0), loose as Parameters<typeof eventTurn>[1]);
       return;
     }
-    // `lane-ends` ({ side }): a short one-line hint.
+    // `lane-ends` ({ side: the side to move to }): an immediate arrow chip by the turn hint.
     if (loose.type === "lane-ends") {
-      const left = loose.side === "left";
-      fx.toast({ title: left ? "← El carril se acaba" : "El carril se acaba →", key: "lane-ends", duration: 1600 });
+      hud.laneEnds(loose.side === "left" ? "left" : "right");
       return;
     }
     switch (e.type) {
@@ -616,22 +618,19 @@ export function createShell(root: HTMLElement): Shell {
     return streetFromMap(zoneIndexOf(snap.zone?.id ?? ""), fin(snap.zoneProgress));
   };
 
-  /** Turn hint: from ~120 m before a turn until just after it (hidden without track data). */
+  /** Turn hint: the nearest upcoming turn, from ~120 m before it until its end. */
   const turnHint = (snap: HudSnapshot): TurnHint | null => {
     if (state !== "playing") return null;
-    if (turnFromEvent) {
-      // Shown until the runner is 15 m past the turn the event announced.
-      if (fin(snap.distance) <= turnFromEvent.at + 15) return turnFromEvent.hint;
-      turnFromEvent = null;
-    }
-    if (engineTurns) return null;
+    const distance = fin(snap.distance);
     const track = getTrack();
-    if (!track) return null;
-    const lap = track.lapLength;
-    const s = ((fin(snap.distance) % lap) + lap) % lap;
-    const turn = turnAt(s);
-    if (!turn || turn.ahead > 120 || turn.toEnd < -10) return null;
-    return { dir: turn.dir, roundabout: turn.roundabout, name: turn.exitName };
+    let fromTrack = null;
+    if (track) {
+      const lap = track.lapLength;
+      const t = turnAt(((distance % lap) + lap) % lap);
+      if (t) fromTrack = { ahead: t.ahead, toEnd: t.toEnd, dir: t.dir, roundabout: t.roundabout, name: t.exitName };
+    }
+    if (turnFromEvent && distance > turnFromEvent.endAt) turnFromEvent = null;
+    return chooseTurn(distance, turnFromEvent, fromTrack);
   };
 
   const tick = (t: number, snap: HudSnapshot): void => {
@@ -717,17 +716,23 @@ export function createShell(root: HTMLElement): Shell {
   onCity(() => {
     hud.refreshMap();
     if (state === "paused" || state === "gameover") renderBase();
-    if (panel?.id === "credits") openPanel("credits");
+    if (panel?.id === "credits" || panel?.id === "achievements") openPanel(panel.id);
   });
 
   return {
     gameOptions: store.gameOptions,
+    setCity(city: CityData, track?: Track | null) {
+      setCity(city, track);
+    },
     attach(g: GameApi) {
       // The page shows "Cargando Badajoz…" until the game exists.
       document.getElementById("boot")?.remove();
       unsubscribe?.();
       game = g;
+      corner.hidden = false;
       unsubscribe = g.on(onEvent);
+      // Dev harness (or a main.ts that did not hand the data over): fetch it ourselves.
+      if (!hasCity()) void loadShellCity();
       let initial: GameState = "menu";
       try {
         initial = g.state;
@@ -735,6 +740,7 @@ export function createShell(root: HTMLElement): Shell {
         // keep "menu"
       }
       if (initial !== state) applyState(initial);
+      else renderBase();
     },
   };
 }

@@ -355,7 +355,8 @@ function puenteReal(ctx: CityCtx, bag: Bag, ts: TS): void {
       const d = 18 + k * 9.5;
       const sa = s + dir * d;
       if (sa < 516 || sa > 962) continue;
-      const anchor = ts.p(sa, mid, 0.4);
+      const ml = ctx.track.layoutAt(sa).median[0];
+      const anchor = ts.p(sa, ml ? (ml.from + ml.to) / 2 : mid, 0.4);
       const yTop = top0 + ((top1 - top0) * k) / (n - 1);
       const ax = base.x + f.tx * dir * 1.6;
       const az = base.z + f.tz * dir * 1.6;
@@ -627,6 +628,14 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
       const b = raw[i + 1]!;
       const len = Math.hypot(b.x - a.x, b.z - a.z);
       if (len < 0.3) continue;
+      // a wall the route passes through (the bridgehead at Puente de Palmas…) leaves a gap
+      if ([0, 0.5, 1].some((t) => {
+        const x = a.x + (b.x - a.x) * t;
+        const z = a.z + (b.z - a.z) * t;
+        const pr = ctx.track.project(x, z);
+        const wl = ctx.wideLayout(pr.s);
+        return pr.lateral > wl.left - 2.5 && pr.lateral < wl.right + 2.5;
+      })) continue;
       const nx = (-(b.z - a.z) / len) * (thick / 2);
       const nz = ((b.x - a.x) / len) * (thick / 2);
       const ta = a.g + a.h;
@@ -653,6 +662,11 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
       if (d > Math.PI) d = 2 * Math.PI - d;
       if (d < 0.6) continue;
       const tw = 6.5;
+      {
+        const pr = ctx.track.project(b.x, b.z);
+        const wl = ctx.wideLayout(pr.s);
+        if (pr.lateral > wl.left - tw && pr.lateral < wl.right + tw) continue;
+      }
       const th = b.h + 3;
       p.push(xf(b.x, b.g - 3, b.z, 1, 1, 1, 0, -a1, 0));
       p.box(0, (th + 3) / 2, 0, tw, th + 3, tw, TAPIAL_COL, m);
@@ -671,26 +685,14 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
 
 /** The gate's two round crenellated towers and the renaissance arch, aligned with the bridge. */
 function puertaPalmas(bag: Bag, ring: P2[], g0In: number, bridge: P2[], ctx: CityCtx): void {
-  let c = centroid(ring);
-  const bo = obb(bridge);
-  let ry = Math.atan2(bo.ux, bo.uz) + Math.PI / 2;
-  let g0 = g0In;
-  let half = 3.4;
-  // when the lap runs through the gate (a passage in the data), centre the arch on the route and
-  // open it to the full runnable width
-  const pr = ctx.track.project(c.x, c.z);
-  if (Math.abs(pr.lateral) < 6) {
-    const lay = ctx.track.layoutAt(pr.s);
-    const f = ctx.track.frameAt(pr.s);
-    const mid = (lay.left + lay.right) / 2;
-    c = { x: f.x + f.nx * mid, z: f.z + f.nz * mid };
-    ry = Math.atan2(f.nx, f.nz) + Math.PI / 2;
-    half = Math.max(half, (lay.right - lay.left) / 2 + 0.6);
-    g0 = f.h;
-  }
+  const gate = palmasGate(ctx, ring, g0In, bridge);
+  const c = gate.c;
+  const ry = gate.ry;
+  const g0 = gate.g0;
+  const half = gate.half;
   const p = bag.props;
   const m = propMaterial(true);
-  const spring = Math.max(4.8, half + 1.2);
+  const spring = gate.spring;
   const depth = 6;
   const topY = Math.max(11.5, spring + half + 2.2);
   const tr = 3.3;
@@ -811,7 +813,7 @@ function puentePalmas(ctx: CityCtx, bag: Bag, fac: Acc, ts: TS): void {
     }
   }
   // classic iron lamps on the parapets
-  for (let s = a + 10; s < b; s += 24) {
+  for (let s = a + 10; s < b - 14; s += 24) {
     for (const side of [1, -1]) {
       const q = ts.p(s + (side > 0 ? 0 : 12), side * (half + 0.2), 1.05);
       p.cyl(q.x, q.y, q.z, 0.12, 0.5, 0x1d2022, 8, m);
@@ -923,6 +925,13 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
   p.push(xf(face.x, y0, face.z, 1, 1, 1, 0, ry, 0));
   const w = s1 - s0;
   p.box(0, 3.55, 0.3, w + 0.4, 0.5, 0.6, 0xf4f1ea, m);
+  // the front: a door, two windows, a tiled plinth
+  p.box(-w / 4, 1.1, 0.04, 1.2, 2.2, 0.06, 0x6b4a2e, m);
+  for (const x of [w / 8, w * 0.36]) {
+    p.box(x, 1.7, 0.04, 2.2, 1.4, 0.06, PAL.glass, m);
+    p.box(x, 1.0, 0.07, 2.4, 0.08, 0.1, PAL.white, m);
+  }
+  p.box(0, 0.3, 0.05, w, 0.6, 0.08, 0x3e7bd6, m);
   const uv = signSlot("bar-el-puente", drawLabel("Bar El Puente", "#1f2328", "#ffd98a", { serif: true }));
   p.quad(new THREE.Matrix4().makeScale(6.4, 1.2, 1).setPosition(0, 4.6, 0.08), 0xffffff, signMaterial(), uv);
   p.box(0, 4.6, 0.03, 6.6, 1.35, 0.06, PAL.ink, m);
@@ -933,14 +942,25 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
   }
   p.pop();
   // terrace: tables, chairs and parasols; the last one abandoned (plate, half beer, chair pushed back)
-  for (let k = 0; k < 3; k++) {
-    const s = s0 + 2.5 + k * 4.2;
+  for (let k = 0; k < 4; k++) {
+    const s = s0 + 1.8 + k * 3.4;
     const q = ts.p(s, (t0 + t1) / 2, 0.135);
-    const abandoned = k === 2;
+    const abandoned = k === 3;
     p.cyl(q.x, q.y, q.z, 0.04, 0.72, 0x9aa0a6, 6, m);
     p.cyl(q.x, q.y + 0.72, q.z, 0.45, 0.04, 0xd9dcde, 14, m);
     for (const a of [0, Math.PI]) {
       const off = abandoned && a === 0 ? 1.0 : 0.65;
+      if (abandoned && a === 0) {
+        // the knocked-over chair of the runner
+        const cx = q.x + Math.cos(a + ry) * 1.2;
+        const cz = q.z + Math.sin(a + ry) * 1.2;
+        p.push(xf(cx, q.y + 0.22, cz, 1, 1, 1, Math.PI / 2, a + ry, 0));
+        p.box(0, 0, 0, 0.42, 0.04, 0.42, PAL.red, m);
+        p.box(0, 0.22, -0.2, 0.42, 0.45, 0.04, PAL.red, m);
+        for (const [dx, dz] of [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]] as const) p.box(dx, -0.22, dz, 0.035, 0.44, 0.035, 0x9aa0a6, m);
+        p.pop();
+        continue;
+      }
       const cx = q.x + Math.cos(a + ry) * off;
       const cz = q.z + Math.sin(a + ry) * off;
       p.box(cx, q.y + 0.45, cz, 0.42, 0.04, 0.42, 0x9aa0a6, m, a + ry);
@@ -954,7 +974,9 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
       p.cyl(q.x + 0.12, q.y + 0.78, q.z, 0.08, 0.03, 0xc47a2c, 8, m);
       p.cyl(q.x - 0.15, q.y + 0.76, q.z + 0.1, 0.04, 0.16, 0xe8b84a, 8, m);
       p.cyl(q.x - 0.15, q.y + 0.92, q.z + 0.1, 0.042, 0.03, 0xfaf6ea, 8, m);
-      p.box(q.x, q.y + 0.765, q.z - 0.2, 0.12, 0.005, 0.09, 0xffffff, m);
+      // the bill, left unpaid on its saucer
+      p.cyl(q.x - 0.05, q.y + 0.76, q.z - 0.22, 0.09, 0.012, 0xffffff, 8, m);
+      p.box(q.x - 0.05, q.y + 0.775, q.z - 0.22, 0.09, 0.006, 0.16, 0xfcf8f1, m, 0.4);
     } else {
       p.cyl(q.x - 0.1, q.y + 0.76, q.z, 0.035, 0.12, 0xe8b84a, 8, m);
       p.cyl(q.x + 0.15, q.y + 0.76, q.z + 0.1, 0.1, 0.02, 0xffffff, 10, m);
@@ -968,7 +990,7 @@ export function startSign(ctx: CityCtx, bag: Bag, ts: TS): void {
   const lay = ctx.track.layoutAt(s);
   let edge = lay.right;
   for (const w of lay.sidewalks) edge = Math.max(edge, w.to);
-  const q = ts.p(s, edge + 1.4, 0.13);
+  const q = ts.p(s, Math.max(edge, ctx.wideLayout(s).right) + 3.0, 0.13);
   const f = ts.f(s);
   const ry = Math.atan2(-f.tx, -f.tz);
   const p = bag.props;
@@ -1015,11 +1037,17 @@ function roundabouts(ctx: CityCtx, bag: Bag, ts: TS, only: number): void {
       hSum += f.h;
       n++;
     }
-    let inner = 0;
-    for (const w of st.layout.sidewalks) inner = Math.min(inner, w.from);
-    for (const c of st.layout.carriageways) inner = Math.min(inner, c.from);
-    inner = Math.min(inner, st.layout.left);
-    const R = dmin + inner - 0.05;
+    // the island ends where the widest runnable layout round the ring begins (+ a margin)
+    let R = Infinity;
+    for (let s = st.fromS - 12; s <= st.toS + 12; s += 2) {
+      const f = ts.f(s);
+      const d = Math.hypot(f.x - rb.cx, f.z - rb.cz);
+      const wl = ctx.wideLayout(s);
+      let inner = wl.left;
+      for (const w of wl.sidewalks) inner = Math.min(inner, w.from);
+      for (const c of wl.carriageways) inner = Math.min(inner, c.from);
+      if (d < dmin + 25) R = Math.min(R, d + inner - 0.3);
+    }
     if (R < 3) continue;
     const y = hSum / Math.max(1, n);
     const seg = Math.max(24, Math.round(R * 2.5));
@@ -1082,4 +1110,36 @@ function roundabouts(ctx: CityCtx, bag: Bag, ts: TS, only: number): void {
 let waterLikeMat: THREE.Material | null = null;
 function waterLike(): THREE.Material {
   return (waterLikeMat ??= new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.85 }));
+}
+
+/**
+ * Puerta de Palmas' opening: when the lap runs through the gate it is centred on the route, open
+ * to the full runnable width (+0.6 m each side) and springs at ≥ 4.8 m. Pure (the clearance test
+ * checks it).
+ */
+export function palmasGate(ctx: CityCtx, ring: P2[], g0In: number, bridge: P2[]): { c: P2; ry: number; g0: number; half: number; spring: number; onRoute: boolean; s: number } {
+  let c = centroid(ring);
+  const bo = obb(bridge);
+  let ry = Math.atan2(bo.ux, bo.uz) + Math.PI / 2;
+  let g0 = g0In;
+  let half = 3.4;
+  const pr = ctx.track.project(c.x, c.z);
+  const onRoute = Math.abs(pr.lateral) < 6;
+  if (onRoute) {
+    // the widest layout over the gate's depth
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let ds = -4; ds <= 4; ds += 1) {
+      const lay = ctx.track.layoutAt(pr.s + ds);
+      lo = Math.min(lo, lay.left);
+      hi = Math.max(hi, lay.right);
+    }
+    const f = ctx.track.frameAt(pr.s);
+    const mid = (lo + hi) / 2;
+    c = { x: f.x + f.nx * mid, z: f.z + f.nz * mid };
+    ry = Math.atan2(f.nx, f.nz) + Math.PI / 2;
+    half = Math.max(half, (hi - lo) / 2 + 0.6);
+    g0 = f.h;
+  }
+  return { c, ry, g0, half, spring: Math.max(4.8, half + 1.2), onRoute, s: pr.s };
 }

@@ -5,7 +5,18 @@ import { midiToFreq, noise, noteToMidi, tone } from "./synth";
 export type MusicMode = "off" | "menu" | "play" | "paused";
 
 const STEPS_PER_BAR = 16;
-const LOOKAHEAD = 0.12;
+/** Schedule this far ahead: enough to ride out an ordinary main-thread hiccup. */
+const LOOKAHEAD = 0.28;
+
+/**
+ * What the scheduler does with the step due at `stepTime`: play it, skip it (its time has
+ * already passed: after a stall, missed steps are dropped instead of all firing at once), or
+ * stop (it is beyond the lookahead window).
+ */
+export function stepAction(stepTime: number, now: number, lookahead = LOOKAHEAD): "play" | "skip" | "stop" {
+  if (stepTime >= now + lookahead) return "stop";
+  return stepTime < now ? "skip" : "play";
+}
 const TICK_MS = 25;
 
 interface LeadEvent {
@@ -189,10 +200,13 @@ export class Music {
 
   private tick(): void {
     const now = this.ctx.currentTime;
-    // After a long stall (tab hidden), don't try to catch up on missed steps.
-    if (this.nextTime < now - 0.25) this.nextTime = now + 0.05;
-    while (this.nextTime < now + LOOKAHEAD) {
-      if (this.enabled) this.playStep(this.step, this.nextTime);
+    // After a very long stall (tab hidden), restart the clock instead of skipping steps one by one.
+    if (this.nextTime < now - 2) this.nextTime = now + 0.05;
+    for (;;) {
+      const action = stepAction(this.nextTime, now);
+      if (action === "stop") break;
+      // Late steps advance the position without sounding, so the song stays in time.
+      if (action === "play" && this.enabled) this.playStep(this.step, this.nextTime);
       this.bpm += (this.targetBpm - this.bpm) * 0.04;
       this.nextTime += 60 / this.bpm / 4;
       this.step = (this.step + 1) % (PROGRESSION.length * STEPS_PER_BAR);
