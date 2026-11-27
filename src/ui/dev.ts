@@ -14,6 +14,8 @@ import {
   type ObstacleKind,
   type PowerupKind,
   type RunSummary,
+  type GameOptions,
+  type TutorialAction,
 } from "../contracts";
 import { SAVE_KEY, defaultSave } from "../meta/save";
 import { createShell } from "./index";
@@ -36,6 +38,21 @@ function seedSave(): void {
     s.runsPlayed = 14;
     s.seenHowTo = true;
     s.upgrades = { iman: 2, zapatillas: 0, jamon: 5, patinete: 1 };
+    s.tutorialDone = params.get("tutorial") !== "1";
+    s.achievements = ["primer-simpa", "plaza-alta", "turista", "saltimbanqui", "ciguena"];
+    s.lifetime = {
+      totals: { bellotas: 4210, distance: 18350, score: 0, jumps: 640, rolls: 120, nearMisses: 33, roofMetres: 612, powerups: 41, words: 3, letters: 38, zones: 51, runs: 14 },
+      zonesSeen: 63,
+      bestZones: 8,
+      bestRun: { distance: 2315, bellotas: 280, zones: 8, score: 45678 },
+    };
+    s.records = [
+      { date: "2026-11-26", score: 45678, distance: 2315, zones: 8 },
+      { date: "2026-11-25", score: 31020, distance: 1870, zones: 6 },
+      { date: "2026-11-25", score: 18400, distance: 1205, zones: 4 },
+      { date: "2026-11-24", score: 9050, distance: 640, zones: 2 },
+      { date: "2026-11-20", score: 2210, distance: 230, zones: 0 },
+    ];
     s.missions = {
       setsCompleted: 1,
       active: [
@@ -117,6 +134,7 @@ paintBackground();
 // ---------------------------------------------------------------- fake engine
 class FakeGame implements GameApi {
   state: GameState = "menu";
+  options: GameOptions | null = null;
   private listeners = new Set<(e: GameEvent) => void>();
   private timers: number[] = [];
   private sim = 0;
@@ -132,6 +150,7 @@ class FakeGame implements GameApi {
     powerups: [],
     letters: [...WORD].map(() => false),
     chaser: 0,
+    roofMetres: 0,
   };
   summary: RunSummary = {
     score: 0,
@@ -146,6 +165,7 @@ class FakeGame implements GameApi {
     roofMetres: 0,
     powerups: 0,
     wordsCompleted: 0,
+    letters: 0,
   };
 
   on(listener: (e: GameEvent) => void): () => void {
@@ -177,6 +197,15 @@ class FakeGame implements GameApi {
       this.emit({ type: "zone", zone: this.hud.zone, lap: 1, first: true });
       this.runSim();
     });
+    if (this.options?.tutorial()) {
+      // Scripted tutorial like the engine's: each prompt for two seconds, then "done".
+      const seq: TutorialAction[] = ["left", "right", "jump", "roll"];
+      seq.forEach((a, i) => {
+        this.after(4000 + i * 3000, () => this.emit({ type: "hint", action: a }));
+        this.after(6000 + i * 3000, () => this.emit({ type: "hint", action: "done" }));
+      });
+      this.after(4000 + seq.length * 3000, () => this.emit({ type: "hint", action: "complete" }));
+    }
   }
   pause(): void {
     if (this.state === "playing") this.setState("paused");
@@ -200,7 +229,8 @@ class FakeGame implements GameApi {
       lap: this.hud.lap,
       zonesCompleted: (this.hud.lap - 1) * ZONES.length + ZONES.findIndex((z) => z.id === this.hud.zone.id),
       cause,
-      roofMetres: 42,
+      roofMetres: Math.floor(this.hud.roofMetres) || 42,
+      letters: 9,
       ...(obstacle ? { obstacle } : {}),
     };
     this.setState("gameover");
@@ -246,6 +276,8 @@ class FakeGame implements GameApi {
         lap,
         powerups,
         chaser: Math.max(0, hud.chaser - dt * 0.08),
+        // Every ~20 s, spend 4 s on a roof.
+        roofMetres: hud.roofMetres + (Math.floor(dist / 280) % 2 === 1 && (dist % 280) < 60 ? hud.speed * dt : 0),
       };
       if (dist > nextPickup) {
         nextPickup = dist + 2 + Math.random() * 4;
@@ -319,6 +351,7 @@ const root = document.getElementById("ui");
 if (root) {
   const shell = createShell(root);
   const game = new FakeGame();
+  game.options = shell.gameOptions;
   shell.attach(game);
   game.bindKeys();
   const clickButton = (label: string): void => {
@@ -347,6 +380,33 @@ if (root) {
   switch (screen) {
     case "shop":
       clickButton("Tienda");
+      break;
+    case "achievements":
+      clickButton("Logros");
+      break;
+    case "records":
+      clickButton("Récords");
+      break;
+    case "hint": {
+      // Tutorial prompt: ?action=left|right|jump|roll|done|complete
+      game.hud = { ...game.hud, chaser: 0, distance: 42, zoneProgress: 0.09 };
+      game.setState("playing");
+      const action = params.get("action") ?? "jump";
+      setTimeout(() => {
+        if (action === "done" || action === "complete") {
+          game.emit({ type: "hint", action: "jump" });
+          game.emit({ type: "hint", action: action });
+        } else if (action === "left" || action === "right" || action === "jump" || action === "roll") {
+          game.emit({ type: "hint", action });
+        }
+      }, 3000);
+      break;
+    }
+    case "roof":
+      playingHud();
+      game.hud.chaser = 0.1;
+      game.setState("playing");
+      [3200, 3400, 3600, 3800].forEach((ms, i) => setTimeout(() => (game.hud = { ...game.hud, roofMetres: 100 + i * 12 }), ms));
       break;
     case "missions":
       clickButton("Misiones");
@@ -381,6 +441,27 @@ if (root) {
       const cause = params.get("cause") === "caught" ? "caught" : "crash";
       const obstacle = (params.get("obstacle") ?? "bus") as ObstacleKind;
       game.gameOver(cause, cause === "crash" ? obstacle : undefined);
+      break;
+    }
+    case "first": {
+      // First launch: the how-to opens by itself; its button (or a key) must start exactly one run.
+      let starts = 0;
+      game.on((e) => {
+        if (e.type === "state" && e.state === "playing") starts++;
+      });
+      setTimeout(() => {
+        if (params.get("key")) {
+          const code = params.get("key") ?? "Enter";
+          const opts = { code, key: code === "Space" ? " " : code, bubbles: true };
+          dispatchEvent(new KeyboardEvent("keydown", opts));
+          dispatchEvent(new KeyboardEvent("keyup", opts));
+        } else clickButton("Jugar");
+      }, 300);
+      setTimeout(() => (document.title = `state=${game.state} starts=${starts} hint=${root.querySelector(".tut .tut-label")?.textContent ?? "-"}`), 4500);
+      setTimeout(
+        () => (document.title += ` | later: tutorialPending=${String(shell.gameOptions.tutorial())} toasts=${[...root.querySelectorAll(".t-title")].map((t) => t.textContent).join(",")}`),
+        16500,
+      );
       break;
     }
     case "auto": {

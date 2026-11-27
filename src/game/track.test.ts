@@ -131,4 +131,51 @@ describe("track generator", () => {
     expect(failures).toEqual([]);
     expect(runs).toBeGreaterThan(0);
   }, 120_000);
+
+  it("opens lap 1 with the first obstacle around 45-60 m", () => {
+    for (let seed = 1; seed <= 40; seed++) {
+      const gen = new TrackGenerator(seed);
+      gen.generateUntil(300);
+      const first = Math.min(...gen.obstacles.map((o) => interval(o)[0]));
+      expect(first).toBeGreaterThanOrEqual(45);
+      expect(first).toBeLessThanOrEqual(62);
+    }
+  });
+
+  it("every zone ends with a finale and big-vehicle zones get a roof route", () => {
+    for (let seed = 1; seed <= 12; seed++) {
+      const gen = new TrackGenerator(seed * 13);
+      gen.generateUntil(LAP_LENGTH * 2);
+      for (let serial = 0; serial < ZONES.length * 2 - 1; serial++) {
+        const lap = Math.floor(serial / ZONES.length) + 1;
+        const index = serial % ZONES.length;
+        const start = zoneStartDistance(index, lap);
+        const zone = ZONES[index]!;
+        const inZone = gen.placed.filter((p) => p.start >= start && p.start < start + zone.length);
+        expect(inZone.some((p) => p.name === "finale"), `seed ${seed} ${zone.id} lap ${lap}: finale`).toBe(true);
+        if (zone.id === "valdepasillas" || zone.id === "margen-derecha") {
+          expect(inZone.some((p) => p.name === "rampRoof"), `seed ${seed} ${zone.id}: roof route`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("the tutorial is a spaced, solvable script: dodge, jump, roll, jump onto a roof", () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const gen = new TrackGenerator(seed, 0, { tutorial: true });
+      gen.generateUntil(600);
+      const steps = gen.tutorial;
+      expect(steps.map((t) => t.action).slice(1)).toEqual(["jump", "roll", "jump"]);
+      expect(["left", "right"]).toContain(steps[0]!.action);
+      for (let i = 1; i < steps.length; i++) {
+        // At least 2 s apart at the start speed (11 m/s).
+        expect(steps[i]!.front - steps[i - 1]!.end).toBeGreaterThanOrEqual(22);
+      }
+      expect(gen.tutorialEnd).toBeLessThan(230);
+      // Nothing generated inside the script.
+      const scripted = gen.obstacles.filter((o) => o.d < gen.tutorialEnd);
+      expect(scripted.length).toBe(4);
+      expect(solve(gen.obstacles, createPlayer(0), 500, { decision: 0.25, dt: 1 / 120, maxFrontier: 200 }).ok).toBe(true);
+    }
+  });
 });

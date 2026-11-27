@@ -3,6 +3,16 @@ import { POWERUPS, WORD, type HudSnapshot, type PowerupKind } from "../contracts
 import { formatInt, formatMetres } from "../meta/format";
 import { POP_SCALE, h, pop, svg } from "./dom";
 import { ICON_BELLOTA, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
+import { Minimap, zoneIndexOf } from "./minimap";
+
+/** Names that are too long for the zone card. */
+const HUD_ZONE_NAMES: Record<string, string> = { "alcazaba-palmas": "Alcazaba y Pta. de Palmas" };
+
+/** Danger vignette: off until the waiter is close (chaser > 0.3), then a smooth ramp. */
+const vignetteOpacity = (chaser: number): number => {
+  const t = Math.min(1, Math.max(0, (chaser - 0.3) / 0.6));
+  return t * t * (3 - 2 * t);
+};
 
 interface PowerupRow {
   el: HTMLElement;
@@ -22,6 +32,7 @@ const freshLast = () => ({
   progress: -1,
   letters: "",
   chaser: -1,
+  roof: -1,
 });
 
 export class Hud {
@@ -43,6 +54,13 @@ export class Hud {
   private readonly chaserFill: HTMLElement;
   private readonly chaserLabel: HTMLElement;
   private readonly flashEl: HTMLElement;
+  private readonly roofEl: HTMLElement;
+  private readonly roofNum: HTMLElement;
+  private readonly minimap = new Minimap({ className: "hud-map" });
+  /** Roof streak: metres since the runner got onto a roof, and when it last grew. */
+  private roofStreakStart = 0;
+  private roofLastGrow = -1;
+  private roofShown = false;
 
   private last = freshLast();
 
@@ -68,6 +86,8 @@ export class Hud {
     this.bellotaPill = h("div", "pill hud-bellotas", svg(ICON_BELLOTA), this.bellotasEl);
     this.multEl = h("div", "mult-badge", "×1");
 
+    this.roofNum = h("b", undefined, "0 m");
+    this.roofEl = h("div", "roof-pill", h("span", undefined, "Por los techos"), h("span", "dot", "·"), this.roofNum);
     this.vignette = h("div", "vignette");
     this.flashEl = h("div", "flash");
     this.chaserFill = h("i");
@@ -92,8 +112,9 @@ export class Hud {
         h("div", "score-label", "Puntos"),
         this.scoreEl,
         h("div", "score-row", this.multEl, this.bellotaPill),
+        this.roofEl,
       ),
-      this.chaserEl,
+      h("div", "hud-bl", h("div", "panel map-card", this.minimap.el), this.chaserEl),
     );
     this.el.hidden = true;
   }
@@ -108,6 +129,10 @@ export class Hud {
     for (const row of this.rows.values()) row.el.remove();
     this.rows.clear();
     this.lettersEl.classList.remove("complete");
+    this.roofStreakStart = 0;
+    this.roofLastGrow = -1;
+    this.roofShown = false;
+    this.roofEl.classList.remove("show");
   }
 
   render(hud: HudSnapshot): void {
@@ -137,7 +162,7 @@ export class Hud {
     }
     if (hud.zone.id !== L.zone) {
       L.zone = hud.zone.id;
-      this.zoneName.textContent = hud.zone.name;
+      this.zoneName.textContent = HUD_ZONE_NAMES[hud.zone.id] ?? hud.zone.name;
     }
     if (hud.lap !== L.lap) {
       L.lap = hud.lap;
@@ -147,6 +172,7 @@ export class Hud {
     if (progress !== L.progress) {
       L.progress = progress;
       this.zoneFill.style.transform = `scaleX(${progress})`;
+      this.minimap.update(zoneIndexOf(hud.zone.id), progress);
     }
     const letters = hud.letters.map((b) => (b ? "1" : "0")).join("");
     if (letters !== L.letters) {
@@ -159,15 +185,40 @@ export class Hud {
       L.letters = letters;
     }
     this.renderPowerups(hud);
+    this.renderRoof(hud.roofMetres);
     const chaser = Math.round(Math.min(1, Math.max(0, hud.chaser)) * 50) / 50;
     if (chaser !== L.chaser) {
       L.chaser = chaser;
-      this.vignette.style.opacity = String(Math.min(1, chaser * 1.1));
-      this.vignette.classList.toggle("hot", chaser > 0.6);
+      this.vignette.style.opacity = vignetteOpacity(chaser).toFixed(3);
+      this.vignette.classList.toggle("hot", chaser > 0.7);
       this.chaserEl.classList.toggle("show", chaser > 0.04);
       this.chaserEl.classList.toggle("hot", chaser > 0.6);
       this.chaserFill.style.transform = `scaleX(${chaser})`;
       this.chaserLabel.textContent = chaser > 0.6 ? "¡Que te pilla!" : chaser > 0.3 ? "Te pisa los talones" : "El camarero";
+    }
+  }
+
+  /** "Por los techos · 35 m" while the roof metres keep growing; hides shortly after. */
+  private renderRoof(roofMetres: number): void {
+    const now = performance.now();
+    const roof = Math.floor(Number.isFinite(roofMetres) ? roofMetres : 0);
+    const L = this.last;
+    if (L.roof < 0 || roof < L.roof) {
+      L.roof = roof;
+      return;
+    }
+    if (roof > L.roof) {
+      if (!this.roofShown) this.roofStreakStart = L.roof;
+      this.roofLastGrow = now;
+      L.roof = roof;
+      this.roofNum.textContent = formatMetres(roof - this.roofStreakStart);
+      if (!this.roofShown) {
+        this.roofShown = true;
+        this.roofEl.classList.add("show");
+      }
+    } else if (this.roofShown && now - this.roofLastGrow > 900) {
+      this.roofShown = false;
+      this.roofEl.classList.remove("show");
     }
   }
 
@@ -215,6 +266,10 @@ export class Hud {
 
   wordComplete(): void {
     this.lettersEl.classList.remove("complete");
+    this.roofStreakStart = 0;
+    this.roofLastGrow = -1;
+    this.roofShown = false;
+    this.roofEl.classList.remove("show");
     void this.lettersEl.offsetWidth;
     this.lettersEl.classList.add("complete");
     window.setTimeout(() => this.lettersEl.classList.remove("complete"), 1600);

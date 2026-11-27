@@ -11,9 +11,10 @@
  *   17      narrow street out towards the Alcazaba
  */
 import { ayuntamiento, catedral, plazaAltaRow } from "../landmarks/casco";
-import { FAR, SOLID } from "../materials";
+import { xf } from "../geom";
+import { FAR, SOLID, WATER } from "../materials";
 import {
-  L, RW, building, bunting, darken, flat, groundQuad, lampClassic, lampWall, orangeTree, pavement, person, planeTree, road, type Seg, type Side,
+  L, RW, bench, building, bunting, pigeons, storkNest, terraceSet, darken, flat, groundQuad, lampClassic, lampWall, orangeTree, pavement, person, planeTree, road, type Seg, type Side,
 } from "./common";
 
 const HOUSES = [0xf7f4ee, 0xf7f4ee, 0xf6f1e4, 0xf3dc95, 0xeec07a, 0xf0b9a6, 0xc9dde6, 0xf7f4ee];
@@ -87,7 +88,7 @@ function plazaEspana(s: Seg): void {
     houses(s, 1, 13, 0, -L);
     // houses closing the square on the left
     houses(s, -1, 24, -2, -38);
-    for (let k = 0; k < 4; k++) orangeTree(s, -r.range(7, 14), -6 - k * 9);
+    for (const z of [-6, -14, -31, -38]) orangeTree(s, -r.range(7, 10), z);
   }
   if (i === 4) {
     catedral(b, -22, -12);
@@ -111,7 +112,31 @@ function plazaEspana(s: Seg): void {
     lampClassic(s, sx, 5.0, sx > 0 ? -8 : -28, 4.2, 0.15);
     lampClassic(s, sx, 5.0, sx > 0 ? -28 : -8, 4.2, 0.15);
   }
-  for (let k = 0; k < 5; k++) person(s, (r.chance(0.5) ? -1 : 1) * r.range(5, 11), -r.range(2, 38), r.range(0, 6));
+  // granite banding in the paving
+  for (let x = -6; x > -27; x -= 5) b.quad(xf(x, 0.157, -L / 2, 0.35, L, 1, -Math.PI / 2, 0, 0), 0xa49a88, FAR);
+  for (let z = -5; z > -L; z -= 10) b.quad(xf(-15.5, 0.157, z, 21, 0.35, 1, -Math.PI / 2, 0, 0), 0xa49a88, FAR);
+  // benches, pigeons and people
+  for (const z of [-12, -26]) {
+    bench(s, -1, 6.4, z, 0x6b4a2a, Math.PI);
+    if (r.chance(0.7)) person(s, -6.5, z + 0.3, -Math.PI / 2, true);
+  }
+  pigeons(s, -12, -16 - r.range(0, 8), 7);
+  for (let k = 0; k < 6; k++) person(s, (r.chance(0.6) ? -1 : 1) * r.range(5, 11), -r.range(2, 38), r.range(0, 6), false, r.chance(0.15));
+  if (i === 3) {
+    // small fountain in the square
+    b.cyl(-15, 0.15, -22, 2.6, 0.55, 0xd8cdb5, 10, SOLID);
+    b.cyl(-15, 0.6, -22, 2.35, 0.08, 0x5aa0aa, 10, WATER);
+    b.cyl(-15, 0.15, -22, 0.35, 1.6, 0xd8cdb5, 8, SOLID);
+    b.cyl(-15, 1.75, -22, 0.8, 0.15, 0xd8cdb5, 8, SOLID);
+    b.cone(-15, 1.9, -22, 0.2, 1.0, 0xdff4ff, 6, WATER);
+    terraceSet(s, 9, -10, 0x7a1f2b);
+    terraceSet(s, 9, -28, 0xf4f1ea);
+  }
+  if (i === 4) {
+    // white storks nesting on the cathedral tower and the town hall gable
+    storkNest(b, -22 + 6, 34 + 3.6, -12 + 6, 0.6, true);
+    storkNest(b, 14, 18.5, -20, 2.0);
+  }
 }
 
 function plazaAlta(s: Seg): void {
@@ -135,7 +160,9 @@ function plazaAlta(s: Seg): void {
   // square furniture: classic lamps, benches, a few orange trees and people
   for (const z of [-10, -30]) lampClassic(s, -1, 12, z, 4.2, 0.15);
   for (const z of [-5, -20, -35]) orangeTree(s, -24, z);
-  for (let k = 0; k < 6; k++) person(s, -r.range(8, 30), -r.range(4, 36), r.range(0, 6));
+  for (let k = 0; k < 6; k++) person(s, -r.range(8, 30), -r.range(4, 36), r.range(0, 6), false, r.chance(0.15));
+  pigeons(s, -18, -r.range(8, 30), 8);
+  if (i === 15) storkNest(b, -39, 11.2, -20, 0.8, true);
   b.boxB(-17, 0.15, -20, 0.5, 0.45, 3, 0xd8cdb5, SOLID);
   lampWall(s, 1, 6.4, -20, 4.9);
   // festive bunting across the square entrance

@@ -1,5 +1,5 @@
 /** Music player: a lookahead step scheduler that plays the song data in song.ts. */
-import { BASE_BPM, BASS, CHORDS, CLAPS, KICK, MELODY, MENU_BPM, PROGRESSION, SHAKER, STRUM } from "./song";
+import { BASE_BPM, BASS, CASTANETS, CHORDS, CLAPS, KICK, MELODY, MENU_BPM, PROGRESSION, SHAKER, STRUM, ZONE_VARIANTS, type ZoneVariant } from "./song";
 import { midiToFreq, noise, noteToMidi, tone } from "./synth";
 
 export type MusicMode = "off" | "menu" | "play" | "paused";
@@ -54,6 +54,8 @@ export class Music {
   private targetBpm = MENU_BPM;
   private powerup = false;
   private enabled = true;
+  private variant: ZoneVariant = ZONE_VARIANTS[0] ?? { transpose: 0, lead: "square", castanets: false };
+  private pendingVariant: ZoneVariant | null = null;
 
   constructor(ctx: AudioContext, out: AudioNode) {
     this.ctx = ctx;
@@ -105,8 +107,21 @@ export class Music {
     this.targetBpm = mode === "play" ? BASE_BPM : MENU_BPM;
     this.applyLevels(0.25);
     if (!this.timer) {
+      // Every start (first run, or after the game-over sting) begins at the top of the song.
+      this.step = 0;
+      this.bpm = this.targetBpm;
       this.nextTime = now + 0.08;
       this.timer = setInterval(() => this.tick(), TICK_MS);
+    }
+  }
+
+  /** Zone variation, applied at the next bar line. Index into ZONES; -1 = menu (plain). */
+  setZone(index: number): void {
+    const v = ZONE_VARIANTS[Math.max(0, index) % ZONE_VARIANTS.length] ?? null;
+    if (v && v !== this.variant) this.pendingVariant = v;
+    if (!this.timer && v) {
+      this.variant = v;
+      this.pendingVariant = null;
     }
   }
 
@@ -179,6 +194,12 @@ export class Music {
     const ctx = this.ctx;
     const bar = Math.floor(step / STEPS_PER_BAR);
     const s = step % STEPS_PER_BAR;
+    if (s === 0 && this.pendingVariant) {
+      this.variant = this.pendingVariant;
+      this.pendingVariant = null;
+    }
+    const v = this.variant;
+    const tr = v.transpose;
     const chord = CHORDS[PROGRESSION[bar] ?? "Am"];
     const stepDur = 60 / this.bpm / 4;
     const L = this.layers;
@@ -190,6 +211,11 @@ export class Music {
     if (clap) {
       for (let i = 0; i < 3; i++) noise(ctx, L.drums, t + i * 0.009, { gain: 0.16 * clap, decay: 0.07 + i * 0.03, freq: 1400, q: 0.9 });
     }
+    const cast = v.castanets && this.mode === "play" ? (CASTANETS[s] ?? 0) : 0;
+    if (cast) {
+      noise(ctx, L.drums, t, { gain: 0.07 * cast, decay: 0.025, filter: "bandpass", freq: 4200, q: 3 });
+      noise(ctx, L.drums, t + stepDur / 2, { gain: 0.05 * cast, decay: 0.02, filter: "bandpass", freq: 4600, q: 3 });
+    }
     const shaker = SHAKER[s] ?? 0;
     if (shaker) noise(ctx, L.drums, t, { gain: 0.045 * shaker, decay: 0.035, filter: "highpass", freq: 7500 });
 
@@ -197,7 +223,7 @@ export class Music {
     if (strum) {
       chord.notes.forEach((midi, i) => {
         const when = t + i * 0.011;
-        const f = midiToFreq(midi);
+        const f = midiToFreq(midi + tr);
         tone(ctx, L.chords, when, { type: "triangle", freq: f, gain: 0.07 * strum, decay: 0.24 });
         tone(ctx, L.chords, when, { type: "sawtooth", freq: f, gain: 0.022 * strum, decay: 0.12, lowpass: 2200 });
       });
@@ -207,7 +233,7 @@ export class Music {
       if (bStep !== s) continue;
       tone(ctx, L.bass, t, {
         type: "sawtooth",
-        freq: midiToFreq(chord.root + interval),
+        freq: midiToFreq(chord.root + interval + tr),
         gain: 0.2,
         hold: len * stepDur * 0.5,
         decay: len * stepDur * 0.6,
@@ -217,15 +243,16 @@ export class Music {
 
     for (const ev of LEAD_BARS[bar] ?? []) {
       if (ev.step !== s) continue;
-      const f = midiToFreq(ev.midi);
+      const f = midiToFreq(ev.midi + tr);
       const hold = Math.max(0.02, ev.len * stepDur * 0.7);
-      tone(ctx, L.lead, t, { type: "square", freq: f, gain: 0.05, attack: 0.008, hold, decay: 0.12, lowpass: 2800 });
+      const leadGain = v.lead === "sawtooth" ? 0.035 : v.lead === "triangle" ? 0.08 : 0.05;
+      tone(ctx, L.lead, t, { type: v.lead, freq: f, gain: leadGain, attack: 0.008, hold, decay: 0.12, lowpass: 2800 });
       tone(ctx, L.lead, t, { type: "triangle", freq: f * 2, gain: 0.025, attack: 0.008, hold, decay: 0.1, detune: 6 });
     }
 
     // Power-up layer: a sparkly arpeggio over the chord, one octave up.
     if (this.powerup && this.mode === "play") {
-      const midi = (chord.notes[s % chord.notes.length] ?? 60) + 12 + (s >= 8 ? 12 : 0);
+      const midi = (chord.notes[s % chord.notes.length] ?? 60) + 12 + (s >= 8 ? 12 : 0) + tr;
       tone(ctx, L.extra, t, { type: "square", freq: midiToFreq(midi), gain: 0.022, decay: 0.07, lowpass: 5000 });
     }
   }

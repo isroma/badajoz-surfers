@@ -87,3 +87,8 @@ export const GLYPH_CHECK = glyph(`<path d="M5 12.5 L10 17 L19 7"/>`);
 export const GLYPH_STAR = glyph(`<path d="M12 3.5 L14.6 9 L20.5 9.6 L16 13.6 L17.3 19.5 L12 16.5 L6.7 19.5 L8 13.6 L3.5 9.6 L9.4 9 Z" fill="currentColor"/>`);
 export const GLYPH_TROPHY = glyph(`<path d="M7 4 H17 V9 A5 5 0 0 1 7 9 Z" fill="currentColor"/><path d="M7 6 H4 V8 A3 3 0 0 0 7 11 M17 6 H20 V8 A3 3 0 0 1 17 11 M12 14 V18 M8 20 H16"/>`);
 export const GLYPH_RUN = glyph(`<circle cx="14.5" cy="4.5" r="2" fill="currentColor"/><path d="M6 12 L9.5 8.5 L14 9.5 L12 14 L16 17 L15 21 M12 14 L8.5 17 L4.5 17 M14 9.5 L17 12.5 L20 12"/>`);
+export const GLYPH_MEDAL = glyph(`<path d="M8 3 L10.5 9 M16 3 L13.5 9"/><circle cx="12" cy="15" r="5.5" fill="currentColor"/><path d="M12 12.3 L12.9 14.2 L15 14.4 L13.4 15.8 L13.9 17.8 L12 16.8 L10.1 17.8 L10.6 15.8 L9 14.4 L11.1 14.2 Z" fill="#fff4dc" stroke="none"/>`);
+export const GLYPH_LIST = glyph(`<path d="M9 6 H20 M9 12 H20 M9 18 H20"/><circle cx="4.5" cy="6" r="1.2" fill="currentColor"/><circle cx="4.5" cy="12" r="1.2" fill="currentColor"/><circle cx="4.5" cy="18" r="1.2" fill="currentColor"/>`);
+export const GLYPH_CALENDAR = glyph(`<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10 H20.5 M8 3 V7 M16 3 V7"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/>`);
+export const GLYPH_LOCK = glyph(`<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5 V8 A4 4 0 0 1 16 8 V10.5"/>`);
+export const GLYPH_MAP = glyph(`<path d="M3 6 L9 4 L15 6 L21 4 V18 L15 20 L9 18 L3 20 Z M9 4 V18 M15 6 V20"/>`);

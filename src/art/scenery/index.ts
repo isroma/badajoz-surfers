@@ -5,7 +5,8 @@ import { Builder } from "../geom";
 import { hashInts, hashStr, makeRng } from "../rng";
 import { buildAlcazabaPalmas } from "./alcazaba-palmas";
 import { buildCascoAntiguo } from "./casco-antiguo";
-import type { Seg } from "./common";
+import { JUNCTION, RW, junction, type Seg } from "./common";
+import type { SurfaceName } from "../text";
 import { buildMargenDerecha } from "./margen-derecha";
 import { buildPuenteReal } from "./puente-real";
 import { buildSanFrancisco } from "./san-francisco";
@@ -50,6 +51,16 @@ const ATMOSPHERES: Record<ZoneId, Atmosphere> = {
   },
 };
 
+/** Street sign and pavement used by each zone's opening crossroads. */
+const JUNCTIONS: Record<ZoneId, { plaque: string; surface: SurfaceName; tint: number }> = {
+  "puente-real": { plaque: "c-puente", surface: "paving", tint: 0xe6e0d4 },
+  valdepasillas: { plaque: "c-sinforiano", surface: "paving", tint: 0xeee6d6 },
+  "san-francisco": { plaque: "c-sanfrancisco", surface: "paving", tint: 0xece4d2 },
+  "casco-antiguo": { plaque: "c-casco", surface: "flagstone", tint: 0xe8dfcc },
+  "alcazaba-palmas": { plaque: "c-alcazaba", surface: "flagstone", tint: 0xe2d3bb },
+  "margen-derecha": { plaque: "c-elvas", surface: "paving", tint: 0xd8d2c6 },
+};
+
 const BUILDERS: Record<ZoneId, (s: Seg) => void> = {
   "puente-real": buildPuenteReal,
   valdepasillas: buildValdepasillas,
@@ -74,7 +85,15 @@ export function createZoneScenery(zone: ZoneId): ZoneScenery {
         lap,
         night: zone === "margen-derecha",
       };
+      // every zone opens with the same crossroads, so handovers read as crossing a street
+      const opening = index === 0;
+      if (opening) b.clip = { z: -JUNCTION, ax: RW + 0.3 };
       BUILDERS[zone](s);
+      b.clip = null;
+      if (opening) {
+        const j = JUNCTIONS[zone];
+        junction(s, j.plaque, j.surface, j.tint);
+      }
       const g = b.build(false);
       g.name = `segment:${zone}:${index}`;
       return g;

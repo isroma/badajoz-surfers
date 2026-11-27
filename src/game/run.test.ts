@@ -4,7 +4,7 @@ import { Bot } from "./bot";
 import { Run, type RunFx } from "./run";
 import { TICK } from "./tuning";
 
-function makeRun(seed: number): { run: Run; events: GameEvent[]; fx: RunFx[] } {
+function makeRun(seed: number, tutorial = false): { run: Run; events: GameEvent[]; fx: RunFx[] } {
   const events: GameEvent[] = [];
   const fx: RunFx[] = [];
   const run = new Run({
@@ -13,6 +13,7 @@ function makeRun(seed: number): { run: Run; events: GameEvent[]; fx: RunFx[] } {
     baseMultiplier: () => 1,
     emit: (e) => events.push(e),
     fx: (f) => fx.push(f),
+    tutorial,
   });
   run.begin();
   return { run, events, fx };
@@ -117,5 +118,44 @@ describe("run", () => {
     expect(events.some((e) => e.type === "word-complete")).toBe(true);
     expect(run.lettersCollected).toBe(0);
     expect(run.summary().wordsCompleted).toBe(1);
+  });
+
+  it("tutorial: prompts each step, forgives mistakes and hands over to normal play", () => {
+    const { run, events } = makeRun(8, true);
+    let slowed = false;
+    const end = run.gen.tutorialEnd;
+    for (let i = 0; i < 40 / TICK && run.phase !== "over" && run.player.p < end + 3; i++) {
+      run.tick(TICK);
+      if (run.timeScale < 0.7) slowed = true;
+    }
+    // No input at all: every obstacle is stumbled through, the run goes on.
+    expect(run.phase).toBe("running");
+    expect(run.player.p).toBeGreaterThan(end);
+    expect(slowed).toBe(true);
+    const hints = events.flatMap((e) => (e.type === "hint" ? [e.action] : []));
+    expect(hints.slice(1)).toEqual(["done", "jump", "done", "roll", "done", "jump", "done", "complete"]);
+    expect(events.some((e) => e.type === "stumble" || e.type === "crash" || e.type === "caught")).toBe(false);
+    expect(run.timeScale).toBe(1);
+  });
+
+  it("tutorial: the autopilot performs each prompted action", () => {
+    const { run, events } = makeRun(9, true);
+    const bot = new Bot();
+    for (let i = 0; i < 40 / TICK && run.phase !== "over" && run.player.p < 260; i++) {
+      bot.update(run);
+      run.tick(TICK);
+    }
+    expect(run.player.p).toBeGreaterThan(250);
+    expect(events.some((e) => e.type === "hint" && e.action === "complete")).toBe(true);
+    expect(run.jumps).toBeGreaterThanOrEqual(2);
+    expect(run.rolls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("resume countdowns are flagged", () => {
+    const { run, events } = startRunning(10);
+    run.startCountdown(false, true);
+    ticks(run, 2);
+    const resumed = events.filter((e) => e.type === "countdown" && e.resume === true).length;
+    expect(resumed).toBe(4);
   });
 });

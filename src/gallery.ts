@@ -278,15 +278,27 @@ function showZone(): void {
   sky.setColors(new THREE.Color(scenery.atmosphere.skyTop), new THREE.Color(scenery.atmosphere.skyBottom));
   scene.add(sky.mesh);
   const lines: string[] = [`${zone} segments ${from}..${from + n - 1} of ${count}`];
-  for (let i = 0; i < n; i++) {
-    const idx = (from + i) % count;
-    const t0 = performance.now();
-    const seg = scenery.buildSegment(idx, count, lap);
-    const ms = performance.now() - t0;
-    seg.position.z = -i * SEGMENT_LENGTH;
-    scene.add(seg);
-    const st = countStats(seg);
-    lines.push(`seg ${idx}: draws ${st.draws} tris ${st.tris} build ${ms.toFixed(1)}ms`);
+  const chain: { id: ZoneId; from: number; n: number }[] = [{ id: zone, from, n }];
+  const zone2 = params.get("zone2") as ZoneId | null;
+  if (zone2) chain.push({ id: zone2, from: Number(params.get("from2") ?? "0"), n: Number(params.get("n2") ?? "4") });
+  let slot = 0;
+  for (const c of chain) {
+    const zd = ZONES.find((z) => z.id === c.id);
+    if (!zd) continue;
+    const cnt = zd.length / SEGMENT_LENGTH;
+    const sc = c.id === zone ? scenery : art.createZoneScenery(c.id);
+    for (let i = 0; i < c.n; i++) {
+      const raw = c.from + i;
+      const idx = raw < 0 ? raw : raw % cnt;
+      const t0 = performance.now();
+      const seg = sc.buildSegment(idx, cnt, lap);
+      const ms = performance.now() - t0;
+      seg.position.z = -slot * SEGMENT_LENGTH;
+      slot++;
+      scene.add(seg);
+      const st = countStats(seg);
+      lines.push(`${c.id} ${idx}: draws ${st.draws} tris ${st.tris} build ${ms.toFixed(1)}ms`);
+    }
   }
   const runner = params.get("runner") !== "0" ? art.createRunner() : null;
   if (runner) {
@@ -330,7 +342,7 @@ function showZone(): void {
   }
   camera.fov = 62;
   camera.updateProjectionMatrix();
-  const total = n * SEGMENT_LENGTH;
+  const total = slot * SEGMENT_LENGTH;
   updaters.push((dt) => {
     if (runner) runner.update(dt, "run", 15);
     if (fly) {
@@ -360,7 +372,7 @@ function showCheck(): void {
   for (const z of ZONES) {
     const scenery = art.createZoneScenery(z.id);
     const count = z.length / SEGMENT_LENGTH;
-    for (let i = 0; i < count; i++) {
+    for (let i = z.id === "puente-real" ? -4 : 0; i < count; i++) {
       const seg = scenery.buildSegment(i, count, 1);
       let bad = 0;
       let example = "";
@@ -424,7 +436,56 @@ function showCheck(): void {
   label.style.fontSize = "16px";
 }
 
+/** Build, render and release many segments (plus obstacles/pickups/skies) and compare GPU memory. */
+function showLeak(): void {
+  camera.position.set(0, 3.2, 0);
+  camera.lookAt(0, 1.6, -12);
+  const zones = ZONES.map((z) => ({ id: z.id, count: z.length / SEGMENT_LENGTH, scenery: art.createZoneScenery(z.id) }));
+  const kinds = Object.keys(OBSTACLE_DEFS) as ObstacleKind[];
+  const churn = (n: number): void => {
+    for (let k = 0; k < n; k++) {
+      const z = zones[k % zones.length];
+      if (!z) continue;
+      const idx = z.id === "puente-real" ? (k % (z.count + 4)) - 4 : k % z.count;
+      const seg = z.scenery.buildSegment(idx, z.count, 1 + (k % 3));
+      seg.position.z = -20;
+      scene.add(seg);
+      const kind = kinds[k % kinds.length] ?? "valla";
+      const o = art.createObstacle(kind, k, k % 2 === 0);
+      o.position.z = -15;
+      scene.add(o);
+      const p = art.createPickup(k % 2 ? "bellota" : "letra", "BADAJOZ"[k % 7]);
+      p.root.position.z = -10;
+      scene.add(p.root);
+      const sky = art.createSkyDome();
+      scene.add(sky.mesh);
+      renderer.render(scene, camera);
+      for (const obj of [seg, o, p.root, sky.mesh]) {
+        scene.remove(obj);
+        art.release(obj);
+      }
+    }
+  };
+  churn(zones.reduce((a, z) => a + z.count + 4, 0)); // warm every shared cache once
+  renderer.render(scene, camera);
+  const before = { ...renderer.info.memory };
+  churn(200);
+  renderer.render(scene, camera);
+  const after = { ...renderer.info.memory };
+  const ok = after.geometries === before.geometries && after.textures === before.textures;
+  label.textContent = [
+    "leak test: 200 segments + obstacles + pickups + skies built, rendered, released",
+    `baseline  geometries ${before.geometries}  textures ${before.textures}`,
+    `after 200 geometries ${after.geometries}  textures ${after.textures}`,
+    ok ? "OK: back to baseline" : "LEAK",
+  ].join("\n");
+  label.style.fontSize = "16px";
+}
+
 switch (view) {
+  case "leak":
+    showLeak();
+    break;
   case "check":
     showCheck();
     break;

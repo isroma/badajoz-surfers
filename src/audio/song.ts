@@ -70,3 +70,25 @@ export const BASS: readonly (readonly [number, number, number])[] = [
 
 export const BASE_BPM = 112;
 export const MENU_BPM = 96;
+
+/**
+ * A light variation per zone so the journey is audible: the loop is transposed, the lead
+ * changes timbre and some zones add castanets.
+ */
+export interface ZoneVariant {
+  transpose: number;
+  lead: OscillatorType;
+  castanets: boolean;
+}
+
+export const ZONE_VARIANTS: readonly ZoneVariant[] = [
+  { transpose: 0, lead: "square", castanets: false }, // Puente Real
+  { transpose: 2, lead: "triangle", castanets: false }, // Valdepasillas
+  { transpose: -2, lead: "square", castanets: true }, // San Francisco
+  { transpose: 0, lead: "sawtooth", castanets: true }, // Casco Antiguo
+  { transpose: 3, lead: "square", castanets: false }, // Alcazaba y Puerta de Palmas
+  { transpose: -3, lead: "triangle", castanets: true }, // Margen derecha
+];
+
+/** Castanet rattle: a quick roll into the backbeat. */
+export const CASTANETS: Pattern = [0, 0, 0.5, 0.7, 0, 0, 0, 0, 0, 0, 0.5, 0.7, 0, 0, 0, 0];

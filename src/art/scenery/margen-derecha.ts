@@ -6,13 +6,14 @@
  *   5..7     Universidad de Extremadura campus (left)
  *   9..10    retail park: big-box stores and car parks (right)
  *   11..13   riverside park with stone pines (left), the Guadiana beyond
- *   14..15   the Torre de Caja Badajoz and the Puente Real pylon rising ahead: the loop closes
+ *   15       the Puente Real pylon straight ahead and the Torre de Caja Badajoz to the right, placed
+ *            where puente-real has them: the loop closes
  */
 import { pylon, torreCaja } from "../landmarks/puente-real";
-import { xf } from "../geom";
+import { PYLON_SEG, TOWER_X, TOWER_Z } from "./puente-real";
 import { FAR, GLASS, GLOW, SOLID, WATER } from "../materials";
 import {
-  L, RW, building, farBlock, flat, groundQuad, lampModern, pavement, pine, planeTree, shrub, road, type Seg, type Side,
+  L, RW, building, farBlock, flat, groundQuad, lampModern, pavement, person, pine, planeTree, shrub, road, type Seg, type Side,
 } from "./common";
 
 const MODERN = [0xe9e6df, 0xd9d4ca, 0xc9b79a, 0xf2efe8, 0xb5a08a];
@@ -28,6 +29,16 @@ function verge(s: Seg, side: Side): void {
   flat(s, side, 18, 21, 0.15, 0xcfc8ba);
   for (let k = 0; k < 4; k++) shrub(s, side * r.range(7.5, 11), -r.range(2, 38), r.range(0.6, 1.0), 0.12, 0x5a8a3a);
   for (const z of [-8, -28]) planeTree(s, side * 9.5, z + (side > 0 ? 6 : 0), r.range(0.8, 0.95), 0.12);
+  // cars parked along the service road, well away from the carriageway
+  for (let k = 0; k < 6; k++) {
+    if (!r.chance(0.55)) continue;
+    const z = -3 - k * 6.2;
+    const x = side * 13.1;
+    b.boxB(x, 0.1, z, 1.75, 0.7, 4.1, r.pick([0xc0392b, 0x2e86de, 0xecf0f1, 0x34495e, 0x95a5a6, 0x1b1b1b, 0xf1c40f]), FAR);
+    b.boxB(x, 0.8, z + 0.2, 1.55, 0.55, 2.2, 0x3a4a5a, FAR);
+    b.box(x, 0.55, z + 2.06, 1.2, 0.12, 0.04, 0xe0141e, GLOW);
+  }
+  for (let k = 0; k < 2; k++) person(s, side * r.range(4.8, 6), -r.range(2, 38), r.chance(0.5) ? 0 : Math.PI, false, r.chance(0.2));
   // tall twin-arm lamps on the verge
   for (const z of side > 0 ? [-2, -22] : [-12, -32]) lampModern(s, side, 6.6, z, 10);
   for (const z of side > 0 ? [-2, -22] : [-12, -32]) {
@@ -171,11 +182,11 @@ export function buildMargenDerecha(s: Seg): void {
     b.boxB(5.0, 0.15, -3, 0.08, 3.0, 0.08, 0x555555, SOLID);
     b.sign("c-elvas", 5.0, 2.9, -3, 0.5, -Math.PI / 2);
   }
-  // the loop closes: the glass tower and the white pylon rise ahead in the dusk haze
-  if (i === 14) torreCaja(b, 62, -140, 0, true);
-  if (i === 15) {
-    b.push(xf(-48, 0, 0));
-    pylon(b, -150, -12, FAR);
-    b.pop();
+  // the loop closes: the white pylon straight ahead and the glass tower to the right, exactly
+  // where puente-real draws them (slim stand-ins hidden inside the real ones once those load)
+  if (i === s.count - 1) {
+    const zr = -L; // puente-real segment 0 starts where this segment ends
+    pylon(b, zr - PYLON_SEG * L - 20, -13, FAR, true);
+    torreCaja(b, TOWER_X, zr - L + TOWER_Z, 0.1, true, FAR, true);
   }
 }

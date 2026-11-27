@@ -24,7 +24,9 @@ export type SfxName =
   | "hover"
   | "purchase"
   | "denied"
-  | "mission";
+  | "mission"
+  | "hint"
+  | "hintDone";
 
 type Ctx = BaseAudioContext;
 type Player = (ctx: Ctx, out: AudioNode, t: number, arg: number) => void;
@@ -147,6 +149,14 @@ export const SFX: Record<SfxName, Player> = {
   denied: (c, o, t) => {
     tone(c, o, t, { type: "square", freq: 180, gain: 0.05, decay: 0.08, lowpass: 1200 });
     tone(c, o, t + 0.1, { type: "square", freq: 150, gain: 0.05, decay: 0.12, lowpass: 1200 });
+  },
+  hint: (c, o, t) => {
+    tone(c, o, t, { type: "triangle", freq: n(81), gain: 0.07, decay: 0.12 });
+    tone(c, o, t + 0.11, { type: "triangle", freq: n(81), gain: 0.07, decay: 0.16 });
+  },
+  hintDone: (c, o, t) => {
+    tone(c, o, t, { type: "square", freq: n(79), gain: 0.05, decay: 0.07, lowpass: 4000 });
+    tone(c, o, t + 0.07, { type: "square", freq: n(86), gain: 0.05, decay: 0.16, lowpass: 4000 });
   },
   mission: (c, o, t) => {
     [72, 76, 79, 84, 88].forEach((m, i) => tone(c, o, t + i * 0.07, { type: "triangle", freq: n(m), gain: 0.08, decay: 0.15 }));

@@ -61,7 +61,7 @@ const WAITER: Palette = {
 // Part geometry (cached per character kind)
 // ---------------------------------------------------------------------------
 
-type PartName = "pelvis" | "torso" | "head" | "upperArmL" | "upperArmR" | "forearmL" | "forearmR" | "thigh" | "shin" | "apron" | "scooter";
+type PartName = "pelvis" | "torso" | "head" | "upperArmL" | "upperArmR" | "forearmL" | "forearmR" | "thigh" | "shin" | "apron" | "apronLow" | "scooter";
 
 const partCache = new Map<string, THREE.Group>();
 
@@ -222,9 +222,15 @@ function buildPart(b: Builder, kind: Kind, name: PartName): void {
       break;
     }
     case "apron": {
-      // long white bistro apron hanging from the waist (pivot at the waist front)
-      b.add(T.box, xf(0, -0.33, -0.02, 0.44, 0.7, 0.025), 0xf8f6ef, SKIN);
-      b.box(0, -0.67, -0.02, 0.44, 0.03, 0.03, 0xe6e1d3, SKIN);
+      // long white bistro apron, upper panel (pivot at the waist front), slightly rounded
+      b.add(T.box, xf(0, -0.16, -0.02, 0.42, 0.34, 0.022), 0xf8f6ef, SKIN);
+      b.add(T.box, xf(0.1, -0.2, -0.035, 0.12, 0.1, 0.01), 0xeeeae0, SKIN); // pocket
+      break;
+    }
+    case "apronLow": {
+      // lower panel, hinged at the upper panel's hem; flares a little as it swings
+      b.add(T.box, xf(0, -0.15, -0.02, 0.44, 0.3, 0.02), 0xf8f6ef, SKIN);
+      b.box(0, -0.29, -0.02, 0.44, 0.025, 0.028, 0xe6e1d3, SKIN);
       break;
     }
     case "scooter": {
@@ -467,6 +473,7 @@ interface Rig {
   knL: THREE.Group;
   knR: THREE.Group;
   apron: THREE.Group | null;
+  apronLow: THREE.Group | null;
 }
 
 function joint(parent: THREE.Object3D, x: number, y: number, z: number, ...meshes: THREE.Object3D[]): THREE.Group {
@@ -492,7 +499,8 @@ function buildRig(kind: Kind, root: THREE.Group): Rig {
   const knL = joint(thL, 0, -THIGH, 0, part(kind, "shin"));
   const knR = joint(thR, 0, -THIGH, 0, part(kind, "shin"));
   const apron = kind === "waiter" ? joint(hips, 0, 0.08, -0.17, part(kind, "apron")) : null;
-  return { lift, spin, hips, torso, head, shL, shR, elL, elR, thL, thR, knL, knR, apron };
+  const apronLow = apron ? joint(apron, 0, -0.33, 0, part(kind, "apronLow")) : null;
+  return { lift, spin, hips, torso, head, shL, shR, elL, elR, thL, thR, knL, knR, apron, apronLow };
 }
 
 function applyPose(r: Rig, p: Pose): void {
@@ -509,7 +517,12 @@ function applyPose(r: Rig, p: Pose): void {
   r.thR.rotation.set(p.thRX, 0, p.thRZ, "XYZ");
   r.knL.rotation.set(-p.knL, 0, 0);
   r.knR.rotation.set(-p.knR, 0, 0);
-  if (r.apron) r.apron.rotation.x = Math.max(0, p.thLX, p.thRX) * 0.85;
+  if (r.apron) {
+    const fwd = Math.max(0, p.thLX, p.thRX);
+    r.apron.rotation.x = fwd * 0.7;
+    // the hem lags behind and folds back over the shin as the knee comes up
+    if (r.apronLow) r.apronLow.rotation.x = fwd * 0.3 - 0.1 - Math.max(0, p.knL, p.knR) * 0.15;
+  }
 }
 
 function shadows(root: THREE.Object3D): void {

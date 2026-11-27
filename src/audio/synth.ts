@@ -57,6 +57,12 @@ export function tone(ctx: BaseAudioContext, out: AudioNode, when: number, o: Ton
   g.connect(out);
   osc.start(when);
   osc.stop(end + o.decay * 0.6 + 0.02);
+  // Release the whole voice once it has played, so nothing accumulates over a long session.
+  osc.onended = () => {
+    osc.disconnect();
+    if (node !== osc) node.disconnect();
+    g.disconnect();
+  };
 }
 
 let noiseBuffer: AudioBuffer | null = null;
@@ -102,4 +108,9 @@ export function noise(ctx: BaseAudioContext, out: AudioNode, when: number, o: No
   // Random offset so consecutive bursts don't sound identical.
   src.start(when, Math.random() * 0.5);
   src.stop(when + attack + o.decay * 1.6 + 0.02);
+  src.onended = () => {
+    src.disconnect();
+    f.disconnect();
+    g.disconnect();
+  };
 }

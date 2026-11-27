@@ -7,7 +7,7 @@
  */
 import { GLOW, SOLID, WATER } from "../materials";
 import {
-  L, RW, bench, bin, building, busShelter, farBlock, flat, lampModern, palm, pavement, person, planeTree, road, type Seg, type Side,
+  L, RW, bench, bin, building, pigeons, busShelter, farBlock, flat, lampModern, palm, pavement, person, planeTree, road, type Seg, type Side,
 } from "./common";
 
 const PALETTE = [0xb5653a, 0xd9a15b, 0xeadfc8, 0xf2efe8, 0xe39a7a, 0xcf8a52, 0xe8d3a8];
@@ -63,7 +63,8 @@ function fountainPlaza(s: Seg): void {
     bench(s, -1, -(fx + Math.cos(a) * 11), fz + Math.sin(a) * 11, 0x7a5230, -a);
     palm(s, fx + Math.cos(a + 0.5) * 14, fz + Math.sin(a + 0.5) * 14, r.range(8, 11), 0.12);
   }
-  for (let k = 0; k < 5; k++) person(s, fx + r.range(-12, 12), fz + r.range(-14, 14), r.range(0, 6));
+  for (let k = 0; k < 5; k++) person(s, fx + r.range(-12, 12), fz + r.range(-14, 14), r.range(0, 6), false, r.chance(0.2));
+  pigeons(s, fx + 9, fz + 3, 8, 0.12);
   // buildings set back behind the plaza
   farBlock(s, -55, -20, 16, 38, 30, r.pick(PALETTE));
 }

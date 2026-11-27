@@ -1,20 +1,26 @@
 /**
  * Zone 1, Puente Real (12 segments):
- *   0      bridge approach on the left bank: "Bar El Puente" and its terrace (where the simpa happened)
- *   1      riverside embankment, the deck begins
+ *  -4..-1  lead-in street behind the start (see lead-in.ts); "Bar El Puente" at -1
+ *   0      crossroads, then the bridge approach with cafés and the riverside park
+ *   1      riverside embankment, the deck begins; Torre de Caja Badajoz on the right
  *   2..10  the cable-stayed deck over the Guadiana; the white inverted-Y pylon at segment 6,
  *          stay cables on segments 3..9
- *   11     land again (right bank) with the Torre de Caja Badajoz glass tower beside the road
+ *   11     land again (right bank)
  */
 import { pylon, stayCables, torreCaja } from "../landmarks/puente-real";
+import { T, xf } from "../geom";
 import { FAR, SOLID, WATER } from "../materials";
+import { buildLeadIn } from "./lead-in";
 import {
   L, RW, building, farBlock, flat, lampModern, palm, pavement, person, pine, planeTree, road, shrub, terraceSet, type Seg, type Side,
 } from "./common";
 
 const WATER_Y = -13;
 const DECK_X = 9.3;
-const PYLON_SEG = 6;
+export const PYLON_SEG = 6;
+/** Torre de Caja Badajoz, segment 1 local position. */
+export const TOWER_X = 50;
+export const TOWER_Z = -28;
 
 /** River water + distant banks, islands, reeds and a skyline. */
 export function river(s: Seg, waterY: number, bankX: number, skyline: "left" | "both" | "none" = "both"): void {
@@ -39,6 +45,24 @@ export function river(s: Seg, waterY: number, bankX: number, skyline: "left" | "
     for (let k = 0; k < 6; k++) {
       b.cone(sx * (bankX - r.range(0, 5)), waterY, -r.range(0, 40), r.range(0.8, 1.6), r.range(1.5, 3), 0x9aa356, 5, FAR);
     }
+  }
+  // kayaks and a rowing boat out on the Guadiana
+  for (let k = 0; k < 2; k++) {
+    if (!r.chance(0.55)) continue;
+    const x = (r.chance(0.5) ? -1 : 1) * r.range(30, 120);
+    const z = -r.range(4, 36);
+    const a = r.range(-0.4, 0.4);
+    b.at(x, waterY, z, a);
+    if (k === 0) {
+      b.add(T.sphere(8, 4), xf(0, 0.05, 0, 0.35, 0.22, 2.4), r.pick([0xff6b1a, 0xffd23f, 0xd62828, 0x2a9d8f]), FAR);
+      b.sphere(0, 0.45, 0, 0.2, 0.32, 0.2, r.pick([0x264653, 0xe63946, 0x1d3557]), FAR, 5, 3);
+      b.beam([-1.1, 0.5, 0.2], [1.1, 0.7, -0.2], 0.05, 0x333333, FAR);
+    } else {
+      b.add(T.sphere(8, 4), xf(0, 0.1, 0, 0.9, 0.4, 2.6), 0xf4f1ea, FAR);
+      b.box(0, 0.32, 0, 1.6, 0.06, 4.2, 0x2a6f97, FAR);
+      for (const dz of [-0.6, 0.7]) b.sphere(0, 0.75, dz, 0.22, 0.35, 0.22, r.pick([0xd62828, 0xffd23f, 0x264653]), FAR, 5, 3);
+    }
+    b.pop();
   }
   // the occasional green island in the river
   if (r.chance(0.5)) {
@@ -77,6 +101,8 @@ function deck(s: Seg, pylonHere: boolean): void {
       if (pylonHere && Math.abs(z + 20) < 6) continue;
       lampModern(s, sx, DECK_X - 0.6, z, 9);
     }
+    // people strolling or stopping to wave at the runner
+    if (s.r.chance(0.6)) person(s, sx * s.r.range(5.2, 8.2), -s.r.range(3, 37), s.r.chance(0.5) ? 0 : Math.PI, false, s.r.chance(0.3));
     // pier under the deck
     b.span(sx * 3, sx * 6, WATER_Y - 1, -2.4, -18, -22, 0xd2d0c8, FAR);
   }
@@ -89,12 +115,11 @@ function landSide(s: Seg, side: Side, bar: boolean): void {
   if (bar) {
     // wide pavement with the bar terrace, the bar itself and its neighbours
     pavement(s, side, RW + 0.25, 12, "paving", 0xece6da);
-    building(s, { side, x: 12, z0: -2, z1: -18, depth: 14, floors: 3, color: 0xf4efe6, style: "piso", shops: ["bar-puente", "bar-puente"], awningColors: [0xb22222], balconies: 0.6, trim: 0xb22222 });
+    building(s, { side, x: 12, z0: -2, z1: -18, depth: 14, floors: 3, color: 0xf4efe6, style: "piso", shops: ["cafeteria", "heladeria"], awningColors: [0x1f5f8b], balconies: 0.6 });
     building(s, { side, x: 12, z0: -19, z1: -38, depth: 14, floors: 4, color: 0xe2c9a3, style: "piso", shops: ["estanco", "panaderia", "farmacia"], awningColors: [0x2e7d32, 0xe9c46a], balconies: 0.5 });
-    const cols = [0xb22222, 0xf4f1ea, 0xb22222];
+    const cols = [0x1f5f8b, 0xf4f1ea, 0x1f5f8b];
     for (let k = 0; k < 3; k++) terraceSet(s, side * (6.8 + (k % 2) * 2.4), -4 - k * 4.2, cols[k] ?? 0xb22222);
-    // waiter-less empty table with an abandoned bill... and a few curious customers
-    person(s, side * 10.8, -5, side > 0 ? Math.PI / 2 : -Math.PI / 2);
+    person(s, side * 10.8, -5, side > 0 ? Math.PI / 2 : -Math.PI / 2, false, true);
     person(s, side * 9.5, -20, r.range(0, 6));
     for (const z of [-22, -30, -37]) planeTree(s, side * 6, z, 0.9);
     lampModern(s, side, 4.9, -20, 8);
@@ -118,12 +143,14 @@ export function buildPuenteReal(s: Seg): void {
   const b = s.b;
   const i = s.index;
   const last = s.count - 1;
+  if (i < 0) {
+    buildLeadIn(s);
+    return;
+  }
   if (i === 0) {
     road(s, { tint: 0x686d75 });
     landSide(s, 1, true);
     landSide(s, -1, false);
-    b.sign("c-puente", 5.0, 3.0, -1.5, 0.45, -Math.PI / 2);
-    b.boxB(4.8, 0.15, -1.5, 0.08, 3.1, 0.08, 0x555555, SOLID);
     return;
   }
   if (i === 1) {
@@ -147,6 +174,10 @@ export function buildPuenteReal(s: Seg): void {
     }
     b.span(-DECK_X, DECK_X, -2.4, -0.6, 0, -L, 0xd9d7cf, FAR);
     river(s, WATER_Y, 160, "none");
+    // the Torre de Caja Badajoz on its riverside plot, to the right of the bridge approach
+    b.span(28, 75, WATER_Y - 1, 0, -12, -L, 0xb9b8a8, FAR);
+    b.span(28, 75, 0, 0.1, -12, -L, 0xd8d2c2, FAR);
+    torreCaja(b, TOWER_X, TOWER_Z, 0.1, s.night, SOLID);
     return;
   }
   if (i === last) {
@@ -157,13 +188,9 @@ export function buildPuenteReal(s: Seg): void {
       flat(s, sx, 8, 60, 0.1, 0x9bbf5e);
       for (const z of [-6, -20, -34]) planeTree(s, sx * 6.2, z, 0.95);
       lampModern(s, sx, 4.9, sx < 0 ? -13 : -27, 8);
-      if (sx < 0) {
-        farBlock(s, -30, -14, 16, 22, 26, 0xf2efe8);
-        farBlock(s, -34, -34, 18, 14, 18, 0xe2c9a3);
-      }
+      farBlock(s, sx * 30, -14, 16, 22, 26, sx < 0 ? 0xf2efe8 : 0xd9b48a);
+      farBlock(s, sx * 34, -34, 18, 14, 18, 0xe2c9a3);
     }
-    // the Torre de Caja Badajoz stands on the right bank by the bridge end
-    torreCaja(b, 46, -22, 0.1, s.night, SOLID);
     return;
   }
   // the bridge deck proper

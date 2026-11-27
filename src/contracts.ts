@@ -186,6 +186,8 @@ export interface ZoneScenery {
    * (|x| < ROAD_HALF_WIDTH) below 4 m of height; arches and cables may span above it.
    * `index` is the segment's 0-based position in the zone and `count` the number of segments in
    * the zone, so landmarks sit at fixed places. The same (index, lap) must build the same segment.
+   * "puente-real" also accepts indices -1 to -4: the street that leads to the bridge, shown
+   * behind the runner at the start of a run and in the menu (same atmosphere as the zone).
    */
   buildSegment(index: number, count: number, lap: number): THREE.Object3D;
 }
@@ -236,11 +238,20 @@ export interface RunSummary {
   roofMetres: number;
   powerups: number;
   wordsCompleted: number;
+  /** Letters of WORD picked up in this run (all of them, across completed words). */
+  letters: number;
 }
+
+export type TutorialAction = "left" | "right" | "jump" | "roll";
 
 export type GameEvent =
   | { type: "state"; state: GameState }
-  | { type: "countdown"; value: number } // 3, 2, 1 then 0 = go
+  | { type: "countdown"; value: number; resume?: boolean } // 3, 2, 1 then 0 = go; `resume` after a pause
+  /**
+   * Tutorial prompt (only in runs where `GameOptions.tutorial()` is true): the next scripted
+   * obstacle needs this action now. "done" hides the prompt; "complete" ends the tutorial.
+   */
+  | { type: "hint"; action: TutorialAction | "done" | "complete" }
   | { type: "jump"; super: boolean }
   | { type: "land" }
   | { type: "roll" }
@@ -270,8 +281,10 @@ export interface HudSnapshot {
   powerups: { kind: PowerupKind; remaining: number; duration: number }[];
   /** Which letters of WORD are collected. */
   letters: boolean[];
-  /** 0 = the waiter is far behind, 1 = right on your heels. */
+  /** 0 = the waiter is far behind, 1 = right on your heels. 0 during the intro and countdown. */
   chaser: number;
+  /** Metres run on roofs so far in this run. */
+  roofMetres: number;
 }
 
 /** Supplied by the shell (from save data) when the game is created; read at the start of each run. */
@@ -280,6 +293,8 @@ export interface GameOptions {
   powerupDuration(kind: PowerupKind): number;
   /** Base score multiplier (grows with completed missions). */
   baseMultiplier(): number;
+  /** True until the player has finished the tutorial once: the run then opens with scripted, prompted obstacles. */
+  tutorial(): boolean;
 }
 
 export interface GameApi {

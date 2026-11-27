@@ -14,7 +14,14 @@ export const PYLON_APEX = 44;
 const LEG_BASE_X = 12.5;
 
 /** Pylon centred at (0, 0, z) on the deck, legs straddling the road. `waterY` is the river level. */
-export function pylon(b: Builder, z: number, waterY: number, mat: THREE.Material = SOLID): void {
+export function pylon(b: Builder, z: number, waterY: number, mat: THREE.Material = SOLID, slim = false): void {
+  if (slim) {
+    // distant stand-in: strictly inside the real pylon's volume, so when both exist the real
+    // one hides it (no z-fighting) and when only this one exists the silhouette is the same
+    for (const sx of [-1, 1]) b.beam([sx * LEG_BASE_X, -2, z], [sx * 0.9, PYLON_APEX, z], 1.8, CONCRETE, mat);
+    b.span(-1.7, 1.7, PYLON_APEX - 2, PYLON_TOP - 0.2, z + 1.6, z - 1.6, CONCRETE, mat);
+    return;
+  }
   const legW = 2.2;
   const legD = 3.2;
   for (const sx of [-1, 1]) {
@@ -63,11 +70,17 @@ export function stayCables(b: Builder, z0: number, z1: number, pylonZ: number, d
 }
 
 /** Torre de Caja Badajoz: ~90 m slim glass tower with white fins and a crown. Base at y = baseY. */
-export function torreCaja(b: Builder, x: number, z: number, baseY = 0, night = false, mat: THREE.Material = FAR): void {
+export function torreCaja(b: Builder, x: number, z: number, baseY = 0, night = false, mat: THREE.Material = FAR, slim = false): void {
   const H = 88;
   const w = 15;
   const d = 15;
   const glass = night ? 0x6d86b8 : 0x4f86b0;
+  if (slim) {
+    // distant stand-in inside the real tower's volume (see pylon)
+    b.span(x - w / 2 + 3.3, x + w / 2 - 3.3, baseY + 0.5, baseY + H, z + d / 2 - 3.3, z - d / 2 + 3.3, glass, mat);
+    b.span(x - w / 2 + 3.3, x + w / 2 - 3.3, baseY + H, baseY + H + 2.8, z + d / 2 - 3.3, z - d / 2 + 3.3, 0xf4f4f0, mat);
+    return;
+  }
   // podium
   b.span(x - 16, x + 16, baseY, baseY + 8, z + 14, z - 14, 0xe4e1d8, mat);
   b.span(x - 16.3, x + 16.3, baseY + 3.5, baseY + 4.2, z + 14.3, z - 14.3, 0x2c3e50, GLASS);
