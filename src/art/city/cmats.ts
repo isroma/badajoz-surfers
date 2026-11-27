@@ -137,13 +137,19 @@ export function windowsMaterial(): THREE.MeshLambertMaterial {
   });
 }
 
+let poolsAllowed = true;
+/** Quality: light pools off at low settings (ANDed with night). */
+export function setPoolsAllowed(on: boolean): void {
+  poolsAllowed = on;
+}
+
 /** Night: windows glow warm, lamps brighten, light pools appear. */
 export function setNightMaterials(night: boolean): void {
   const w = windowsMaterial();
   w.emissive.setHex(night ? PAL.windowLit : 0x000000);
   w.emissiveIntensity = night ? 0.9 : 0;
   glowMaterial().color.setScalar(night ? 1.6 : 0.85);
-  lightPoolMaterial().visible = night;
+  lightPoolMaterial().visible = night && poolsAllowed;
 }
 
 /** Trees: flat crowns with a gentle wind sway; `lod` adds chunk masking (unused in the flat style). */

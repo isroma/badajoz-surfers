@@ -107,6 +107,11 @@ export async function showCityView(env: Env, view: string): Promise<void> {
       camera.position.set(px - fx * 6.5, f.h + H, pz - fz * 6.5);
       env.controls.target.set(px + fx * (dist || 20), f.h + 1.3, pz + fz * (dist || 20));
     }
+    const tgt0 = params.get("target");
+    if (tgt0) {
+      const [tx, tz] = tgt0.split(",").map(Number);
+      env.controls.target.set(tx ?? 0, f.h + 5, tz ?? 0);
+    }
     camera.lookAt(env.controls.target);
     sky.mesh.position.copy(camera.position);
     const tgt = new THREE.Vector3(f.x, f.h, f.z);

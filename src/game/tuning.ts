@@ -142,13 +142,20 @@ export function lapAt(distance: number): number {
 export function speedAt(distance: number): number {
   const d = Math.max(0, distance);
   const lap = lapAt(d);
-  const cap = Math.min(34, 24 + 2.5 * (lap - 1));
-  // Gentle over the first 2 km (11 → 15 m/s), then towards ~23 by the end of the lap.
   const w = d - (lap - 1) * LAP_LENGTH;
+  // Laps completed, with the new lap's bonus eased in over its first LAP_BONUS_EASE metres (no
+  // step in speed at the lap seam).
+  const e = Math.min(1, w / LAP_BONUS_EASE);
+  const laps = lap - 1 - (lap > 1 ? 1 - e * e * (3 - 2 * e) : 0);
+  const cap = Math.min(34, 24 + 2.5 * laps);
+  // Gentle over the first 2 km (11 → 15 m/s), then towards ~23 by the end of the lap.
   const first = lap === 1 && w < GENTLE_RAMP ? START_SPEED + 4 * (w / GENTLE_RAMP) : NaN;
-  const ramp = Number.isFinite(first) ? first : START_SPEED + 4 + 8.5 * (1 - Math.exp(-Math.max(0, d - GENTLE_RAMP) / 2500)) + 2 * (lap - 1);
+  const ramp = Number.isFinite(first) ? first : START_SPEED + 4 + 8.5 * (1 - Math.exp(-Math.max(0, d - GENTLE_RAMP) / 2500)) + 2 * laps;
   return Math.min(cap, ramp);
 }
+
+/** Metres over which a new lap's speed bonus eases in. */
+export const LAP_BONUS_EASE = 400;
 
 /** 0..1 difficulty at a distance (full difficulty during the second lap). */
 export function difficultyAt(distance: number): number {

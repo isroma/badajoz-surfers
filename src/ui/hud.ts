@@ -29,13 +29,8 @@ export function splitStreet(name: string): [string | null, string] {
 /** Names that are too long for the zone chip. */
 const HUD_ZONE_NAMES: Record<string, string> = { "alcazaba-palmas": "Alcazaba y Pta. de Palmas" };
 
-/** The next turn, as the HUD shows it. */
-export interface TurnHint {
-  dir: "left" | "right" | "straight";
-  roundabout: boolean;
-  /** Street after the turn. */
-  name: string | null;
-}
+export type { TurnHint } from "./guidance";
+import type { TurnHint } from "./guidance";
 
 interface PowerupRow {
   el: HTMLElement;
@@ -84,6 +79,8 @@ export class Hud {
   private street: string | null = null;
   private readonly hornEl: HTMLElement;
   private readonly turnEl: HTMLElement;
+  private readonly laneEl: HTMLElement;
+  private laneTimer = 0;
   private turnKey = "";
 
   private last = freshLast();
@@ -100,6 +97,7 @@ export class Hud {
     this.letterEls = [...WORD].map((ch) => h("div", "letter", ch));
     this.lettersEl = h("div", "chip letters", ...this.letterEls);
     this.turnEl = h("div", "chip turn");
+    this.laneEl = h("div", "chip lane-chip");
     this.hornEl = h("div", "horn-warn");
 
     this.scoreEl = h("div", "score", "0");
@@ -117,7 +115,7 @@ export class Hud {
       this.flashEl,
       this.hornEl,
       h("div", "hud-tl", zoneCard, this.powerupsEl),
-      h("div", "hud-tc", this.lettersEl, this.turnEl),
+      h("div", "hud-tc", this.lettersEl, this.turnEl, this.laneEl),
       h("div", "hud-tr", h("div", "chip score-card", this.scoreEl, h("div", "score-row", this.multEl, h("span", "bell", svg(ICON_BELLOTA), this.bellotasEl)))),
       h("div", "hud-bl", h("div", "map-card", this.minimap.el)),
       h("div", "hud-bc", this.chaserEl),
@@ -139,6 +137,8 @@ export class Hud {
     this.plaque.replaceChildren();
     this.plaque.hidden = true;
     this.setTurn(null);
+    window.clearTimeout(this.laneTimer);
+    this.laneEl.classList.remove("show");
     this.chaserEl.classList.remove("show", "hot");
     for (const el of [this.flashEl, this.hornEl, this.el]) el.getAnimations?.().forEach((a) => a.cancel());
   }
@@ -208,21 +208,33 @@ export class Hud {
     if (next === this.street) return;
     const first = this.street === null;
     this.street = next;
-    for (const old of [...this.plaque.children]) {
-      if (old.classList.contains("out")) continue;
-      old.classList.add("out");
-      window.setTimeout(() => old.remove(), 260);
-    }
     if (!next) {
       this.plaque.classList.add("empty");
       return;
     }
+    // One element, text set at once: the old name is gone before the new one shows, so the two
+    // can never overlap, even where animations or timers stall (background tabs).
     const [type, rest] = splitStreet(next);
-    const inner = h("div", `plaque-in${first ? "" : " in"}${rest.length > 22 ? " long" : ""}`, type ? h("small", undefined, type) : null, h("b", undefined, rest));
+    const inner = h("div", `plaque-in${rest.length > 22 ? " long" : ""}`, type ? h("small", undefined, type) : null, h("b", undefined, rest));
     inner.title = next;
+    this.plaque.replaceChildren(inner);
     this.plaque.classList.remove("empty");
     this.plaque.hidden = false;
-    this.plaque.append(inner);
+    if (!first && typeof inner.animate === "function") {
+      const anim = inner.animate([{ transform: "translateY(35%)", opacity: 0.35 }, { transform: "none", opacity: 1 }], { duration: 220, easing: "ease-out" });
+      // Never leave it half-way if the animation clock is stalled.
+      window.setTimeout(() => anim.finish(), 300);
+    }
+  }
+
+  /** "El carril se acaba" with an arrow to the side to move to; shown at once, ~3 s. */
+  laneEnds(moveTo: "left" | "right"): void {
+    window.clearTimeout(this.laneTimer);
+    const text = h("span", undefined, "El carril se acaba");
+    const arrow = h("b", "lane-arrow", moveTo === "left" ? "←" : "→");
+    this.laneEl.replaceChildren(...(moveTo === "left" ? [arrow, text] : [text, arrow]));
+    this.laneEl.classList.add("show");
+    this.laneTimer = window.setTimeout(() => this.laneEl.classList.remove("show"), 3000);
   }
 
   /** The next turn (null hides the hint). */

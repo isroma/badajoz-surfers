@@ -10,6 +10,8 @@
  * Pure: no three.js.
  */
 import { LANE_WIDTH, type ZoneId } from "../contracts";
+import { TRANSITION_LENGTH } from "../city/lanes";
+import type { Track } from "../city/track";
 import { getCourse } from "./course";
 import { zoneAt } from "./tuning";
 
@@ -56,6 +58,16 @@ export const layoutAt: LayoutFn = (distance) => {
   const course = getCourse();
   return course ? course.layoutAt(distance) : ZONE_LAYOUTS[zoneAt(distance).zone.id];
 };
+
+/**
+ * Lateral centre of `lane` of `layout` at distance p: the real lap's continuous geometry
+ * (`laneOffsetAt`) when `layout` is the installed course's layout at p, else the layout's offset.
+ */
+export function courseLaneX(layout: LaneLayout, lane: number, p: number): number {
+  const course = getCourse();
+  if (course && course.layoutAt(p) === layout) return laneOffsetAt(course.track, lane, p);
+  return laneOffset(layout, lane);
+}
 
 /** Width of a lane (2.6 m when the layout does not say). */
 export function laneWidth(layout: LaneLayout, lane: number): number {
@@ -188,6 +200,269 @@ export function nextOffsetChange(layout: LayoutFn, from: number, to: number, ste
       return hi;
     }
     if (at >= to) break;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Continuous lane geometry on the real lap: boundary blends and merges
+// ---------------------------------------------------------------------------
+
+/**
+ * A lane that ends tapers into its merge target over its last MERGE_LENGTH metres (ease-in-out
+ * along the distance), so a runner who stays in it is carried smoothly onto the target.
+ */
+export const MERGE_LENGTH = 60;
+/** The boundary blend (a mapped lane whose offset changes) is this long, centred on the boundary. */
+export const BLEND_LENGTH = TRANSITION_LENGTH;
+
+/** One lane taper (lap-relative s, s0 < s1 ≤ the boundary where the lane ends). */
+export interface LaneMerge {
+  /** The taper starts (the lane is still at its own offset) ... */
+  s0: number;
+  /** ... and ends: from here the lane coincides with `into` (and the runner is handed to it). */
+  s1: number;
+  /** Index (in track.stretches) of the stretch the lane belongs to. */
+  fromStretch: number;
+  /** The ending lane and its merge target: indices in that stretch's layout. */
+  lane: number;
+  into: number;
+  /** Where the stretch (and the lane) ends: the layout boundary (lapLength for the lap seam). */
+  end: number;
+}
+
+/** The parts of the city Track this needs (so tests can pass a small fake). */
+export type MergeTrack = Pick<Track, "lapLength" | "stretches" | "transitions" | "stretchIndexAt">;
+
+interface Geometry {
+  merges: LaneMerge[];
+  /** By stretch, by lane: the merge of that lane (undefined when it does not end there). */
+  byLane: (LaneMerge | undefined)[][];
+  /** Transition after / before each stretch (null: same layout, nothing changes). */
+  after: (MergeTrack["transitions"][number] | null)[];
+  before: (MergeTrack["transitions"][number] | null)[];
+  /** For each stretch, lane → the lane of the previous stretch that continues into it (-1: none). */
+  pred: number[][];
+  /** Half length of the boundary blend at the start of each stretch. */
+  halfIn: number[];
+}
+
+const geometries = new WeakMap<object, Geometry>();
+
+const smooth = (t: number): number => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+function geometry(track: MergeTrack): Geometry {
+  const cached = geometries.get(track);
+  if (cached) return cached;
+  const st = track.stretches;
+  const NS = st.length;
+  const after: Geometry["after"] = st.map(() => null);
+  const before: Geometry["before"] = st.map(() => null);
+  for (const t of track.transitions) {
+    after[t.fromIndex] = t;
+    before[t.toIndex] = t;
+  }
+  const len = (k: number): number => st[k]!.toS - st[k]!.fromS;
+  const halfIn = st.map((_, k) => Math.min(BLEND_LENGTH / 2, len(k) / 2, len((k - 1 + NS) % NS) / 2));
+  const pred = st.map((s, k) => {
+    const out = s.layout.offsets.map(() => -1);
+    const t = before[k];
+    if (!t) return s.layout.offsets.map((_, i) => i);
+    t.map.forEach((j, i) => {
+      if (j !== null && j < out.length) out[j] = i;
+    });
+    return out;
+  });
+  const merges: LaneMerge[] = [];
+  const byLane: Geometry["byLane"] = st.map((s) => s.layout.offsets.map(() => undefined));
+  for (let k = 0; k < NS; k++) {
+    const t = after[k];
+    if (!t) continue;
+    const a = st[k]!.layout;
+    const survives = (i: number): boolean => t.map[i] !== null && t.map[i] !== undefined;
+    const ending = a.offsets.map((_, i) => i).filter((i) => !survives(i));
+    if (ending.length === 0) continue;
+    const alive = a.offsets.map((_, i) => i).filter(survives);
+    if (alive.length === 0) continue;
+    // The route's own carriageway: own-1 sits on the centreline; the nearest surviving lane
+    // without oncoming traffic is the anchor every ending lane merges towards.
+    const calm = alive.filter((i) => a.flow[i] !== -1);
+    const pool = calm.length > 0 ? calm : alive;
+    const anchor = pool.reduce((b, i) => (Math.abs(a.offsets[i] ?? 0) < Math.abs(a.offsets[b] ?? 0) ? i : b));
+    const into = new Map<number, number>();
+    for (const i of ending) {
+      const dir = anchor > i ? 1 : -1;
+      const j = i + dir;
+      if (j < 0 || j >= a.offsets.length) continue;
+      if (!survives(j) || a.flow[j] !== -1) into.set(i, j);
+      else {
+        // The only neighbour carries oncoming traffic: the nearest calm survivor instead.
+        const x = a.offsets[i] ?? 0;
+        into.set(i, pool.reduce((b, l) => (Math.abs((a.offsets[l] ?? 0) - x) < Math.abs((a.offsets[b] ?? 0) - x) ? l : b)));
+      }
+    }
+    const depth = (i: number, guard = 0): number => {
+      const j = into.get(i);
+      if (j === undefined || guard > 8) return 0;
+      return survives(j) ? 1 : 1 + depth(j, guard + 1);
+    };
+    const end = st[k]!.toS;
+    const maxDepth = Math.max(1, ...ending.map((i) => depth(i)));
+    // A short stretch squeezes the tapers (never into the blend at its start).
+    const room = len(k) - halfIn[k]! - 1;
+    const L = Math.min(MERGE_LENGTH, room / maxDepth);
+    for (const i of ending) {
+      const j = into.get(i);
+      const d = depth(i);
+      if (j === undefined || d === 0) continue;
+      const s1 = end - (d - 1) * L;
+      const m: LaneMerge = { s0: s1 - L, s1, fromStretch: k, lane: i, into: j, end };
+      merges.push(m);
+      byLane[k]![i] = m;
+    }
+  }
+  merges.sort((x, y) => x.s0 - y.s0);
+  const g: Geometry = { merges, byLane, after, before, pred, halfIn };
+  geometries.set(track, g);
+  return g;
+}
+
+/** Every lane taper of the lap, by s0 (pure; the art draws the same taper). */
+export function merges(track: MergeTrack): readonly LaneMerge[] {
+  return geometry(track).merges;
+}
+
+function wrapS(track: MergeTrack, s: number): number {
+  const L = track.lapLength;
+  const w = s - L * Math.floor(s / L);
+  return w >= L ? 0 : w;
+}
+
+/** Offset of lane `lane` of stretch k at lap-relative w (inside the stretch), with blends and tapers. */
+function offsetIn(track: MergeTrack, g: Geometry, k: number, lane: number, w: number, guard = 0): number {
+  const st = track.stretches[k]!;
+  const offs = st.layout.offsets;
+  const n = offs.length;
+  const i = lane < 0 ? 0 : lane >= n ? n - 1 : lane;
+  const own = offs[i] ?? 0;
+  const m = g.byLane[k]![i];
+  if (m && guard < 8) {
+    if (w >= m.s1) return offsetIn(track, g, k, m.into, w, guard + 1);
+    if (w > m.s0) {
+      const t = smooth((w - m.s0) / (m.s1 - m.s0));
+      return own + (offsetIn(track, g, k, m.into, w, guard + 1) - own) * t;
+    }
+    return own;
+  }
+  const NS = track.stretches.length;
+  // Blend in from the lane it continues (start of the stretch).
+  const hIn = g.halfIn[k]!;
+  if (w < st.fromS + hIn) {
+    const p = g.pred[k]![i] ?? -1;
+    const prev = track.stretches[(k - 1 + NS) % NS]!.layout.offsets[p];
+    if (p >= 0 && prev !== undefined && g.before[k]) return prev + (own - prev) * smooth((w - (st.fromS - hIn)) / (2 * hIn));
+    return own;
+  }
+  // Blend out into the lane it continues as (end of the stretch).
+  const kn = (k + 1) % NS;
+  const hOut = g.halfIn[kn]!;
+  const t = g.after[k];
+  if (t && w > st.toS - hOut) {
+    const j = t.map[i];
+    const next = j === null || j === undefined ? undefined : track.stretches[kn]!.layout.offsets[j];
+    if (next !== undefined) return own + (next - own) * smooth((w - (st.toS - hOut)) / (2 * hOut));
+  }
+  return own;
+}
+
+/**
+ * Lateral centre of lane `lane` (an index in the layout at s, i.e. `track.layoutAt(s)`) at
+ * distance s (any lap): continuous along the distance. Across a layout boundary a lane that
+ * continues blends from its old offset to its new one over BLEND_LENGTH centred on the boundary;
+ * a lane that ends tapers into its merge target over its last MERGE_LENGTH m (see `merges`) and
+ * then coincides with it. Pure.
+ */
+export function laneOffsetAt(track: MergeTrack, lane: number, s: number): number {
+  const g = geometry(track);
+  const k = track.stretchIndexAt(s);
+  return offsetIn(track, g, k, lane, wrapS(track, s));
+}
+
+/** The merge lane `lane` (index in the layout at s) is in or heading for in its own stretch, if any. */
+export function mergeOf(track: MergeTrack, lane: number, s: number): LaneMerge | undefined {
+  const g = geometry(track);
+  return g.byLane[track.stretchIndexAt(s)]?.[lane];
+}
+
+/** Follow completed tapers inside stretch k up to lap-relative w. */
+function settle(g: Geometry, k: number, lane: number, w: number): number {
+  for (let guard = 0; guard < 8; guard++) {
+    const m = g.byLane[k]?.[lane];
+    if (!m || w < m.s1) return lane;
+    lane = m.into;
+  }
+  return lane;
+}
+
+/**
+ * The index lane `lane` (in the layout at `fromS`) has at `toS` ≥ fromS: through the boundaries'
+ * lane maps, and handed to its merge target once a taper is complete. Undefined when the lane
+ * cannot be followed (it ends without a target).
+ */
+export function followLane(track: MergeTrack, lane: number, fromS: number, toS: number): number | undefined {
+  const g = geometry(track);
+  const NS = track.stretches.length;
+  let k = track.stretchIndexAt(fromS);
+  const kTo = track.stretchIndexAt(toS);
+  let l = lane;
+  for (let guard = 0; guard <= NS && (k !== kTo || guard === 0 && toS - fromS >= track.lapLength); guard++) {
+    l = settle(g, k, l, Infinity);
+    const t = g.after[k];
+    if (t) {
+      const j = t.map[l];
+      if (j === null || j === undefined) return undefined;
+      l = j;
+    }
+    k = (k + 1) % NS;
+  }
+  return settle(g, kTo, l, wrapS(track, toS));
+}
+
+/** Is lane `lane` (index in the layout at s) still there (not merged away) at s? */
+export function laneOpenAt(track: MergeTrack, lane: number, s: number): boolean {
+  const m = mergeOf(track, lane, s);
+  return !m || wrapS(track, s) < m.s1;
+}
+
+/**
+ * The next taper of lane `lane` (index in the layout at s) within `horizon` m, following it
+ * through the boundaries: its start and end as unbounded distances, and the side its target is on.
+ */
+export function laneMergeAhead(track: MergeTrack, lane: number, s: number, horizon: number): { s0: number; s1: number; side: -1 | 1 } | null {
+  const g = geometry(track);
+  const NS = track.stretches.length;
+  const L = track.lapLength;
+  let k = track.stretchIndexAt(s);
+  const w = wrapS(track, s);
+  let base = s - w; // start of the current lap (unbounded)
+  let l = lane;
+  for (let guard = 0; guard <= NS; guard++) {
+    const st = track.stretches[k]!;
+    if (base + st.fromS > s + horizon) return null;
+    const m = g.byLane[k]?.[l];
+    if (m && base + m.s1 > s) {
+      const lay = st.layout.offsets;
+      const side = (lay[m.into] ?? 0) > (lay[m.lane] ?? 0) ? 1 : -1;
+      return base + m.s0 > s + horizon ? null : { s0: base + m.s0, s1: base + m.s1, side };
+    }
+    const t = g.after[k];
+    if (t) {
+      const j = t.map[settle(g, k, l, Infinity)];
+      if (j === null || j === undefined) return null;
+      l = j;
+    }
+    k = (k + 1) % NS;
+    if (k === 0) base += L;
   }
   return null;
 }

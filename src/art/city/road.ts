@@ -44,7 +44,7 @@ function surfaceOf(sec: CitySection, zone: string): GroundName {
 }
 
 class RoadPainter {
-  constructor(readonly bag: Bag, readonly ts: TS) {}
+  constructor(readonly bag: Bag, readonly ts: TS, readonly wide: (s: number) => LaneLayout = (s) => ts.track.layoutAt(s)) {}
   private readonly a = new THREE.Vector3();
   private readonly b = new THREE.Vector3();
   private readonly c = new THREE.Vector3();
@@ -164,7 +164,7 @@ function innerExtents(lay: LaneLayout): [number, number] {
 }
 
 export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: number): RoadResult {
-  const P = new RoadPainter(bag, ts);
+  const P = new RoadPainter(bag, ts, (s) => ctx.wideLayout(s));
   const edges: EdgeSample[] = [];
   const hyd = groundMaterial("hydraulic");
   for (const { a, b, st } of piecesOf(ctx, s0, s1)) {
@@ -182,16 +182,26 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     const [lo, hi] = innerExtents(lay);
     // ease strip edges over TRANSITION m after a stretch boundary when the previous layout has the
     // same strips (lane tapers instead of steps); E(get) turns a layout edge into a function of s
+    // stretch boundaries blend like the engine's lanes (laneOffsetAt): a smoothstep over
+    // TRANSITION m centred on the boundary, when the neighbouring layout has the same strips
     const prev = ctx.track.layoutAt(st.fromS - 0.5);
-    const sameShape = prev !== lay && prev.carriageways.length === lay.carriageways.length && prev.sidewalks.length === lay.sidewalks.length && prev.median.length === lay.median.length;
+    const next = ctx.track.layoutAt(st.toS + 0.5);
+    const same = (o: LaneLayout): boolean => o !== lay && o.carriageways.length === lay.carriageways.length && o.sidewalks.length === lay.sidewalks.length && o.median.length === lay.median.length;
+    const samePrev = same(prev);
+    const sameNext = same(next);
+    const sm = (t: number): number => {
+      const k = Math.min(1, Math.max(0, t));
+      return k * k * (3 - 2 * k);
+    };
     const E = (get: (l: LaneLayout) => number | undefined): number | ((s: number) => number) => {
       const v1 = get(lay) ?? 0;
-      if (!sameShape) return v1;
-      const v0 = get(prev) ?? v1;
-      if (Math.abs(v0 - v1) < 0.02) return v1;
+      const v0 = samePrev ? get(prev) ?? v1 : v1;
+      const v2 = sameNext ? get(next) ?? v1 : v1;
+      if (Math.abs(v0 - v1) < 0.02 && Math.abs(v2 - v1) < 0.02) return v1;
       return (s: number) => {
-        const t = Math.min(1, Math.max(0, (s - st.fromS) / TRANSITION));
-        return v0 + (v1 - v0) * t * t * (3 - 2 * t);
+        if (s < st.fromS + TRANSITION / 2) return v0 + (v1 - v0) * sm((s - st.fromS + TRANSITION / 2) / TRANSITION);
+        if (s > st.toS - TRANSITION / 2) return v1 + (v2 - v1) * sm((s - st.toS + TRANSITION / 2) / TRANSITION);
+        return v1;
       };
     };
     const curvatureLimit = (s: number, side: 1 | -1, want: number): number => {
@@ -230,9 +240,22 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     const yWalk = ped ? 0 : KERB;
     const shade = new THREE.Color(0.8, 0.79, 0.77);
     if (!bridge) {
-      // pedestrian streets: one flat surface wall to wall, in the path colour
-      const outerMat = ped ? groundMaterial("slabs") : hyd;
+      // pedestrian streets: one flat surface wall to wall, in the path colour; garden paths are
+      // bordered by lawn and low hedges
+      const mid = ts.f((a + b) / 2);
+      const garden = ped && ctx.greenAt(mid.x, mid.z);
+      const outerMat = garden ? groundMaterial("grass") : ped ? groundMaterial("slabs") : hyd;
       const sh = ped ? C1 : shade;
+      if (garden) {
+        for (const side of [1, -1] as const) {
+          const lat = side > 0 ? lay.right + 0.35 : lay.left - 0.35;
+          for (let k = 0; k + 1 < ss.length; k++) {
+            const A = ts.p(ss[k]!, lat, 0);
+            const B = ts.p(ss[k + 1]!, lat, 0);
+            bag.props.beam([A.x, A.y + 0.3, A.z], [B.x, B.y + 0.3, B.z], 0.5, PAL.trees[2], flatMaterial());
+          }
+        }
+      }
       P.strip(outerMat, ss, E((l) => innerExtents(l)[1]), outerR, yWalk, GROUND_SCALE.hydraulic, C1, sh);
       P.strip(outerMat, ss, outerL, E((l) => innerExtents(l)[0]), yWalk, GROUND_SCALE.hydraulic, sh.clone(), C1);
       // skirts so no gap shows where the terrain falls away
@@ -302,7 +325,7 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     legibility(P, lay, a, b, ped, ss, !bridge && (sec.medianKind === "planting" || sec.medianKind === "unmapped" || sec.medianKind === null), bridge);
 
     for (const s of ss) {
-      edges.push({ s, outerL: outerL(s), outerR: outerR(s), kerbL: lay.carriageways[0]?.from ?? lo, kerbR: lay.carriageways[lay.carriageways.length - 1]?.to ?? hi, bridge, pedestrian: ped, layout: lay });
+      edges.push({ s, outerL: outerL(s), outerR: outerR(s), kerbL: lay.carriageways[0]?.from ?? lo, kerbR: lay.carriageways[lay.carriageways.length - 1]?.to ?? hi, bridge, pedestrian: ped, layout: ctx.wideLayout(s) });
     }
   }
   return { edges };
@@ -487,6 +510,9 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
     const at = c.to <= lay.left + 0.6 ? c.to - 0.45 : c.from >= lay.right - 0.6 ? c.from + 0.45 : null;
     if (at === null) continue;
     for (let k = 0; k + 1 < ss.length; k++) {
+      // not where a neighbouring stretch makes this carriageway runnable (boundary blends)
+      const wl = P.wide(ss[k]!);
+      if (at > wl.left - 0.5 && at < wl.right + 0.5 && !lay.median.some((md) => at > md.from && at < md.to)) continue;
       const A = P.ts.p(ss[k]!, at, KERB);
       const B = P.ts.p(ss[k + 1]!, at, KERB);
       p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], 0.7, HEDGE, m);
@@ -500,6 +526,8 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
     const w = Math.min(0.9, (md.to - md.from) - 0.5);
     if (w < 0.3) continue;
     for (let k = 0; k + 1 < ss.length; k++) {
+      const wl = P.wide(ss[k]!);
+      if (wl.offsets.some((o, j) => Math.abs(mid - o) < (wl.widths[j] ?? 0) / 2 + w / 2 + 0.2)) continue;
       const A = P.ts.p(ss[k]!, mid, KERB);
       const B = P.ts.p(ss[k + 1]!, mid, KERB);
       p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], w, HEDGE, m);

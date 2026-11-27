@@ -8,8 +8,8 @@
  * A front contact that only clips the obstacle by a little (see MARGINAL_CLIP) is a "clip".
  */
 import { OBSTACLE_DEFS, type ObstacleKind } from "../contracts";
-import { getCourse, mapLane } from "./course";
-import { layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
+import { getCourse } from "./course";
+import { followLane, laneOffset, laneOffsetAt, laneOpenAt, layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
 import type { ObstacleSpawn } from "./spawns";
 import { obstacleCentre } from "./spawns";
 import type { PlayerWorld, SurfaceHit } from "./player";
@@ -111,9 +111,25 @@ export class BoxSet implements PlayerWorld {
     return this.layoutFn(p);
   }
 
-  mapLane(fromS: number, toS: number, lane: number): number | null | undefined {
-    if (this.layoutFn !== layoutAt) return undefined;
-    return mapLane(getCourse(), fromS, toS, lane);
+  /** The real lap's continuous lane geometry (lanes.ts) when this set uses the course's layouts. */
+  private track(): Parameters<typeof laneOffsetAt>[0] | null {
+    if (this.layoutFn !== layoutAt) return null;
+    return getCourse()?.track ?? null;
+  }
+
+  laneX(lane: number, p: number): number {
+    const track = this.track();
+    return track ? laneOffsetAt(track, lane, p) : laneOffset(this.layoutFn(p), lane);
+  }
+
+  followLane(fromS: number, toS: number, lane: number): number | undefined {
+    const track = this.track();
+    return track ? followLane(track, lane, fromS, toS) : undefined;
+  }
+
+  laneOpen(lane: number, p: number): boolean {
+    const track = this.track();
+    return track ? laneOpenAt(track, lane, p) : true;
   }
 
   setSpawns(spawns: readonly ObstacleSpawn[]): void {

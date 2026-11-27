@@ -61,6 +61,11 @@ export interface Course {
   readonly trees: readonly { s: number; lateral: number; r: number }[];
   /** Stretches under real arches and gates: nothing tall there (no vehicles, scaffolds or banners). */
   readonly lowClearance: readonly [number, number][];
+  /**
+   * Where the route runs through a building (OSM tunnel sections and building passages: Arco del
+   * Peso, Puerta de Palmas), lap-relative [from, to], sorted: see `inPassage`.
+   */
+  readonly passages: readonly [number, number][];
   /** Layout boundaries with their lane maps, sorted by s (one lap). */
   readonly transitions: readonly LaneTransition[];
   /** Turns to announce, sorted by s (one lap). */
@@ -240,6 +245,17 @@ export function buildCourse(city: CityData, track: Track): Course {
     }
   }
   lowClearance.sort((a, b) => a[0] - b[0]);
+  const passages: [number, number][] = [];
+  for (const sec of city.sections) if (sec.tunnel) passages.push([sec.fromS, sec.toS]);
+  for (const p of city.meta.passesThrough) if (p.passage) passages.push([p.s[0], p.s[1]]);
+  passages.sort((a, b) => a[0] - b[0]);
+  // Overlapping ones (a tunnel section inside its building passage) become one.
+  const merged: [number, number][] = [];
+  for (const p of passages) {
+    const last = merged[merged.length - 1];
+    if (last && p[0] <= last[1]) last[1] = Math.max(last[1], p[1]);
+    else merged.push([p[0], p[1]]);
+  }
 
   return {
     lapLength: lap,
@@ -255,6 +271,7 @@ export function buildCourse(city: CityData, track: Track): Course {
     bars,
     trees,
     lowClearance,
+    passages: merged,
     transitions: buildTransitions(track),
     turns: buildTurns(track),
     track,
@@ -302,6 +319,24 @@ export function underArch(course: Course | null, from: number, to: number): bool
   for (const [a, b] of course.lowClearance) {
     for (let k = Math.floor(from / L) - 1; k <= Math.floor(to / L) + 1; k++) {
       if (to > a + k * L && from < b + k * L) return true;
+    }
+  }
+  return false;
+}
+
+/** Nothing (no obstacle, no pickup above PASSAGE_PICKUP_Y) from this far before a passage... */
+export const PASSAGE_BEFORE = 15;
+/** ...to this far after it. */
+export const PASSAGE_AFTER = 10;
+export const PASSAGE_PICKUP_Y = 1.2;
+
+/** Does [from, to] (unbounded distance) touch a passage under a building, with its margins? */
+export function inPassage(course: Course | null, from: number, to: number): boolean {
+  if (!course) return false;
+  const L = course.lapLength;
+  for (const [a, b] of course.passages) {
+    for (let k = Math.floor(from / L) - 1; k <= Math.floor(to / L) + 1; k++) {
+      if (to > a - PASSAGE_BEFORE + k * L && from < b + PASSAGE_AFTER + k * L) return true;
     }
   }
   return false;

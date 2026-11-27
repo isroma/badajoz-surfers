@@ -137,7 +137,7 @@ function walls(accs: FacadeAccs, ctx: CityCtx, pb: PreparedBuilding, st: Buildin
   const C = new THREE.Vector3();
   const D = new THREE.Vector3();
   const n = new THREE.Vector3();
-  const dark = st.ground.clone().multiplyScalar(0.72);
+  const dark = st.ground.clone().multiplyScalar(0.88); // a soft, low-contrast base band
   for (let i = 0; i < ring.length; i++) {
     const a = ring[i]!;
     const d = ring[(i + 1) % ring.length]!;
@@ -158,12 +158,18 @@ function walls(accs: FacadeAccs, ctx: CityCtx, pb: PreparedBuilding, st: Buildin
     };
     const gTop = Math.min(st.Gf, yTo);
     const simple = pb.src.dist > 12;
+    // far from the route (only seen across the skyline): one quad for the base and no parapet
+    const far = pb.src.dist > 60;
     // below the street (hides slopes) and the ground floor with its darker base band
-    if (yFrom === null && simple) q(accs.flat, ga - 3, gd - 3, gTop, gTop, dark, st.ground);
+    if (yFrom === null && far) q(accs.flat, ga - 3, gd - 3, gTop, gTop, dark, st.ground);
+    else if (yFrom === null && simple) {
+      q(accs.flat, ga - 3, gd - 3, ga + 0.6, gd + 0.6, dark, dark);
+      q(accs.flat, ga + 0.6, gd + 0.6, gTop, gTop, st.ground, st.ground);
+    }
     else if (yFrom === null) {
       q(accs.flat, ga - 3, gd - 3, ga, gd, dark, dark);
-      q(accs.flat, ga, gd, Math.min(gTop, ga + 1.0), Math.min(gTop, gd + 1.0), dark, st.ground);
-      q(accs.flat, Math.min(gTop, ga + 1.0), Math.min(gTop, gd + 1.0), gTop, gTop, st.ground, st.ground);
+      q(accs.flat, ga, gd, Math.min(gTop, ga + 0.6), Math.min(gTop, gd + 0.6), dark, dark);
+      q(accs.flat, Math.min(gTop, ga + 0.6), Math.min(gTop, gd + 0.6), gTop, gTop, st.ground, st.ground);
     } else q(accs.flat, ga, gd, gTop, gTop, st.ground, st.ground);
     // upper floors: windows (not on party walls or windowless typologies)
     if (st.floors > 0 && yTo > gTop) {
@@ -175,7 +181,9 @@ function walls(accs: FacadeAccs, ctx: CityCtx, pb: PreparedBuilding, st: Buildin
         q(accs.win, accentBand, accentBand, yTo, yTo, st.wall, st.wall, [0, ((accentBand - gTop) / FLOOR_H) / 4, bays / 4, st.floors / 4]);
       }
     }
-    if (parapet > 0 && simple) {
+    if (parapet > 0 && far) {
+      // the roof edge alone reads from that far
+    } else if (parapet > 0 && simple) {
       const pc = st.accentKind === "albero" ? st.accent : st.wall.clone().multiplyScalar(0.97);
       q(accs.flat, yTo, yTo, yTo + parapet, yTo + parapet, pc, pc);
     } else if (parapet > 0) {

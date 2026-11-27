@@ -272,6 +272,25 @@ export function buildGround(ctx: CityCtx): GroundLayer {
   for (const a of city.water) {
     const big = isRiver(a);
     if (big) continue;
+    // small water (fountains, ponds) never lies on the route's surface
+    {
+      let cx = 0;
+      let cz = 0;
+      const n = a.ring.length / 2;
+      for (let i = 0; i < n; i++) {
+        cx += a.ring[i * 2]! / n;
+        cz += a.ring[i * 2 + 1]! / n;
+      }
+      const pr = ctx.track.project(cx, cz);
+      const lay = ctx.track.layoutAt(pr.s);
+      let lo = lay.left;
+      let hi = lay.right;
+      for (const w of lay.sidewalks) {
+        lo = Math.min(lo, w.from);
+        hi = Math.max(hi, w.to);
+      }
+      if (pr.lateral > lo - 3 && pr.lateral < hi + 3) continue;
+    }
     const ring = a.ring;
     const contour: THREE.Vector2[] = [];
     for (let i = 0; i + 1 < ring.length; i += 2) contour.push(new THREE.Vector2(ring[i]!, ring[i + 1]!));

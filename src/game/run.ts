@@ -30,8 +30,8 @@ import {
   type PlayerAction,
   type PlayerState,
 } from "./player";
-import { getCourse, laneEndAhead } from "./course";
-import { laneOffset, layoutAt, type LayoutFn } from "./lanes";
+import { getCourse } from "./course";
+import { laneMergeAhead, laneOffset, laneOpenAt, layoutAt, type LayoutFn } from "./lanes";
 import { obstacleCentre, pickupD, type PickupSpawn } from "./spawns";
 import { TrackGenerator } from "./track";
 import { footprintOf } from "./traffic";
@@ -99,9 +99,9 @@ export const ENDING_TIME = 1.25;
 const GENERATE_AHEAD = 760;
 /** Oncoming vehicles in your lane flash and honk this many seconds before they would reach you. */
 export const HORN_TIME = 1.7;
-/** Turns are announced this far ahead (m); lane endings this far. */
+/** Turns are announced this far ahead (m); lane endings this far before their taper starts. */
 export const TURN_NOTICE = 120;
-export const LANE_END_NOTICE = 80;
+export const LANE_END_NOTICE = 120;
 
 export const SCORE = {
   perMetre: 1,
@@ -333,6 +333,9 @@ export class Run {
     for (let d = from; d <= to; d += 3.3) {
       const layout = this.layoutFn(d);
       lane = Math.min(lane, layout.offsets.length - 1);
+      // Not over a lane that is tapering away (it would move under the line of bellotas).
+      const course = getCourse();
+      if (course && this.layoutFn === layoutAt && (!laneOpenAt(course.track, lane, d) || laneMergeAhead(course.track, lane, d, 0) !== null)) continue;
       list.push({ id: this.airIds++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: FLIGHT_HEIGHT + 0.9 });
       if (--left <= 0) {
         // Neighbouring lanes reachable in flight (not across a median: the bridge cables).
@@ -471,7 +474,7 @@ export class Run {
             return;
           }
         } else {
-          if (contact.type === "side") bounceBack(s, this.layoutFn(s.p));
+          if (contact.type === "side") bounceBack(s, this.layoutFn(s.p), this.boxes);
           else this.ignore.add(spawn.id);
           if (this.stumble()) return;
         }
@@ -652,52 +655,57 @@ export class Run {
 
   /** Real street name at the runner (null on unnamed links and roundabouts). */
   street: string | null = null;
-  /** Turns already announced (their start s, unbounded), and the lane ending already announced. */
-  private announcedTurn = -Infinity;
+  /** The turn announced last (unbounded start and end), and the lane taper already announced. */
+  private announcedTurn: { s: number; end: number } | null = null;
   private announcedEnd = -Infinity;
-  /** Metres until the runner's lane ends (null: it continues), for the HUD. */
+  /**
+   * Metres until the runner's lane starts tapering into its merge target (0 while it tapers,
+   * null when it continues), for the HUD.
+   */
   laneEnding: number | null = null;
 
   /**
-   * Guidance for the shell: a "turn" event ~120 m before each bend or roundabout, and a
-   * "lane-ends" event when the runner's lane will end within 80 m (with the side to move to).
+   * Guidance for the shell: a "turn" event for the next bend or roundabout only (TURN_NOTICE m
+   * ahead, or as soon as the previous announced one is finished), and a "lane-ends" event
+   * LANE_END_NOTICE m before the runner's lane starts tapering (with the side of its target).
    */
   private updateGuides(): void {
     const course = getCourse();
     if (!course) return;
     const s = this.player;
     const L = course.lapLength;
-    const base = Math.floor(s.p / L) * L;
-    for (let lapBase = base; lapBase <= base + L; lapBase += L) {
-      for (const t of course.turns) {
-        const at = lapBase + t.s;
-        const ahead = at - s.p;
-        if (ahead <= 0 || ahead > TURN_NOTICE || at <= this.announcedTurn) continue;
-        this.announcedTurn = at;
-        this.cfg.emit({ type: "turn", direction: t.direction, roundabout: t.roundabout, street: t.street, distance: Math.round(ahead) });
+    const shown = this.announcedTurn;
+    if (!shown || s.p >= shown.end) {
+      // The nearest turn not finished yet.
+      const base = Math.floor(s.p / L) * L;
+      let next: { s: number; end: number; t: (typeof course.turns)[number] } | null = null;
+      for (const lapBase of [base - L, base, base + L]) {
+        for (const t of course.turns) {
+          const at = lapBase + t.s;
+          const end = lapBase + Math.max(t.endS, t.s);
+          if (end <= s.p || (shown && at <= shown.s)) continue;
+          if (!next || at < next.s) next = { s: at, end, t };
+        }
+      }
+      if (next && next.s - s.p <= TURN_NOTICE) {
+        this.announcedTurn = { s: next.s, end: next.end };
+        const t = next.t;
+        this.cfg.emit({
+          type: "turn", direction: t.direction, roundabout: t.roundabout, street: t.street,
+          distance: Math.max(0, Math.round(next.s - s.p)), endDistance: Math.round(next.end - s.p),
+        });
       }
     }
-    const track = course.track as typeof course.track & { laneEndsAhead?: (s: number, lane: number) => number | null };
-    const ending = typeof track.laneEndsAhead === "function" ? track.laneEndsAhead(s.p, s.lane) : laneEndAhead(course, s.p, s.lane, 400);
-    this.laneEnding = ending;
-    if (ending !== null && ending <= LANE_END_NOTICE) {
-      const at = s.p + ending;
-      if (Math.abs(at - this.announcedEnd) > 5) {
-        this.announcedEnd = at;
-        // Move towards a neighbouring lane that carries on (the nearer side first).
-        const layout = this.layoutFn(s.p);
-        let side: "left" | "right" = s.lane > 0 ? "left" : "right";
-        for (const d of [-1, 1]) {
-          const l = s.lane + d;
-          if (l < 0 || l >= layout.offsets.length) continue;
-          const e = typeof track.laneEndsAhead === "function" ? track.laneEndsAhead(s.p, l) : laneEndAhead(course, s.p, l, 400);
-          if (e === null || e > ending + 1) {
-            side = d < 0 ? "left" : "right";
-            break;
-          }
-        }
-        this.cfg.emit({ type: "lane-ends", side });
-      }
+    const layout = this.layoutFn(s.p);
+    if (s.lane < 0 || s.lane >= layout.offsets.length) {
+      this.laneEnding = null;
+      return;
+    }
+    const merge = laneMergeAhead(course.track, s.lane, s.p, 400);
+    this.laneEnding = merge ? Math.max(0, merge.s0 - s.p) : null;
+    if (merge && merge.s0 - s.p <= LANE_END_NOTICE && Math.abs(merge.s0 - this.announcedEnd) > 5) {
+      this.announcedEnd = merge.s0;
+      this.cfg.emit({ type: "lane-ends", side: merge.side < 0 ? "left" : "right" });
     }
   }
 
@@ -724,7 +732,7 @@ export class Run {
       if (o.d > s.p + v * (HORN_TIME + 0.5) + 10) break;
       if (o.k <= 0 || this.flashed.has(o.id) || this.ignore.has(o.id)) continue;
       const def = OBSTACLE_DEFS[o.kind];
-      if (Math.abs(o.x - laneOffset(this.layoutFn(s.p), s.lane)) > def.width / 2 + 0.3) continue;
+      if (Math.abs(o.x - this.boxes.laneX(s.lane, s.p)) > def.width / 2 + 0.3) continue;
       const [front] = footprintOf(o);
       if ((front - s.p) / v > HORN_TIME) continue;
       this.flashed.add(o.id);

@@ -191,6 +191,7 @@ export function menuScreen(ctx: ScreenCtx): HTMLElement {
   credits.type = "button";
   credits.tabIndex = -1;
   credits.addEventListener("mousedown", (e) => e.preventDefault());
+  for (const type of ["keydown", "keyup"] as const) credits.addEventListener(type, (e) => (e.code === "Space" || e.code === "Enter") && e.preventDefault());
   credits.addEventListener("click", () => {
     credits.blur();
     actions.openPanel("credits");
@@ -436,6 +437,12 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
 
 // ------------------------------------------------------------------ achievements
 
+/** The full-lap achievement shows the real lap length when the city data is loaded. */
+function achievementText(id: string, description: string): string {
+  const lap = getCity()?.meta.lapLength;
+  return id === "vuelta-al-ruedo" && typeof lap === "number" && lap > 0 ? `${description} (${formatMetres(lap)})` : description;
+}
+
 export function achievementsScreen(ctx: ScreenCtx): HTMLElement {
   const { store, actions } = ctx;
   const have = store.achievementsUnlocked();
@@ -445,7 +452,7 @@ export function achievementsScreen(ctx: ScreenCtx): HTMLElement {
       "li",
       `ach${on ? " on" : ""}`,
       h("div", "ach-icon", svg(on ? GLYPH_MEDAL : GLYPH_LOCK)),
-      h("div", "ach-body", h("div", "ach-name", a.name), h("div", "ach-desc", a.description)),
+      h("div", "ach-body", h("div", "ach-name", a.name), h("div", "ach-desc", achievementText(a.id, a.description))),
       h("div", "ach-reward", on ? svg(GLYPH_CHECK) : svg(ICON_BELLOTA), on ? null : formatInt(a.reward)),
     );
   });

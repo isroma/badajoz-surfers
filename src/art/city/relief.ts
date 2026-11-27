@@ -31,10 +31,10 @@ export function textQuad(bag: Bag, key: string, draw: (ctx: CanvasRenderingConte
   bag.props.quad(new THREE.Matrix4().makeScale(w, w * (96 / 512), 1).setPosition(x, y, z), 0xffffff, signMaterial(lit), uv);
 }
 
-export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s1: number): void {
+export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s1: number, part: 0 | 1 | null = null): void {
   const overRunnable = (x: number, z: number, nearS: number): boolean => {
     const pr = ctx.track.project(x, z, nearS);
-    const lay = ctx.track.layoutAt(pr.s);
+    const lay = ctx.wideLayout(pr.s);
     return pr.lateral > lay.left - 0.2 && pr.lateral < lay.right + 0.2;
   };
   const p = bag.props;
@@ -51,6 +51,7 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
   };
   for (const pb of ctx.buildings) {
     if (pb.chunk !== chunk || pb.src.dist > 30 || pb.upperRing) continue;
+    if (part !== null && pb.index % 2 !== part) continue;
     const st = styleOf(pb);
     const ring = pb.ring;
     // the edge that best faces the route (for the name sign)
@@ -99,7 +100,7 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
       if (st.accentKind === "balconies" && st.floors > 0) {
         for (let fl = 0; fl < Math.min(st.floors, 8); fl++) {
           const y = st.Gf + fl * ((pb.top - st.Gf) / Math.max(1, st.floors));
-          if (y - g < CLEARANCE && overRunnable(mx + nx * 1.0, mz + nz * 1.0, pb.src.s)) continue;
+          if (y - g < CLEARANCE + 0.5 && [-0.5, -0.25, 0, 0.25, 0.5].some((t) => overRunnable(mx + ux * len * t + nx * 1.6, mz + uz * len * t + nz * 1.6, pb.src.s))) continue;
           p.push(new THREE.Matrix4().makeRotationY(ry).setPosition(mx, y, mz));
           p.box(0, 0.06, 0.45, len - 1.2, 0.14, 0.9, 0xfcf8f1, m);
           p.box(0, 0.6, 0.88, len - 1.2, 0.9, 0.04, PAL.darkGrey, m);
@@ -120,6 +121,21 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
         }
       }
     }
+    // the theatre's portico goes on the long façade closest to the route (on the Paseo San Francisco
+    // garden): the side façades are hidden behind other blocks from every point of the run
+    if (pb.typ === "theatre") {
+      let best = Infinity;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i]!;
+        const d = ring[(i + 1) % ring.length]!;
+        if (Math.hypot(d.x - a.x, d.z - a.z) < 16) continue;
+        const toRoad = facing(pb, a, d);
+        if (toRoad > 2 && toRoad < best) {
+          best = toRoad;
+          bestEdge = i;
+        }
+      }
+    }
     // the building's name on a flat sign (schools, churches, the theatre, hotels, offices…)
     if (pb.name && bestEdge >= 0) {
       const a = ring[bestEdge]!;
@@ -130,21 +146,49 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
       const mx = (a.x + d.x) / 2 + nx * 0.08;
       const mz = (a.z + d.z) / 2 + nz * 0.08;
       const g = pb.streetGround ? ctx.streetLevel(mx, mz, pb.src.s) : pb.src.h0;
-      const y = Math.min(pb.top - 0.8, g + (st.floors > 0 ? st.Gf - g - 0.2 : 3.2));
+      // high on the facade, clear of the shop signs at ~3.25 m
+      const y = Math.max(Math.min(pb.top - 0.8, g + 4.6), Math.min(pb.top - 0.8, g + (st.floors > 0 ? st.Gf - g - 0.2 : 3.2)));
       const w = Math.min(len - 0.6, Math.max(3, pb.name.length * 0.32));
-      const look = pb.typ === "school" ? drawLabel(pb.name, "#3e7bd6", "#ffffff") : pb.typ === "church" ? drawLabel(pb.name, "#d8c9a8", "#1f2328", { serif: true }) : pb.typ === "hospital" ? drawLabel(pb.name, "#ffffff", "#2f9e5b", { border: "#2f9e5b" }) : drawLabel(pb.name, "#fcf8f1", "#1f2328", { serif: pb.typ === "theatre" || pb.typ === "public" });
+      const look = nameLook(pb, pb.name);
       p.push(new THREE.Matrix4().makeRotationY(Math.atan2(nx, nz)).setPosition(mx, 0, mz));
-      textQuad(bag, `bname-${pb.typ}-${pb.name}`, look, 0, y, 0.02, w);
+      if (pb.typ !== "theatre") textQuad(bag, `bname-${pb.typ}-${pb.name}`, look, 0, y, 0.02, w); // the theatre names itself on the frieze
       if (pb.typ === "school" && !overRunnable(mx + nx * 3, mz + nz * 3, pb.src.s)) {
         // the school yard wall with railings in front
         p.box(0, g + 0.5, 3, len, 1.0, 0.3, PAL.buildings[2], m);
         p.box(0, g + 1.5, 3, len, 1.0, 0.05, PAL.darkGrey, m);
       }
       if (pb.typ === "hospital") p.box(len / 2 - 1.2, y + 1.6, 0.08, 1.2, 0.35, 0.05, 0x2f9e5b, m);
+      if (pb.typ === "theatre") {
+        // classical portico (as deep as the pavement allows): columns, frieze with the name, pediment
+        let dp = 2.8;
+        while (dp > 0.6 && overRunnable(mx + nx * (dp + 0.3), mz + nz * (dp + 0.3), pb.src.s)) dp -= 0.4;
+        const pw = Math.min(len - 1, 14);
+        const H = Math.min(9, Math.max(6, pb.top - g - 2));
+        // slide the portico along the façade to the part not hidden by the templete in front
+        const tem = ctx.landmark("templete-san-francisco");
+        let shift = 0;
+        if (tem?.x !== undefined && tem.z !== undefined) {
+          const ux = (d.x - a.x) / len;
+          const uz = (d.z - a.z) / len;
+          const tAlong = (tem.x - (a.x + d.x) / 2) * ux + (tem.z - (a.z + d.z) / 2) * uz;
+          const room = Math.max(0, len / 2 - pw / 2 - 0.5);
+          shift = tAlong > 0 ? -room : room;
+        }
+        p.push(xf(shift, 0, 0));
+        const cr = Math.min(0.38, dp / 3);
+        p.box(0, g + 0.15, dp / 2, pw + 0.6, 0.3, dp, PAL.stone, m);
+        const n = 6;
+        for (let k = 0; k < n; k++) p.cyl(-pw / 2 + 0.6 + (k * (pw - 1.2)) / (n - 1), g + 0.3, dp - cr - 0.1, cr, H - 0.3, 0xfcf8f1, 8, m);
+        p.box(0, g + H + 0.6, dp / 2, pw + 0.6, 1.2, dp + 0.1, 0xfcf8f1, m);
+        p.hexa([[-pw / 2 - 0.3, g + H + 1.2, dp + 0.05], [pw / 2 + 0.3, g + H + 1.2, dp + 0.05], [pw / 2 + 0.3, g + H + 1.2, 0], [-pw / 2 - 0.3, g + H + 1.2, 0], [-0.2, g + H + 3.6, dp + 0.05], [0.2, g + H + 3.6, dp + 0.05], [0.2, g + H + 3.6, 0], [-0.2, g + H + 3.6, 0]], PAL.stone, m);
+        textQuad(bag, `frieze-${pb.name}`, drawLabel(pb.name.toUpperCase(), "#fcf8f1", "#1f2328", { serif: true }), 0, g + H + 0.6, dp + 0.07, Math.min(pw, 12));
+        p.pop();
+      }
       p.pop();
     }
   }
 
+  if (part === 0) return; // the businesses go with the second half
   // the real businesses on the nearest facade facing the route
   const f = newFrame();
   for (const poi of ctx.city.pois) {
@@ -183,7 +227,7 @@ function poiSign(ctx: CityCtx, bag: Bag, poi: CityPoi, at: { x: number; z: numbe
   const look = poiLook(poi.category);
   const w = Math.min(4.2, 1.4 + poi.name.length * 0.22);
   p.push(new THREE.Matrix4().makeRotationY(at.ry).setPosition(at.x, at.g, at.z));
-  textQuad(bag, `poi-${poi.category}-${poi.name}`, drawLabel(look.kind === "bank" || look.kind === "pharmacy" ? poi.name.toUpperCase() : poi.name, look.bg, look.fg, { serif: look.kind === "bar" }), 0, 3.25, 0.05, w, look.kind === "bar" || look.kind === "pharmacy");
+  textQuad(bag, `poi-${poi.category}-${poi.name}`, poiDraw(poi), 0, 3.25, 0.05, w, look.kind === "bar" || look.kind === "pharmacy");
   if (look.kind === "pharmacy" && !overRunnable(at.x + Math.sin(at.ry) * 1.2, at.z + Math.cos(at.ry) * 1.2, poi.s)) {
     // the green cross on a bracket
     p.box(0, 3.9, 0.5, 0.06, 0.06, 1.0, PAL.darkGrey, m);
@@ -194,7 +238,7 @@ function poiSign(ctx: CityCtx, bag: Bag, poi: CityPoi, at: { x: number; z: numbe
   // bar and café terraces, only where the pavement is wider than the runnable lanes
   if (look.kind === "bar") {
     const pr = ctx.track.project(at.x, at.z, poi.s);
-    const lay = ctx.track.layoutAt(pr.s);
+    const lay = ctx.wideLayout(pr.s);
     const side = pr.lateral > 0 ? 1 : -1;
     const runEdge = side > 0 ? lay.right + 0.5 : lay.left - 0.5;
     const room = Math.abs(pr.lateral - runEdge);
@@ -218,4 +262,23 @@ function poiSign(ctx: CityCtx, bag: Bag, poi: CityPoi, at: { x: number; z: numbe
 export function animateSigns(t: number, night: boolean): void {
   void t;
   void night;
+}
+
+function nameLook(pb: PreparedBuilding, name: string): (ctx: CanvasRenderingContext2D, w: number, h: number) => void {
+  return pb.typ === "school" ? drawLabel(name, "#3e7bd6", "#ffffff") : pb.typ === "church" ? drawLabel(name, "#d8c9a8", "#1f2328", { serif: true }) : pb.typ === "hospital" ? drawLabel(name, "#ffffff", "#2f9e5b", { border: "#2f9e5b" }) : drawLabel(name, "#fcf8f1", "#1f2328", { serif: pb.typ === "theatre" || pb.typ === "public" });
+}
+
+function poiDraw(poi: CityPoi): (ctx: CanvasRenderingContext2D, w: number, h: number) => void {
+  const look = poiLook(poi.category);
+  return drawLabel(look.kind === "bank" || look.kind === "pharmacy" ? poi.name.toUpperCase() : poi.name, look.bg, look.fg, { serif: look.kind === "bar" });
+}
+
+/** Draw every facade text of the lap into the text atlas, straight from the data (prewarm). */
+export function prewarmReliefText(ctx: CityCtx): void {
+  for (const pb of ctx.buildings) {
+    if (!pb.name || pb.src.dist > 30) continue;
+    signSlot(`bname-${pb.typ}-${pb.name}`, nameLook(pb, pb.name));
+    if (pb.typ === "theatre") signSlot(`frieze-${pb.name}`, drawLabel(pb.name.toUpperCase(), "#fcf8f1", "#1f2328", { serif: true }));
+  }
+  for (const poi of ctx.city.pois) if (poi.dist <= 35 && plausibleName(poi.name)) signSlot(`poi-${poi.category}-${poi.name}`, poiDraw(poi));
 }

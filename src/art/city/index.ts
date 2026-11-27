@@ -17,13 +17,13 @@ import { buildAllBuildings } from "./buildings";
 import { buildContext, CHUNK, type CityCtx } from "./context";
 import { buildGround, type GroundLayer } from "./ground";
 import { buildRoadChunk, type EdgeSample } from "./road";
-import { animateSigns } from "./relief";
-import { buildGuides } from "./guides";
-import { allCityMaterials, lightPoolMaterial } from "./cmats";
+import { animateSigns, prewarmReliefText } from "./relief";
+import { buildGuides, prewarmGuideText } from "./guides";
+import { allCityMaterials, lightPoolMaterial, setPoolsAllowed } from "./cmats";
 import { U, clearChunkMask, setChunkMasked } from "./shared";
 import type { Track } from "./track";
 import { buildNetwork } from "./network";
-import { buildChunkDressing, buildPermanentDressing, setNightDressing, type DressingPass } from "./dressing";
+import { buildChunkDressing, buildPermanentDressing, prewarmDressingText, setNightDressing, type DressingPass } from "./dressing";
 import { buildLandmarks } from "./landmarks";
 
 export interface CityStats {
@@ -34,16 +34,16 @@ export interface CityStats {
   tris: Map<number, number>;
 }
 
-let AHEAD = 360;
+let AHEAD = 300;
 const BEHIND = 90;
 const KEEP_AHEAD = 620;
 const KEEP_BEHIND = 160;
 /** Chunks this close get the full dressing (trees, relief, furniture); farther ones only the road. */
-let NEAR_AHEAD = 180;
+let NEAR_AHEAD = 160;
 const NEAR_BEHIND = 70;
 const BUDGET_MS = 4;
 /** Permanent meshes farther than this (beyond the fog) are hidden. */
-const CULL_FAR = 850;
+const CULL_FAR = 720;
 
 export interface CityInternals extends CityScenery {
   ctx: CityCtx;
@@ -109,6 +109,8 @@ export function createCity(city: CityData, track: Track): CityInternals {
     permanent = new THREE.Group();
     permanent.name = "permanent";
     ground = buildGround(ctx);
+    const gl = ground;
+    ctx.greenAt = (x, z) => gl.green.at(x, z) !== null;
     permanent.add(ground.group);
     const buildings = buildAllBuildings(ctx);
     permanent.add(buildings);
@@ -132,13 +134,13 @@ export function createCity(city: CityData, track: Track): CityInternals {
       const detail = o.parent?.name.endsWith("-detail") ?? false;
       const tree = o.name === "trees";
       const terrain = o.name === "terrain";
-      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 260 : tree ? 420 : terrain ? 600 : CULL_FAR });
+      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 260 : tree ? 360 : terrain ? 500 : CULL_FAR });
     });
   };
 
   const edgesOf = new Map<number, EdgeSample[]>();
   /** Build a chunk's road (pass "road") or add its detail (pass "detail"). */
-  const DETAIL_PASSES: (DressingPass | "merge")[] = ["furniture", "relief", "merge"];
+  const DETAIL_PASSES: (DressingPass | "merge")[] = ["furniture", "relief", "relief2", "merge"];
   const detailDone = new Map<number, number>();
   /** Build a chunk's road (pass "road") or its next detail pass (trees, furniture, relief: one per call, so no frame does too much). */
   const buildChunk = (i: number, pass: "road" | "detail" = "road"): number => {
@@ -293,24 +295,19 @@ export function createCity(city: CityData, track: Track): CityInternals {
       }
     },
     setQuality(level) {
-      AHEAD = [360, 300, 250, 200][level] ?? 360;
-      NEAR_AHEAD = [180, 140, 100, 70][level] ?? 180;
+      AHEAD = [300, 260, 220, 180][level] ?? 300;
+      NEAR_AHEAD = [160, 130, 100, 70][level] ?? 160;
+      setPoolsAllowed(level < 2);
       lightPoolMaterial().visible = level < 2 && lastLap % 2 === 0;
     },
     async prewarm(renderer, camera, s = 0, lap = 1) {
       api.preload(s, lap);
-      // draw every sign of the lap into the text atlas now (no texture re-uploads during the run)
-      if (ground) {
-        for (let i = 0; i < n; i++) {
-          if (chunks.has(i)) continue;
-          const s0 = i * CHUNK;
-          const s1 = Math.min(track.lapLength, s0 + CHUNK);
-          const bag = new Bag();
-          const road = buildRoadChunk(ctx, bag, ts, s0, s1);
-          buildChunkDressing(ctx, bag, ts, i, s0, s1, road.edges, ground, "furniture");
-          buildChunkDressing(ctx, bag, ts, i, s0, s1, road.edges, ground, "relief");
-          buildGuides(ctx, bag, ts, s0, s1);
-        }
+      // every text of the lap into the atlas straight from the data, then only the start area too
+      prewarmReliefText(ctx);
+      prewarmDressingText(ctx);
+      prewarmGuideText();
+      for (const i of wanted(0, AHEAD, BEHIND)) {
+        if (!chunks.has(i)) buildChunk(i, "road");
       }
       // compile in the engine's scene (its lights and fog decide the shader variants)
       let scene: THREE.Object3D | null = root;

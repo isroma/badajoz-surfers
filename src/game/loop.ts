@@ -36,6 +36,8 @@ export interface LoopHandlers {
   render(alpha: number, dt: number): void;
   /** Simulation speed (slow motion below 1). */
   timeScale?(): number;
+  /** After each real-time frame: the unclamped rAF interval and the time its ticks + render took (ms). */
+  measured?(intervalMs: number, workMs: number): void;
 }
 
 export class Loop {
@@ -54,10 +56,13 @@ export class Loop {
     const frame = (now: number): void => {
       if (!this.running) return;
       this.raf = requestAnimationFrame(frame);
-      const dt = this.last < 0 ? TICK : Math.min(0.1, (now - this.last) / 1000);
+      const interval = this.last < 0 ? 0 : now - this.last;
+      const dt = this.last < 0 ? TICK : Math.min(0.1, interval / 1000);
       this.last = now;
       if (dt > 0) this.fps += (1 / dt - this.fps) * 0.05;
+      const t0 = performance.now();
       this.step(dt);
+      if (interval > 0) this.handlers.measured?.(interval, performance.now() - t0);
     };
     this.raf = requestAnimationFrame(frame);
   }

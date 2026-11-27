@@ -375,11 +375,16 @@ export type GameEvent =
   /** Entered a street with a (new) real name, e.g. "Avenida Sinforiano Madroñero". */
   | { type: "street"; name: string }
   /**
-   * A bend or a roundabout ~120 m ahead (once per turn): which way the route goes ("straight"
-   * through a roundabout), the street after it and how far ahead it starts (metres).
+   * The next bend or roundabout, ~120 m ahead (once per turn, one at a time: the next one is
+   * announced when the runner has passed this one's end): which way the route goes ("straight"
+   * through a roundabout), the street after it, how far ahead it starts and (`endDistance`) how
+   * far ahead it ends (metres), so the hint can stay up until the turn is finished.
    */
-  | { type: "turn"; direction: "left" | "right" | "straight"; roundabout: boolean; street: string | null; distance: number }
-  /** The runner's lane ends within 80 m: move to the lane on this side. */
+  | { type: "turn"; direction: "left" | "right" | "straight"; roundabout: boolean; street: string | null; distance: number; endDistance?: number }
+  /**
+   * The runner's lane tapers into its neighbour within ~120 m (it merges smoothly over its last
+   * 60 m if the runner stays in it): the lane that carries on is on this side.
+   */
   | { type: "lane-ends"; side: "left" | "right" }
   | { type: "gameover"; summary: RunSummary };
 
@@ -404,8 +409,9 @@ export interface HudSnapshot {
   street?: string | null;
   /**
    * The runnable lanes here (left to right) and which one the runner is in, so the shell never
-   * draws a lane that does not exist; `ending` = metres until the runner's lane ends (null if it
-   * continues), `kinds` = road/sidewalk/median/pedestrian per lane.
+   * draws a lane that does not exist; `ending` = metres until the runner's lane starts tapering
+   * into its neighbour (0 while it tapers, null if it continues), `kinds` =
+   * road/sidewalk/median/pedestrian per lane.
    */
   lanes?: { count: number; index: number; kinds: readonly string[]; ending: number | null };
 }

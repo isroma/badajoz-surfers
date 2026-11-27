@@ -2,13 +2,19 @@
  * Runner physics and control state. Pure, no three.js: the same code drives the game, the
  * solvability tests and the autopilot's look-ahead.
  *
- * Lanes are indices into the lane layout at the runner's distance (see lanes.ts). When the layout
- * changes under the runner (a street with more or fewer lanes), the runner eases to the nearest
- * lane of the new layout.
+ * Lanes are indices into the lane layout at the runner's distance (see lanes.ts). The runner's
+ * lateral position is `laneX(lane, p) + drift + changeOffset`:
+ * - `laneX` is the lane's own centre, a continuous function of the distance (on the real lap it
+ *   blends across layout boundaries and tapers into the merge target where a lane ends, see
+ *   lanes.ts `laneOffsetAt`), so the street changing under the runner carries them smoothly;
+ * - `changeOffset` is the only thing lane-change input animates: a remap never blocks, queues or
+ *   re-times a lane change;
+ * - `drift` only absorbs a jump of a layout that is not continuous (test layouts without a track):
+ *   it decays to 0 over TRANSITION_LENGTH of running.
  */
 import { TRANSITION_LENGTH } from "../city/lanes";
 import type { Aabb } from "./collision";
-import { centreLane, laneKind, laneOffset, layoutAt, remapLane, type Flow, type LaneKind, type LaneLayout } from "./lanes";
+import { courseLaneX, centreLane, laneKind, laneOffset, layoutAt, remapLane, sameOffsets, type Flow, type LaneKind, type LaneLayout } from "./lanes";
 import {
   COYOTE_TIME,
   FAST_FALL_SPEED,
@@ -42,10 +48,13 @@ export interface PlayerWorld {
   surface(x: number, p: number, feetY: number): SurfaceHit;
   ceiling(x: number, halfWidth: number, p: number, feetY: number, standHeight: number): boolean;
   /**
-   * The lane `lane` continues as after a layout boundary crossed between `fromS` and `toS`:
-   * the new index, null when it ends there, undefined when unknown (fall back to the nearest lane).
+   * Continuous lane geometry (the real lap): the lateral centre of `lane` (index in layout(p)) at
+   * p, the index `lane` (in layout(fromS)) has at toS (undefined: cannot follow it), and whether
+   * the lane is still there (not merged away). Without them the layout's offsets are used.
    */
-  mapLane?(fromS: number, toS: number, lane: number): number | null | undefined;
+  laneX?(lane: number, p: number): number;
+  followLane?(fromS: number, toS: number, lane: number): number | undefined;
+  laneOpen?(lane: number, p: number): boolean;
 }
 
 export interface PlayerState {
@@ -53,17 +62,24 @@ export interface PlayerState {
   p: number;
   speed: number;
   x: number;
-  /** Target lane (index into the layout). */
+  /** Target lane (index into the layout at `p`). */
   lane: number;
-  /** Lateral centre of the target lane when it was chosen (detects layout changes). */
+  /** Where the current/last lane change started and was heading (world lateral, informational). */
   targetX: number;
+  fromX: number;
   /** Lane before the current/last lane change (a side stumble bounces back to it). */
   prevLane: number;
-  fromX: number;
   /** Lane change progress 0..1 (1 = done). */
   laneT: number;
-  /** Duration (s) of the current lane change (longer across wide gaps and layout changes). */
+  /** Duration (s) of the current lane change (longer across wide gaps). */
   laneDur: number;
+  /** Lateral offset from the target lane's centre that the lane change eases out (0 when done). */
+  changeOffset: number;
+  /** changeOffset at the start of the current lane change. */
+  changeFrom: number;
+  /** Layout discontinuity being eased out (see the module comment): value at `driftAt`. */
+  driftFrom: number;
+  driftAt: number;
   /** Kind and flow of the target lane (to stay on the same side when the street changes). */
   laneKind: LaneKind;
   laneFlow: Flow;
@@ -107,15 +123,16 @@ export interface StepEvents {
   /** Tried to change lanes past the edge of the road (no lane there): -1 left, 1 right. */
   edgeBump: boolean;
   bumpDir: number;
-  /** The lane layout changed and the runner is easing to the nearest lane. */
+  /** The lane index changed under the runner (a layout boundary or a completed merge). */
   laneRemapped: boolean;
 }
 
 export function createPlayer(p = 0, lane?: number, layout: LaneLayout = layoutAt(p)): PlayerState {
   const l = lane ?? centreLane(layout);
-  const x = laneOffset(layout, l);
+  const x = courseLaneX(layout, l, p);
   return {
     p, speed: 0, x, lane: l, targetX: x, prevLane: l, fromX: x, laneT: 1, laneDur: LANE_CHANGE_TIME, queuedDir: 0,
+    changeOffset: 0, changeFrom: 0, driftFrom: 0, driftAt: p,
     laneKind: laneKind(layout, l), laneFlow: layout.flow[l] ?? 0,
     y: 0, vy: 0, grounded: true, supportId: -1, coyote: 0, jumpBuffer: 0, roll: 0, rollQueued: false,
     superJump: false, carried: false, flightY: 0, air: 0, pp: p, px: x, py: 0, prolling: false,
@@ -153,28 +170,54 @@ export function laneChangeTime(distance: number): number {
 /** Gap (m) wider than this between neighbouring lanes is a non-runnable median (a vault across it). */
 export const MEDIAN_GAP = 4.2;
 
+/** Lateral centre of a lane at p (the world's continuous geometry when it has one). */
+function laneXOf(world: PlayerWorld | null, layout: LaneLayout, lane: number, p: number): number {
+  return world?.laneX ? world.laneX(lane, p) : laneOffset(layout, lane);
+}
+
+/** The drift still to ease out at distance p. */
+export function driftAt(s: PlayerState, p = s.p): number {
+  if (s.driftFrom === 0) return 0;
+  const t = Math.min(1, Math.max(0, (p - s.driftAt) / TRANSITION_LENGTH));
+  return s.driftFrom * (1 - t * t * (3 - 2 * t));
+}
+
 function setTarget(s: PlayerState, layout: LaneLayout, lane: number): void {
   s.lane = lane;
-  s.targetX = laneOffset(layout, lane);
   s.laneKind = laneKind(layout, lane);
   s.laneFlow = layout.flow[lane] ?? 0;
 }
 
-function startLaneChange(s: PlayerState, dir: number, layout: LaneLayout, ev: StepEvents): void {
+/** Start easing from the current position into `lane` (no event). */
+function moveTo(s: PlayerState, layout: LaneLayout, lane: number, world: PlayerWorld | null): void {
+  const target = laneXOf(world, layout, lane, s.p);
+  s.prevLane = s.lane;
+  s.fromX = s.x;
+  s.targetX = target;
+  setTarget(s, layout, lane);
+  s.changeFrom = s.x - driftAt(s) - target;
+  s.changeOffset = s.changeFrom;
+  s.laneT = Math.abs(s.changeFrom) < 1e-9 ? 1 : 0;
+  s.laneDur = laneChangeTime(s.changeFrom);
+}
+
+/** The nearest lane in direction `dir` that is still there, or `from` when there is none. */
+function neighbour(s: PlayerState, layout: LaneLayout, dir: number, world: PlayerWorld | null): number {
   const n = layout.offsets.length;
-  const target = Math.max(0, Math.min(n - 1, s.lane + dir));
+  for (let l = s.lane + dir; l >= 0 && l < n; l += dir) if (!world?.laneOpen || world.laneOpen(l, s.p)) return l;
+  return s.lane;
+}
+
+function startLaneChange(s: PlayerState, dir: number, layout: LaneLayout, ev: StepEvents, world: PlayerWorld | null): void {
+  const target = neighbour(s, layout, dir, world);
   // Carried by the stork, no hops across a non-runnable median (bridge cables live there).
-  const across = Math.abs(laneOffset(layout, target) - laneOffset(layout, s.lane)) > MEDIAN_GAP;
+  const across = Math.abs(laneXOf(world, layout, target, s.p) - laneXOf(world, layout, s.lane, s.p)) > MEDIAN_GAP;
   if (target === s.lane || (s.carried && across)) {
     ev.edgeBump = true;
     ev.bumpDir = dir;
     return;
   }
-  s.prevLane = s.lane;
-  setTarget(s, layout, target);
-  s.fromX = s.x;
-  s.laneT = 0;
-  s.laneDur = laneChangeTime(s.targetX - s.x);
+  moveTo(s, layout, target, world);
   ev.laneChanged = true;
 }
 
@@ -194,13 +237,10 @@ export function isChangingLane(s: PlayerState): boolean {
 }
 
 /** A side stumble: go back to the lane we came from. */
-export function bounceBack(s: PlayerState, layout: LaneLayout = layoutAt(s.p)): void {
-  const back = Math.max(0, Math.min(layout.offsets.length - 1, s.prevLane));
-  s.prevLane = s.lane;
-  setTarget(s, layout, back);
-  s.fromX = s.x;
-  s.laneT = 0;
-  s.laneDur = laneChangeTime(s.targetX - s.x);
+export function bounceBack(s: PlayerState, layout: LaneLayout = layoutAt(s.p), world: PlayerWorld | null = null): void {
+  let back = Math.max(0, Math.min(layout.offsets.length - 1, s.prevLane));
+  if (world?.laneOpen && !world.laneOpen(back, s.p)) back = s.lane;
+  moveTo(s, layout, back, world);
   s.queuedDir = 0;
 }
 
@@ -224,6 +264,38 @@ export function prevRunnerBox(s: PlayerState, out: Aabb): Aabb {
   return out;
 }
 
+/**
+ * After moving from s.pp to s.p: keep `lane` (and `prevLane`) indexing the layout at s.p. With the
+ * world's continuous geometry the lane is followed through the road's lane map and completed
+ * merges and nothing else changes; otherwise (test layouts) the nearest lane of the same kind and
+ * flow is taken and the jump becomes drift.
+ */
+function followStreet(s: PlayerState, before: LaneLayout, world: PlayerWorld, ev: StepEvents): void {
+  const after = world.layout(s.p);
+  const followed = world.followLane?.(s.pp, s.p, s.lane);
+  if (followed !== undefined && followed < after.offsets.length) {
+    if (followed !== s.lane || after !== before) {
+      if (followed !== s.lane) ev.laneRemapped = true;
+      const prev = world.followLane?.(s.pp, s.p, s.prevLane);
+      setTarget(s, after, followed);
+      s.prevLane = prev !== undefined && prev < after.offsets.length ? prev : followed;
+    }
+    return;
+  }
+  if (after === before || (sameOffsets(after, before) && s.lane < after.offsets.length)) {
+    if (after !== before) setTarget(s, after, s.lane);
+    return;
+  }
+  // A jump in the layout: the nearest lane of the same kind and flow; the position stays put.
+  const xBefore = laneOffset(before, s.lane) + driftAt(s) + s.changeOffset;
+  const lane = remapLane(after, laneOffset(before, s.lane), s.laneKind, s.laneFlow);
+  setTarget(s, after, lane);
+  s.prevLane = lane;
+  s.driftFrom = xBefore - s.changeOffset - laneXOf(world, after, lane, s.p);
+  s.driftAt = s.p;
+  ev.laneRemapped = true;
+}
+
 /** Integrate one tick of the asymmetric jump gravity (exact for the gravity at the tick start). */
 function fall(s: PlayerState, dt: number): void {
   const g = gravityFor(s.vy);
@@ -243,32 +315,14 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
   s.py = s.y;
   s.prolling = s.roll > 0;
 
-  // The street changed under us (more or fewer lanes, other widths): ease to the nearest lane of
-  // the same kind and flow, over the layout transition (TRANSITION_LENGTH of running).
   const layout = world.layout(s.p);
-  const n = layout.offsets.length;
-  if (s.lane >= n || laneOffset(layout, s.lane) !== s.targetX || laneKind(layout, s.lane) !== s.laneKind) {
-    // The road's own lane map first (the runner's world position stays continuous); a lane that
-    // ends hands the runner to the nearest surviving lane (a nudge, announced ahead).
-    const mapped = world.mapLane?.(s.pp - 0.5, s.p + 0.5, s.lane);
-    const ended = mapped === null;
-    const lane = typeof mapped === "number" && mapped < n ? mapped : remapLane(layout, ended ? s.x : s.targetX, s.laneKind, s.laneFlow);
-    s.prevLane = lane;
-    setTarget(s, layout, lane);
-    s.fromX = s.x;
-    s.laneT = Math.abs(s.targetX - s.x) < 1e-6 ? 1 : 0;
-    s.laneDur = ended ? laneChangeTime(s.targetX - s.x) : Math.max(laneChangeTime(s.targetX - s.x), TRANSITION_LENGTH / Math.max(4, s.speed));
-    s.queuedDir = 0;
-    ev.laneRemapped = true;
-  }
-
   for (const action of actions) {
     switch (action) {
       case "left":
       case "right": {
         const dir = action === "left" ? -1 : 1;
         if (s.laneT < 1) s.queuedDir = dir;
-        else startLaneChange(s, dir, layout, ev);
+        else startLaneChange(s, dir, layout, ev, world);
         break;
       }
       case "jump":
@@ -303,16 +357,16 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
   }
   s.jumpBuffer = Math.max(0, s.jumpBuffer - dt);
 
-  // Lanes.
+  // Lane change: ease the offset from the target lane out.
   if (s.laneT < 1) {
     s.laneT = Math.min(1, s.laneT + dt / s.laneDur);
-    s.x = s.fromX + (s.targetX - s.fromX) * laneEase(s.laneT);
+    s.changeOffset = s.changeFrom * (1 - laneEase(s.laneT));
     if (s.laneT >= 1) {
-      s.x = s.targetX;
+      s.changeOffset = 0;
       if (s.queuedDir !== 0) {
         const dir = s.queuedDir;
         s.queuedDir = 0;
-        startLaneChange(s, dir, layout, ev);
+        startLaneChange(s, dir, layout, ev, world);
       }
     }
   }
@@ -320,6 +374,8 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
   // Forward.
   s.p += s.speed * dt;
   world.prepare(s.pp, s.p);
+  followStreet(s, layout, world, ev);
+  s.x = laneXOf(world, world.layout(s.p), s.lane, s.p) + driftAt(s) + s.changeOffset;
 
   // Vertical.
   if (s.carried) {

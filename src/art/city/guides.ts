@@ -10,7 +10,8 @@ import { PAL } from "../palette";
 import type { Bag, TS } from "./bag";
 import { flatMaterial, paintMaterial, signMaterial, signSlot } from "./cmats";
 import type { CityCtx } from "./context";
-import type { LaneLayout } from "./track";
+import { mergeEdgeAt, mergesIn } from "./merges";
+import { KERB } from "./road";
 
 const SUN = new THREE.Color(PAL.sun);
 const WHITE = new THREE.Color(PAL.white);
@@ -91,13 +92,6 @@ function arrow(bag: Bag, ts: TS, s: number, lat: number, bend: number, col: THRE
   tri(P(3.9, sgn * 0.15), P(4.5, sgn * 1.05), P(5.0, sgn * 0.35));
 }
 
-/** Lateral span of a lane. */
-function laneSpan(l: LaneLayout, i: number): [number, number] {
-  const o = l.offsets[i] ?? 0;
-  const w = (l.widths[i] ?? 3) / 2;
-  return [o - w, o + w];
-}
-
 export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: number): void {
   const tr = ctx.track;
   const L = tr.lapLength;
@@ -114,23 +108,23 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
     const b = t.roundabout && t.exitS !== null ? t.exitS : t.endS;
     for (let s = a; s <= b; s += 9) {
       if (!inChunk(s)) continue;
-      const lay = tr.layoutAt(s);
+      const lay = ctx.wideLayout(s);
       if (lay.carriageways.length === 0) continue; // pedestrian streets and plazas: painted arrows only
       const islandSide = t.roundabout || dir === "right" ? -1 : 1;
       const outside = t.roundabout ? -1 : dir === "right" ? -1 : 1;
       void islandSide;
-      const lat = outside > 0 ? lay.right + 1.4 : lay.left - 1.4;
+      const lat = outside > 0 ? lay.right + 2.6 : lay.left - 2.6;
       board(bag, ts, s, lat, dir);
     }
     // the exit of a roundabout: a board pointing out of the ring
     if (t.roundabout && t.exitS !== null && inChunk(t.exitS - 4)) {
-      const lay = tr.layoutAt(t.exitS - 4);
-      board(bag, ts, t.exitS - 4, lay.left - 1.4, "right");
+      const lay = ctx.wideLayout(t.exitS - 4);
+      board(bag, ts, t.exitS - 4, lay.left - 2.6, "right");
     }
     // painted arrows ~40 m before, in every own road lane
     const as = t.s - 40;
     if (inChunk(as)) {
-      const lay = tr.layoutAt(as);
+      const lay = ctx.wideLayout(as);
       const bend = straightRing ? 0 : t.direction === "left" ? -1 : 1;
       lay.kinds.forEach((k, i) => {
         if (k !== "road" || lay.flow[i] !== 1) return;
@@ -141,7 +135,7 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
   // --- side streets the route does not take: closed with barriers ---------------------------
   for (const j of ctx.city.junctions) {
     if (j.s < s0 || j.s >= s1) continue;
-    const lay = tr.layoutAt(j.s);
+    const lay = ctx.wideLayout(j.s);
     const f = ts.f(j.s);
     // branch direction from its compass bearing (clockwise from north; north = -Z)
     const br = (j.bearing * Math.PI) / 180;
@@ -162,48 +156,66 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
     const cz = j.z + dz * d;
     // never on the route itself (branches running alongside it)
     const prc = tr.project(cx, cz, j.s);
-    const lc = tr.layoutAt(prc.s);
+    const lc = ctx.wideLayout(prc.s);
     if (prc.lateral > lc.left - 2 && prc.lateral < lc.right + 2) continue;
     const half = Math.max(2.5, ((j.lanes ?? 2) * 3.2) / 2 + 1);
+    const ends = [[cx - dz * half, cz + dx * half], [cx + dz * half, cz - dx * half]] as const;
+    if (ends.some(([x, z]) => {
+      const pe = tr.project(x, z, j.s);
+      const le = ctx.wideLayout(pe.s);
+      return pe.lateral > le.left - 0.6 && pe.lateral < le.right + 0.6;
+    })) continue;
     const y = ctx.streetLevel(cx, cz, j.s) - 0.13;
     barrierRow(bag, cx - dz * half, y, cz + dx * half, cx + dz * half, cz - dx * half);
   }
-  // --- lanes that end: a 60 m barrier taper and merge arrows; new lanes open with a short taper -
-  for (const t of tr.transitions ?? []) {
-    const from = tr.stretches[t.fromIndex]?.layout;
-    const to = tr.stretches[t.toIndex]?.layout;
-    if (!from || !to) continue;
-    t.map.forEach((dst, i) => {
-      if (dst !== null || from.kinds[i] !== "road") return; // only carriageway lanes get barrier tapers
-      const [lo, hi] = laneSpan(from, i);
-      const inner = (from.offsets[i] ?? 0) < 0 ? hi : lo; // the side the runner should move to
-      const outer = inner === hi ? lo : hi;
-      for (let k = 0; k <= 24; k++) {
-        const s = t.s - 60 + k * 2.5;
-        if (!inChunk(s)) continue;
-        const lat = outer + (inner - outer) * (k / 24);
-        const q = ts.p(s, lat, 0);
-        const f = ts.f(s);
-        barrier(bag, q.x, q.y, q.z, Math.atan2(f.tx, f.tz), 1.1, k % 2 === 1);
+  // --- lanes that end (and begin): the surface funnels into the neighbour along the eased edge --
+  for (const m of mergesIn(tr, s0, s1)) {
+    const a = Math.max(m.s0, s0);
+    const b = Math.min(m.s1, s1);
+    if (b - a < 0.5) continue;
+    const road = m.kind === "road";
+    const raisedKind = m.kind === "sidewalk" || m.kind === "median";
+    const y = raisedKind ? KERB + 0.06 : 0.016;
+    const col = road ? new THREE.Color(PAL.roadOff) : m.kind === "median" ? new THREE.Color(PAL.grass) : new THREE.Color(PAL.pavement);
+    const acc = bag.acc(paintMaterial());
+    const step = 2;
+    for (let s = a; s < b - 1e-6; s += step) {
+      const t = Math.min(b, s + step);
+      const e0 = mergeEdgeAt(m, s);
+      const e1 = mergeEdgeAt(m, t);
+      // the vanished part of the lane: no longer looks runnable
+      const A = ts.p(s, e0, y);
+      const B = ts.p(s, m.edgeFull, y);
+      const C = ts.p(t, m.edgeFull, y);
+      const D = ts.p(t, e1, y);
+      const up = new THREE.Vector3(0, 1, 0);
+      const n = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(D, A));
+      if (Math.abs(m.edgeFull - e0) > 0.02 || Math.abs(m.edgeFull - e1) > 0.02) {
+        if (n.y > 0) acc.quad(A, B, C, D, [0, 0], [0, 0], [0, 0], [0, 0], col, col, col, col, up);
+        else acc.quad(A, D, C, B, [0, 0], [0, 0], [0, 0], [0, 0], col, col, col, col, up);
       }
-      for (const ds of [-55, -35]) {
-        const s = t.s + ds;
-        if (inChunk(s)) arrow(bag, ts, s, from.offsets[i] ?? 0, inner > outer ? 1 : -1, WHITE);
-      }
-    });
-    for (const i of t.begins) {
-      if (to.kinds[i] !== "road") continue;
-      const [lo, hi] = laneSpan(to, i);
-      const inner = (to.offsets[i] ?? 0) < 0 ? hi : lo;
-      const outer = inner === hi ? lo : hi;
-      for (let k = 0; k <= 8; k++) {
-        const s = t.s + k * 2.5;
-        if (!inChunk(s)) continue;
-        const lat = inner + (outer - inner) * (k / 8);
-        const q = ts.p(s, lat, 0);
-        const f = ts.f(s);
-        barrier(bag, q.x, q.y, q.z, Math.atan2(f.tx, f.tz), 1.1, k % 2 === 1);
+      // the closing line along the eased edge: painted only (nothing solid inside layout.left..right)
+      const lineCol = road ? (Math.round(s / step) % 2 === 1 ? new THREE.Color(PAL.white) : new THREE.Color(PAL.danger)) : new THREE.Color(PAL.kerb);
+      const L0 = ts.p(s, e0, y + 0.004);
+      const L1 = ts.p(s, e0 - m.side * 0.25, y + 0.004);
+      const L2 = ts.p(t, e1 - m.side * 0.25, y + 0.004);
+      const L3 = ts.p(t, e1, y + 0.004);
+      const nl = new THREE.Vector3().subVectors(L1, L0).cross(new THREE.Vector3().subVectors(L3, L0));
+      if (nl.y > 0) acc.quad(L0, L1, L2, L3, [0, 0], [0, 0], [0, 0], [0, 0], lineCol, lineCol, lineCol, lineCol, up);
+      else acc.quad(L0, L3, L2, L1, [0, 0], [0, 0], [0, 0], [0, 0], lineCol, lineCol, lineCol, lineCol, up);
+    }
+    // merge arrows in road lanes, pointing to the lane that continues
+    if (road && !m.begins) {
+      for (const ds of [8, 32]) {
+        const sa = m.s0 + ds;
+        if (sa >= s0 && sa < s1) arrow(bag, ts, sa, m.layout.offsets[m.lane] ?? 0, -m.side, WHITE);
       }
     }
   }
+}
+
+/** Chevron boards into the text atlas (prewarm). */
+export function prewarmGuideText(): void {
+  signSlot("chevron-left", chevronDraw("left"));
+  signSlot("chevron-right", chevronDraw("right"));
 }

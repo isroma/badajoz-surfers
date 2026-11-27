@@ -5,12 +5,12 @@
  */
 import type { CityBuilding, CityData, CityLandmark, ZoneId } from "../../city/data";
 import { Grid, centroid, distToSeg, pointInFlat, ringPoints, signedArea, type P2 } from "./geo";
-import { newFrame, type Track, type TrackFrame } from "./track";
+import { newFrame, type LaneLayout, type Track, type TrackFrame } from "./track";
 import { hash01 } from "./shared";
 
 export const CHUNK = 50;
 /** Arches and passages: nothing solid below this over the runnable surface. */
-export const CLEARANCE = 4.6;
+export const CLEARANCE = 4.8;
 
 export type Typology = "brick" | "render" | "casco" | "modern" | "shed" | "stone" | "plazaAlta" | "school" | "church" | "hospital" | "theatre" | "hotel" | "public" | "retail";
 
@@ -56,6 +56,11 @@ export interface CityCtx {
   chunkOf(s: number): number;
   frame(s: number): TrackFrame;
   wrapS(s: number): number;
+  /** layoutAt(s) with left/right widened to the extremes over s ± 10 m: props placed from it stay
+   *  clear of the runnable surface across stretch boundaries and merges. */
+  wideLayout(s: number): LaneLayout;
+  /** In a park / garden polygon (set once the ground layer exists). */
+  greenAt: (x: number, z: number) => boolean;
   /** Signed lateral distance to the facade line on a side (+1 right / -1 left), or null. */
   facadeAt(s: number, side: 1 | -1): number | null;
 }
@@ -271,6 +276,7 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
   }
 
   const facadeCache = new Map<number, number | null>();
+  const wideCache = new Map<number, LaneLayout>();
   const facadeAt = (s: number, side: 1 | -1): number | null => {
     const key = Math.round(wrapS(s)) * 2 + (side > 0 ? 1 : 0);
     const hit = facadeCache.get(key);
@@ -309,6 +315,23 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
     landmark: (id) => lm.get(id),
     chunkOf: (s) => Math.floor(wrapS(s) / CHUNK),
     frame, wrapS, facadeAt,
+    greenAt: () => false,
+    wideLayout: (sIn) => {
+      const k = Math.round(wrapS(sIn));
+      const hit = wideCache.get(k);
+      if (hit) return hit;
+      const base = track.layoutAt(k);
+      let left = base.left;
+      let right = base.right;
+      for (let d = -16; d <= 16; d += 2) {
+        const l = track.layoutAt(k + d);
+        left = Math.min(left, l.left);
+        right = Math.max(right, l.right);
+      }
+      const out = { ...base, left, right };
+      wideCache.set(k, out);
+      return out;
+    },
   };
 }
 

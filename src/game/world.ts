@@ -9,7 +9,11 @@
  * disappears. Objects are dropped only once they are behind the runner by more than KEEP_BEHIND
  * metres AND outside the frustum (with margin). Things that get close to the lens, or block the
  * line from the camera to the runner, fade out (per object, alpha) instead of being hidden; new
- * objects fade in at the far end of the view.
+ * objects grow in (scale) at the far end of the view.
+ *
+ * No shader may compile during a run: the alpha fades swap in transparent twins of the art's
+ * materials that are made once per material, compiled in `prewarm` and never disposed (pooled), the
+ * light glows share two materials, and everything is prewarmed while the loading screen shows.
  */
 import * as THREE from "three";
 import {
@@ -54,13 +58,43 @@ const FADE_FAR = 1.0;
 const OCCLUDER_ALPHA = 0.32;
 
 /**
- * Per-object fade: cloned materials (alpha blended, still writing depth so the object hides its
- * own far side) while faded, the originals restored as soon as it is clear.
+ * Per-object fade: transparent twins of its materials (alpha blended, still writing depth so the
+ * object hides its own far side) while faded, the originals restored as soon as it is clear. The
+ * twins come from a session-long pool (`takeTwin`): never disposed, so their shader programs stay
+ * compiled.
  */
 interface Fade {
   alpha: number;
   originals: Map<THREE.Mesh, THREE.Material | THREE.Material[]> | null;
-  clones: THREE.Material[];
+  twins: { of: THREE.Material; twin: THREE.Material }[];
+}
+
+/** Seconds a new far object takes to grow to full size (instead of an alpha fade-in). */
+const GROW_TIME = 0.35;
+
+const twinPool = new Map<THREE.Material, THREE.Material[]>();
+
+/** A transparent twin of an art material (pooled for the whole session, never disposed). */
+function takeTwin(of: THREE.Material): THREE.Material {
+  const pooled = twinPool.get(of)?.pop();
+  if (pooled) return pooled;
+  const twin = of.clone();
+  twin.transparent = true;
+  twin.depthWrite = true;
+  return twin;
+}
+
+function giveTwin(of: THREE.Material, twin: THREE.Material): void {
+  let pool = twinPool.get(of);
+  if (!pool) twinPool.set(of, (pool = []));
+  twin.opacity = 1;
+  pool.push(twin);
+}
+
+/** How much a growing object shows (ease-out of its grow time, 1 = full size). */
+function growScale(grow: number): number {
+  const t = Math.min(1, Math.max(0, grow));
+  return Math.max(0.001, 1 - (1 - t) * (1 - t) * (1 - t));
 }
 
 interface ObstacleView {
@@ -80,6 +114,8 @@ interface ObstacleView {
   glows: THREE.Sprite[];
   flashT: number;
   triangle: THREE.Object3D | null;
+  /** 0..1 growing in at the far end of the view (1 = full size). */
+  grow: number;
 }
 
 interface PickupView {
@@ -88,6 +124,7 @@ interface PickupView {
   key: string;
   seen: number;
   fade: Fade;
+  grow: number;
 }
 
 interface AtmosphereState {
@@ -182,6 +219,8 @@ export function fadeTarget(distanceToLens: number, blocksRunner: boolean): numbe
 }
 
 let glowMaterial: THREE.SpriteMaterial | null = null;
+/** One shared material per glow colour (headlights, hazard lights): created and compiled once. */
+const glowMaterials = new Map<number, THREE.SpriteMaterial>();
 function glowSprite(color: number): THREE.Sprite {
   if (!glowMaterial) {
     const size = 64;
@@ -200,8 +239,12 @@ function glowSprite(color: number): THREE.Sprite {
     texture.colorSpace = THREE.SRGBColorSpace;
     glowMaterial = new THREE.SpriteMaterial({ map: texture, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: true });
   }
-  const m = glowMaterial.clone();
-  m.color.setHex(color);
+  let m = glowMaterials.get(color);
+  if (!m) {
+    m = glowMaterial.clone();
+    m.color.setHex(color);
+    glowMaterials.set(color, m);
+  }
   const s = new THREE.Sprite(m);
   s.renderOrder = 4;
   return s;
@@ -510,16 +553,28 @@ export class World {
     for (const kind of kinds) {
       const def = OBSTACLE_DEFS[kind];
       for (const moving of def.vehicle || kind === "peaton" ? [false, true] : [false]) {
-        try {
-          const obj = this.art.createObstacle(kind, 0, moving, def.lanes === 3 ? 8 : undefined);
-          obj.position.copy(ahead);
-          staging.add(obj);
-          made.push({ obj, key: `${kind}|${moving ? 1 : 0}|${def.lanes === 3 ? "8.0" : ""}|0` });
-        } catch {
-          // a kind the art cannot build yet
+        // One of each variant group (liveries, taxis...): they are the pool keys too.
+        for (let seed = 0; seed < 4; seed++) {
+          try {
+            const obj = this.art.createObstacle(kind, seed, moving, def.lanes === 3 ? 8 : undefined);
+            obj.position.copy(ahead);
+            staging.add(obj);
+            made.push({ obj, key: `${kind}|${moving ? 1 : 0}|${def.lanes === 3 ? "8.0" : ""}|${seed}` });
+          } catch {
+            // a kind the art cannot build yet
+          }
         }
       }
     }
+    // Engine props: headlight and hazard glows, the warning triangle.
+    for (const color of [0xfff2c8, 0xffa020]) {
+      const g = glowSprite(color);
+      g.position.copy(ahead);
+      staging.add(g);
+    }
+    const tri = warningTriangle();
+    tri.position.copy(ahead);
+    staging.add(tri);
     const pickupKinds: PickupKind[] = ["iman", "zapatillas", "jamon", "patinete", "ciguena", "letra"];
     const pickups: { mesh: PickupMesh; key: string }[] = [];
     for (const kind of pickupKinds) {
@@ -531,11 +586,27 @@ export class World {
     this.bellotas.ready(this.art);
     this.scene.add(staging);
     staging.updateMatrixWorld(true);
-    try {
-      await renderer.compileAsync(this.scene, camera);
-    } catch {
-      renderer.compile(this.scene, camera);
+    const compile = async (): Promise<void> => {
+      try {
+        await renderer.compileAsync(this.scene, camera);
+      } catch {
+        renderer.compile(this.scene, camera);
+      }
+    };
+    await compile();
+    // The fading variants: every staged mesh with its transparent twins, compiled too (the twins
+    // then wait in the pool for the whole session).
+    const fades: Fade[] = [];
+    for (const child of staging.children) {
+      const fade = World.newFade();
+      this.applyFade(child, fade, 0.5, 1e3);
+      fades.push(fade);
     }
+    staging.updateMatrixWorld(true);
+    await compile();
+    // A frame through the renderer too (compile alone does not upload everything).
+    renderer.render(this.scene, camera);
+    for (const f of fades) this.restore(f);
     this.scene.remove(staging);
     for (const { obj, key } of made) {
       obj.removeFromParent();
@@ -747,7 +818,7 @@ export class World {
   // --- Fades -------------------------------------------------------------------------------
 
   private static newFade(): Fade {
-    return { alpha: 1, originals: null, clones: [] };
+    return { alpha: 1, originals: null, twins: [] };
   }
 
   /** Ease the object's opacity towards `target`; clones its materials lazily, restores them when clear. */
@@ -763,33 +834,31 @@ export class World {
     if (!fade.originals) {
       fade.originals = new Map();
       this.created.faded++;
-      const cloneOf = new Map<THREE.Material, THREE.Material>();
+      const twinOf = new Map<THREE.Material, THREE.Material>();
       root.traverse((o) => {
         if (!(o instanceof THREE.Mesh)) return;
         const mats = o.material as THREE.Material | THREE.Material[];
         fade.originals?.set(o, mats);
         const swap = (m: THREE.Material): THREE.Material => {
-          let c = cloneOf.get(m);
+          let c = twinOf.get(m);
           if (!c) {
-            c = m.clone();
-            c.transparent = true;
-            c.depthWrite = true;
-            cloneOf.set(m, c);
-            fade.clones.push(c);
+            c = takeTwin(m);
+            twinOf.set(m, c);
+            fade.twins.push({ of: m, twin: c });
           }
           return c;
         };
         o.material = Array.isArray(mats) ? mats.map(swap) : swap(mats);
       });
     }
-    for (const c of fade.clones) c.opacity = fade.alpha;
+    for (const t of fade.twins) t.twin.opacity = fade.alpha;
   }
 
   private restore(fade: Fade): void {
     if (fade.originals) for (const [mesh, mats] of fade.originals) mesh.material = mats;
-    for (const c of fade.clones) c.dispose();
+    for (const t of fade.twins) giveTwin(t.of, t.twin);
     fade.originals = null;
-    fade.clones = [];
+    fade.twins = [];
   }
 
   // --- Obstacles and pickups ---------------------------------------------------------------
@@ -827,7 +896,7 @@ export class World {
     const def = OBSTACLE_DEFS[spawn.kind];
     const view: ObstacleView = {
       obj, spawn, knocked: null, seen: this.frame, fade: World.newFade(), wheels, body: obj.children[0] ?? null,
-      wheelAngle: 0, phase: (spawn.seed % 97) * 0.37, drift: null, glows: [], flashT: 0, triangle: null,
+      wheelAngle: 0, phase: (spawn.seed % 97) * 0.37, drift: null, glows: [], flashT: 0, triangle: null, grow: 1,
     };
     const half = def.length / 2;
     if (spawn.k > 0 && def.vehicle) {
@@ -857,10 +926,8 @@ export class World {
 
   private dropObstacle(view: ObstacleView): void {
     this.restore(view.fade);
-    for (const g of view.glows) {
-      g.removeFromParent();
-      g.material.dispose();
-    }
+    // The glow materials are shared for the session (never disposed: no recompile later).
+    for (const g of view.glows) g.removeFromParent();
     view.triangle?.removeFromParent();
     this.scene.remove(view.obj);
     // Pool it (same kind, direction, span and variant group) instead of rebuilding next time.
@@ -959,8 +1026,8 @@ export class World {
         if (c + half < p) continue; // Never seen and already behind: do not pop it in.
         if (run.ignore.has(spawn.id) && c < p) continue;
         view = this.takeObstacle(spawn);
-        // Far away it fades in rather than popping into the view.
-        if (c - p > 40) view.fade.alpha = 0;
+        // Far away it grows in rather than popping into the view.
+        if (c - p > 40) view.grow = 0;
         this.obstacles.set(spawn.id, view);
         this.scene.add(view.obj);
       }
@@ -1000,6 +1067,8 @@ export class World {
       const person = spawn.kind === "peaton";
       const yaw = (spawn.k === 0 && spawn.flipped) || (person && spawn.k < 0) ? Math.PI : 0;
       space.place(obj, shown, x, 0, yaw, person ? 0 : 1);
+      if (view.grow < 1) view.grow = Math.min(1, view.grow + dt / GROW_TIME);
+      obj.scale.setScalar(growScale(view.grow));
       // Driving: wheels turn, the body bobs and sways a touch.
       const rate = ended ? (view.drift?.v ?? 0) / Math.max(1, run.endSpeed) : obstacleRate(spawn, p);
       const worldSpeed = Math.abs(rate) * (ended ? run.endSpeed : run.player.speed);
@@ -1094,14 +1163,15 @@ export class World {
       }
       if (!view) {
         const { mesh } = this.takePickup(spawn.kind, letter);
-        view = { mesh, spawn, key, seen: frame, fade: World.newFade() };
-        if (pd - p > 40) view.fade.alpha = 0;
+        view = { mesh, spawn, key, seen: frame, fade: World.newFade(), grow: pd - p > 40 ? 0 : 1 };
         this.pickups.set(spawn.id, view);
         this.scene.add(mesh.root);
       }
       view.seen = frame;
       const root = view.mesh.root;
       space.place(root, pd, px, py, 0, 0);
+      if (view.grow < 1) view.grow = Math.min(1, view.grow + dt / GROW_TIME);
+      root.scale.setScalar(growScale(view.grow));
       const dist = Math.max(0, Math.hypot(px - camera.x, py - camera.y, -pd - camera.z) - 0.35);
       this.applyFade(root, view.fade, fadeTarget(dist, false), dt);
       root.visible = view.fade.alpha > 0.02;
