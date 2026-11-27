@@ -22,6 +22,7 @@ describe("traffic model", () => {
     expect(obstacleCentre(same, 50)).toBeCloseTo(80, 9); // 20 m behind its meeting point, 30 m ahead of the runner
     const onc = car({ k: 0.55, lane: 0, x: -2.6 });
     expect(obstacleRate(onc, 50)).toBeCloseTo(-0.55, 6);
+    // Oncoming vehicles drive at 8-14 m/s whatever the runner's speed.
     // Footprints: longer than the car for slow same-direction traffic, shorter for oncoming.
     const [a, b] = footprint(same, 4.3, RUNNER_HALF_DEPTH);
     expect(b - a).toBeGreaterThan(4.3);
@@ -63,11 +64,18 @@ describe("traffic model", () => {
           continue;
         }
         if (o.d > lightFor(span)) continue; // The finale: everything stands at the zone-end light.
-        if (o.k !== 0 && !(o.stop !== undefined && Math.abs(o.d - o.stop) < 0.05)) driving++;
+        // Queued at a light: drove up and stopped (counted neither way).
+        if (o.k !== 0 && o.stop !== undefined && Math.abs(o.d - o.stop) < 0.05) continue;
+        if (o.k !== 0) driving++;
         else parked++;
         if (o.k < 0) {
-          expect(o.k).toBeGreaterThanOrEqual(-0.55 - 1e-9);
-          expect(o.k).toBeLessThanOrEqual(-0.25 + 1e-9);
+          // 55-75% of the runner's speed, overtaken at 3-6 m/s.
+          // (at lap-2 speeds the 3-6 m/s closing speed wins: up to 1 - 6/v)
+          expect(o.k).toBeGreaterThanOrEqual(-Math.max(0.75, 1 - 6 / speedAt(o.d)) - 0.02);
+          expect(o.k).toBeLessThanOrEqual(-0.55 + 1e-9);
+          const closing = (1 + o.k) * speedAt(o.d);
+          expect(closing).toBeGreaterThanOrEqual(2.99);
+          expect(closing).toBeLessThanOrEqual(6.01 + 0.1 * speedAt(o.d));
           // Never past the zone-end light while it exists.
           expect(obstacleCentre(o, lifetime(o)[1]) + def.length / 2).toBeLessThanOrEqual(lightFor(span) + 1e-6);
         }

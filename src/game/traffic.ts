@@ -10,7 +10,6 @@
  */
 import { OBSTACLE_DEFS } from "../contracts";
 import type { LaneLayout, LayoutFn } from "./lanes";
-import { sameOffsets } from "./lanes";
 import { footprint, obstacleCentre, whenAhead, type ObstacleSpawn } from "./spawns";
 import { RUNNER_HALF_DEPTH } from "./tuning";
 
@@ -108,14 +107,21 @@ export function collides(a: Spawnish, b: Spawnish): boolean {
 export function flowAllows(o: Spawnish, layoutFn: LayoutFn, origin: LaneLayout): boolean {
   if (o.k === 0) return true;
   const [s0, s1] = sweep(o);
-  const half = lengthOf(o) / 2;
   if (!Number.isFinite(s0) || !Number.isFinite(s1)) return false;
+  const half = lengthOf(o) / 2;
+  void origin;
+  // Its lane must exist all along the sweep (same lateral position: the real lanes keep their
+  // offsets through junctions and roundabouts), with traffic its way.
   for (let d = s0 - half; ; d += 8) {
     const at = Math.min(d, s1 + half);
     const layout = layoutFn(at);
-    if (!sameOffsets(layout, origin)) return false;
-    const flow = layout.flow[o.lane] ?? 0;
-    const walker = o.kind === "peaton" && flow === 0;
+    let lane = -1;
+    for (let i = 0; i < layout.offsets.length; i++) if (Math.abs((layout.offsets[i] ?? 0) - o.x) < 0.05) lane = i;
+    if (lane < 0) return false;
+    const flow = layout.flow[lane] ?? 0;
+    const kind = layout.kinds?.[lane] ?? "road";
+    const walker = o.kind === "peaton" && flow === 0 && kind !== "road";
+    if (o.kind !== "peaton" && o.kind !== "moto" && kind !== "road") return false;
     if (o.k < 0 && flow !== 1 && !walker) return false;
     if (o.k > 0 && !(flow === -1 || walker || (flow === 0 && o.kind === "moto"))) return false;
     if (at >= s1 + half) break;

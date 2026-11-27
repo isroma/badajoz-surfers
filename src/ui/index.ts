@@ -3,6 +3,7 @@
  * The UI follows `GameApi.state` and the event stream; it drives the game only through
  * start/pause/resume/toMenu, so UI and engine never disagree.
  */
+import "./tokens.css";
 import "./styles.css";
 import { OUTFITS, POWERUPS, ZONES, type GameApi, type GameEvent, type GameState, type HudSnapshot, type RunSummary, type Shell } from "../contracts";
 import { AudioEngine } from "../audio";
@@ -13,9 +14,10 @@ import { Fx } from "./fx";
 import { Combo, comboStep, lapCaption, milestoneText, milestonesCrossed } from "./feel";
 import { Hud } from "./hud";
 import { shortZoneName, streetFromMap, zoneIndexOf } from "./minimap";
-import { loadShellCity, onCity } from "./city";
+import { getTrack, loadShellCity, onCity, turnAt } from "./city";
+import type { TurnHint } from "./hud";
 import { copyText } from "./clipboard";
-import { GLYPH_CHECK, GLYPH_COPY, GLYPH_FLAG, GLYPH_MEDAL, GLYPH_RUN, GLYPH_SHIRT, ICON_BELLOTA, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
+import { GLYPH_CHECK, GLYPH_COPY, GLYPH_MEDAL, GLYPH_RUN, GLYPH_SHIRT, ICON_BELLOTA, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
 import {
   achievementsScreen,
   creditsScreen,
@@ -87,6 +89,10 @@ export function createShell(root: HTMLElement): Shell {
   let lastHud: HudSnapshot | null = null;
   let stingTimer = 0;
   let lastHorn = -Infinity;
+  /** The engine's latest `turn` event, pinned to the run distance where the turn is. */
+  let turnFromEvent: { hint: TurnHint | null; at: number } | null = null;
+  /** Once the engine sends `turn` events, they replace the track-model fallback. */
+  let engineTurns = false;
   /** Street from the engine's `street` events (until HudSnapshot.street exists). */
   let streetFromEvent: string | null | undefined;
   const combo = new Combo();
@@ -114,6 +120,7 @@ export function createShell(root: HTMLElement): Shell {
     hud.reset();
     fx.clear();
     streetFromEvent = undefined;
+    turnFromEvent = null;
   };
 
   const statsFromSummary = (s: RunSummary): RunStats => ({
@@ -409,10 +416,28 @@ export function createShell(root: HTMLElement): Shell {
 
   const handleEvent = (e: GameEvent): void => {
     // Events newer than this shell's contracts: `street` ({ type: "street"; name: string }).
-    const loose = e as { type: string; name?: unknown };
+    const loose = e as { type: string; name?: unknown; direction?: unknown; roundabout?: unknown; street?: unknown; distance?: unknown; side?: unknown };
     if (loose.type === "street") {
       streetFromEvent = typeof loose.name === "string" ? loose.name : null;
       hud.setStreet(streetFromEvent);
+      return;
+    }
+    // `turn` ({ direction, roundabout, street, distance }): preferred over the track model.
+    if (loose.type === "turn") {
+      const d = loose.direction;
+      const dir = d === "left" || d === "right" || d === "straight" ? d : null;
+      const ahead = typeof loose.distance === "number" && Number.isFinite(loose.distance) ? loose.distance : 0;
+      engineTurns = true;
+      turnFromEvent = {
+        hint: dir ? { dir, roundabout: loose.roundabout === true, name: typeof loose.street === "string" && loose.street ? loose.street : null } : null,
+        at: fin(lastHud?.distance ?? 0) + ahead,
+      };
+      return;
+    }
+    // `lane-ends` ({ side }): a short one-line hint.
+    if (loose.type === "lane-ends") {
+      const left = loose.side === "left";
+      fx.toast({ title: left ? "← El carril se acaba" : "El carril se acaba →", key: "lane-ends", duration: 1600 });
       return;
     }
     switch (e.type) {
@@ -457,9 +482,11 @@ export function createShell(root: HTMLElement): Shell {
         if (e.kind === "bellota") {
           audio.bellota();
           const n = combo.hit(performance.now());
-          hud.setCombo(n);
           const step = comboStep(n);
-          if (step >= 0) audio.play("combo", step);
+          if (step >= 0) {
+            audio.play("combo", step);
+            if (n >= 25) fx.toast({ title: `${formatInt(n)} bellotas seguidas`, icon: ICON_BELLOTA, key: "combo", duration: 1200 });
+          }
         }
         else if (e.kind === "letra") {
           run.stats.letters++;
@@ -492,9 +519,8 @@ export function createShell(root: HTMLElement): Shell {
         run.stats.words++;
         audio.play("word");
         hud.wordComplete();
-        hud.rewardFlash();
+        // One toast once the bonus is measured: "¡BADAJOZ! +5.000".
         measureReward("¡BADAJOZ!");
-        fx.toast({ title: "¡BADAJOZ!", text: "Palabra completa: ¡bonus!", icon: GLYPH_FLAG, glyph: true, variant: "gold", duration: 2800, key: "word" });
         checkMissions();
         break;
       case "near-miss": {
@@ -515,6 +541,7 @@ export function createShell(root: HTMLElement): Shell {
           lastHorn = now;
           audio.play("horn");
           hud.horn();
+          fx.urgent({ title: "¡Cuidado! Viene de frente", variant: "danger", key: "horn", duration: 1300 });
         }
         break;
       }
@@ -534,7 +561,6 @@ export function createShell(root: HTMLElement): Shell {
         else {
           run.stats.zones++;
           const prev = ZONES[(ZONES.findIndex((z) => z.id === e.zone.id) + ZONES.length - 1) % ZONES.length];
-          hud.rewardFlash();
           // "¡Adiós, Casco Antiguo!": no gender agreement to get wrong across zone names.
           measureReward(prev ? `¡Adiós, ${shortZoneName(ZONES.indexOf(prev))}!` : "¡Zona superada!");
         }
@@ -590,12 +616,30 @@ export function createShell(root: HTMLElement): Shell {
     return streetFromMap(zoneIndexOf(snap.zone?.id ?? ""), fin(snap.zoneProgress));
   };
 
+  /** Turn hint: from ~120 m before a turn until just after it (hidden without track data). */
+  const turnHint = (snap: HudSnapshot): TurnHint | null => {
+    if (state !== "playing") return null;
+    if (turnFromEvent) {
+      // Shown until the runner is 15 m past the turn the event announced.
+      if (fin(snap.distance) <= turnFromEvent.at + 15) return turnFromEvent.hint;
+      turnFromEvent = null;
+    }
+    if (engineTurns) return null;
+    const track = getTrack();
+    if (!track) return null;
+    const lap = track.lapLength;
+    const s = ((fin(snap.distance) % lap) + lap) % lap;
+    const turn = turnAt(s);
+    if (!turn || turn.ahead > 120 || turn.toEnd < -10) return null;
+    return { dir: turn.dir, roundabout: turn.roundabout, name: turn.exitName };
+  };
+
   const tick = (t: number, snap: HudSnapshot): void => {
     const prevHud = lastHud;
     lastHud = snap;
     hud.render(snap);
     hud.setStreet(currentStreet(snap));
-    hud.comboAlive(combo.alive(performance.now()));
+    hud.setTurn(turnHint(snap));
     if (prevHud && state === "playing") {
       // Typical score per frame, so a reward can be told apart from normal running.
       const d = snap.score - prevHud.score;

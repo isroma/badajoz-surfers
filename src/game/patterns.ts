@@ -50,6 +50,8 @@ export interface PatternContext {
   zoneT: number;
   /** Lane index the line enters on. */
   entryLane: number;
+  /** Lanes that end soon (closed with barriers ahead): nothing goes there, the line avoids them. */
+  closed?: ReadonlySet<number>;
   /** Fresh-run warm-up: only the gentlest patterns. */
   easy: boolean;
   lap: number;
@@ -83,6 +85,8 @@ export interface PatternContext {
    * queueing at a light), so the traffic can flow; clutter goes in the other lanes.
    */
   live: ReadonlySet<number>;
+  /** The zone's roof route is due now (it may stop its ramp truck in a traffic lane). */
+  roofDue?: boolean;
   /** No oncoming vehicles in this pattern (they reach far ahead: a finale or roof route is coming). */
   holdOncoming: boolean;
   /** World distance where the last static obstacle in a lane ends (-Infinity if none). */
@@ -98,7 +102,17 @@ export const MOVER_K: Readonly<Partial<Record<ObstacleKind, number>>> = {
   peaton: 0.08,
 };
 /** Same-direction traffic drives at 25-55% of the runner's speed. */
-export const SAME_DIR_K: readonly [number, number] = [-0.55, -0.25];
+export const SAME_DIR_K: readonly [number, number] = [-0.75, -0.55];
+/** Same-direction traffic is overtaken at 3-6 m/s whatever the runner's speed (it clearly drives). */
+export const CLOSING_SPEED: readonly [number, number] = [3, 6];
+/** Oncoming traffic speed (m/s, absolute) by kind. */
+export const ONCOMING_SPEED: Readonly<Partial<Record<ObstacleKind, readonly [number, number]>>> = {
+  coche: [10, 14],
+  moto: [11, 14],
+  furgoneta: [9, 12],
+  bus: [8, 10],
+  peaton: [1.2, 1.6],
+};
 /** Clear world gap kept between the vehicles of a platoon. */
 const PLATOON_GAP: readonly [number, number] = [2.5, 7];
 
@@ -134,8 +148,9 @@ export class PatternBuilder {
   ) {
     this.end = start;
     this.line = ctx.entryLane;
-    this.lanes = laneIndices(ctx.layout);
+    this.lanes = laneIndices(ctx.layout).filter((l) => !ctx.closed?.has(l));
     this.clutter = this.lanes.filter((l) => !ctx.live.has(l));
+    if (!this.lanes.includes(this.line)) this.line = this.lanes.reduce((a, l) => (Math.abs(l - this.line) < Math.abs(a - this.line) ? l : a), this.lanes[0] ?? 0);
   }
 
   isLive(lane: number): boolean {
@@ -169,17 +184,30 @@ export class PatternBuilder {
 
   /** Lanes next to `lane`. */
   neighbours(lane: number): number[] {
-    return this.lanes.filter((l) => Math.abs(l - lane) === 1);
+    // Next lanes over that are a normal lane change away (not across a median).
+    const x = this.xOf(lane);
+    const near = this.lanes.filter((l) => Math.abs(l - lane) === 1 && Math.abs(this.xOf(l) - x) <= 3.8);
+    if (near.length > 0) return near;
+    const other = this.otherLanes(lane);
+    return other.length > 0 ? other : [lane];
   }
 
-  /** Extra run-up (metres) for the line to move from the entry lane to `lane`: 0.3 s per lane. */
+  /** Extra run-up (metres) for the line to move from the entry lane to `lane`: 0.45 s per lane (a lane change takes ~0.24 s). */
   approach(lane: number): number {
-    return this.s(0.3 * Math.abs(lane - this.ctx.entryLane));
+    const lanes = Math.abs(lane - this.ctx.entryLane);
+    const across = Math.abs(this.xOf(lane) - this.xOf(this.ctx.entryLane)) > 3.8 * lanes ? 0.2 : 0;
+    return this.s(0.45 * lanes + across);
   }
 
   /** Prefer staying or moving one lane. */
   nearLane(from: number, among: readonly number[] = this.lanes): number {
-    return this.rng.weighted<number>(among.map((l) => [l, Math.abs(l - from) === 0 ? 3 : Math.abs(l - from) === 1 ? 2 : 1] as const));
+    // By real lateral distance: staying, or one ordinary lane over, is likely; crossing a median
+    // to the far carriageway rarely.
+    const x0 = this.xOf(from);
+    return this.rng.weighted<number>(among.map((l) => {
+      const dx = Math.abs(this.xOf(l) - x0);
+      return [l, l === from ? 3 : dx <= 3.8 ? 2 : dx <= 7.5 ? 0.5 : 0.12] as const;
+    }));
   }
 
   /** A weighted pick; an empty list rejects the pattern (nothing of that role fits here). */
@@ -193,6 +221,12 @@ export class PatternBuilder {
 
   isRoad(lane: number): boolean {
     return this.laneKind(lane) === "road";
+  }
+
+  /** Oncoming speed as a fraction of the runner's: 8-14 m/s for vehicles, a stroll for people. */
+  oncomingK(kind: ObstacleKind): number {
+    const range = ONCOMING_SPEED[kind] ?? [9, 12];
+    return this.rng.range(range[0], range[1]) / Math.max(1, this.ctx.v);
   }
 
   /** Art variant seed; taxis are common near the centre. */
@@ -224,6 +258,11 @@ export class PatternBuilder {
   clearOfTraffic(kind: ObstacleKind, lane: number, front: number): boolean {
     const def = OBSTACLE_DEFS[kind];
     const o: ObstacleDraft = { kind, lane, x: this.xOf(lane), d: front + def.length / 2, k: 0, seed: 0, flipped: false };
+    if (def.lanes === 3) {
+      const span = runnableSpan(this.ctx.layout);
+      o.x = span.centre;
+      o.span = span.width;
+    }
     if (!this.ctx.clearOfTraffic(o)) return false;
     for (const other of this.obstacles) if (other.k !== 0 && lateralOverlap(o, other) && collides(o, other)) return false;
     return true;
@@ -265,7 +304,7 @@ export class PatternBuilder {
   }
 
   /** Same-direction speed for a lane in this pattern (one per lane: a platoon never overtakes itself). */
-  laneSpeed(lane: number): number {
+  laneSpeed(lane: number, slowest = false): number {
     let k = this.kByLane.get(lane);
     if (k === undefined) {
       const known = this.ctx.laneK(lane, this.start);
@@ -273,10 +312,12 @@ export class PatternBuilder {
       else {
         // Slow enough that, back when it came into view, it was already past the last thing
         // parked in its lane.
-        const back = this.start - this.ctx.lastStatic(lane) - 10;
-        const reach = Number.isFinite(back) ? back / (175 + back) : 1;
-        const fastest = Math.max(-SAME_DIR_K[1], Math.min(-SAME_DIR_K[0], reach));
-        k = -this.rng.range(-SAME_DIR_K[1], fastest);
+        // A closing speed of 3-6 m/s: traffic at 55-75% of the runner's speed (8-12 m/s at the
+        // start), and never so fast that the runner cannot overtake it.
+        const v = this.ctx.v;
+        const lo = Math.max(-SAME_DIR_K[1], 1 - CLOSING_SPEED[1] / v);
+        const hi = Math.max(lo, Math.min(-SAME_DIR_K[0], 1 - CLOSING_SPEED[0] / v));
+        k = slowest ? -lo : -this.rng.range(lo, hi);
       }
       this.kByLane.set(lane, k);
     }
@@ -317,7 +358,10 @@ export class PatternBuilder {
       // Stop at the first real signal or crossing it would reach, else at the zone-end light.
       const free = sweep(o)[1];
       const light = this.queueStopFor(lane, def.length);
-      const found = this.ctx.stopLine(lane, def.length, d, free + def.length / 2);
+      // Only lines it reaches after the runner has overtaken it (it drives through the others).
+      const passed = footprintOf(o)[1];
+      const reachLine = passed + (passed - d) * -k + def.length;
+      const found = this.ctx.stopLine(lane, def.length, reachLine, free + def.length / 2);
       // The zone-end light comes first when it is nearer (the finale lies beyond it).
       const real = found && found.stop < light ? found : null;
       const key = real ? `${real.line}|${lane}` : `light|${lane}`;
@@ -378,7 +422,7 @@ export class PatternBuilder {
     }
     if (isCar(kind) && this.flow(lane) === -1 && !this.ctx.easy && !this.ctx.holdOncoming && this.start > 300) {
       // Oncoming: one speed per lane (the first vehicle's), so they never close up on each other.
-      const k = this.kByLane.get(lane) ?? MOVER_K[kind] ?? 0.5;
+      const k = this.kByLane.get(lane) ?? this.oncomingK(kind);
       this.kByLane.set(lane, k);
       const o = this.drive(kind, lane, front, k);
       if (o) return this.endOf(o);
@@ -398,7 +442,7 @@ export class PatternBuilder {
 
   /** Oncoming vehicle whose footprint starts at `front`. Returns its footprint end (rejects the pattern if it cannot drive). */
   mover(kind: ObstacleKind, lane: number, front: number): number {
-    const o = this.drive(kind, lane, front, MOVER_K[kind] ?? 0.5);
+    const o = this.drive(kind, lane, front, this.oncomingK(kind));
     if (!o) {
       this.ok = false;
       return front + OBSTACLE_DEFS[kind].length;
@@ -483,6 +527,7 @@ export class PatternBuilder {
 
   /** Mirror every lane (used to dodge traffic). False if the traffic cannot drive in the mirrored lanes. */
   mirror(): boolean {
+    if (this.ctx.closed && this.ctx.closed.size > 0) return false;
     const n = this.n;
     const flip = (l: number): number => n - 1 - l;
     for (const o of this.obstacles) {
@@ -665,7 +710,8 @@ function shuffled<T>(rng: Rng, items: readonly T[]): T[] {
 function rowGap(b: PatternBuilder, action: boolean): number {
   // Early on (low difficulty) rows breathe a little more: humans need time to read them.
   const early = 0.25 * (1 - b.ctx.difficulty);
-  return b.s(b.ctx.reaction + (action ? 0.35 : 0.05) + early);
+  // (+0.12 s: a lane change now takes ~0.24 s, not 0.125)
+  return b.s(b.ctx.reaction + (action ? 0.35 : 0.05) + 0.12 + early);
 }
 
 /** Bellotas on the line for a row passed by a jump/roll/run. */
@@ -774,7 +820,9 @@ const carHop: PatternFn = (b) => {
   const { rng, ctx } = b;
   const roads = b.lanes.filter((l) => b.isRoad(l) && !ctx.underArch(b.start, b.start + 40));
   if (roads.length === 0) return false;
-  const lane = b.nearLane(ctx.entryLane, roads);
+  // Mostly a driving convoy to hop along (a live traffic lane), sometimes parked cars.
+  const live = roads.filter((l) => b.isLive(l));
+  const lane = b.nearLane(ctx.entryLane, live.length > 0 && rng.chance(0.85) ? live : roads);
   const count = rng.int(3, 5);
   // Bumper to bumper: the roofs form one continuous walkway (no falling between cars).
   const gapLen = 0.4;
@@ -855,12 +903,15 @@ const rampRoof: PatternFn = (b) => {
     prevTop = top;
   }
   let convoy: ObstacleDraft[] | null = null;
-  if (b.flow(lane) === 1) convoy = b.platoon(lane, front, kinds, b.laneSpeed(lane), gaps);
+  // The slowest traffic speed: a roof convoy the runner overtakes in reasonable time.
+  if (b.flow(lane) === 1) convoy = b.platoon(lane, front, kinds, b.laneSpeed(lane, true), gaps);
   if (!convoy && b.isLive(lane)) {
-    // The traffic lane is busy: park the ramp truck in a lane without traffic instead.
+    // The traffic lane is busy: park the ramp truck in a lane without traffic instead, or (the
+    // roof route is a signature moment) stop it in the traffic lane, the traffic held behind it.
     const parked = roads.filter((l) => !b.isLive(l));
-    if (parked.length === 0) return false;
-    lane = rng.pick(parked);
+    if (parked.length > 0) lane = rng.pick(parked);
+    else if (ctx.roofDue) b.ignoreLive = true;
+    else return false;
   }
   let roofEnd: number;
   if (convoy) {
@@ -1236,10 +1287,12 @@ const finale: PatternFn = (b) => {
     gap = rng.pick(b.neighbours(gap));
   }
   const kind = pal.full.some(([k]) => k === "valla-larga") || pal.full.length === 0 ? "valla-larga" : rng.weighted(pal.full);
-  // A beat to line up the jump over the closing barrier.
+  // A beat to line up the jump over the closing barrier (left out where traffic would cross it).
   front += b.s(0.35);
-  b.place(kind, 0, front);
-  for (const l of b.lanes) lineCell(b, l, kind, front);
+  if (b.clearOfTraffic(kind, 0, front)) {
+    b.place(kind, 0, front);
+    for (const l of b.lanes) lineCell(b, l, kind, front);
+  } else for (const l of b.lanes) b.trail(l, front - 2, front + 6);
   b.slot(b.line, front + b.s(1.3), 1.0, false);
   b.line = gap;
   return true;

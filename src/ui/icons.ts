@@ -5,12 +5,11 @@ const INK = "#24140f";
 const wrap = (body: string): string =>
   `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" stroke-linejoin="round" stroke-linecap="round">${body}</svg>`;
 
+/** Flat acorn: the bellota (sun-yellow nut, brown cap, no outline). Also the logo's mark. */
 export const ICON_BELLOTA = wrap(`
-  <path d="M31 14 C31 9 33 6 38 4" fill="none" stroke="${INK}" stroke-width="5"/>
-  <path d="M15 30 C15 46 24 57 32 60 C40 57 49 46 49 30 Z" fill="#D9892F" stroke="${INK}" stroke-width="3.5"/>
-  <path d="M21 36 C22 44 26 50 30 53" fill="none" stroke="#F6C27A" stroke-width="4"/>
-  <path d="M9 30 C9 19 19 12 32 12 C45 12 55 19 55 30 C55 33 52 35 49 35 L15 35 C12 35 9 33 9 30 Z" fill="#7B4A22" stroke="${INK}" stroke-width="3.5"/>
-  <path d="M17 22 L26 31 M25 16 L38 31 M35 15 L47 28 M47 20 L39 31 M37 14 L25 29 M27 15 L17 27" stroke="#5C3416" stroke-width="2"/>`);
+  <path d="M31 13 C31 9 33 6 37 4" fill="none" stroke="#9A7B5F" stroke-width="4.5"/>
+  <path d="M14 29 C14 45 23 56 32 60 C41 56 50 45 50 29 Z" fill="#FFC53D"/>
+  <path d="M9 29 C9 19 19 12 32 12 C45 12 55 19 55 29 C55 32 53 34 50 34 L14 34 C11 34 9 32 9 29 Z" fill="#9A7B5F"/>`);
 
 export const ICON_IMAN = wrap(`
   <path d="M17 10 V33 a15 15 0 0 0 30 0 V10" fill="none" stroke="${INK}" stroke-width="20" stroke-linecap="butt"/>
@@ -83,7 +82,7 @@ export const POWERUP_COLORS: Record<PowerupKind, string> = {
 
 // Monochrome UI glyphs (use currentColor).
 const glyph = (body: string): string =>
-  `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 
 export const GLYPH_SOUND_ON = glyph(`<path d="M4 9 H8 L13 5 V19 L8 15 H4 Z" fill="currentColor"/><path d="M16.5 8.5 C18 10 18 14 16.5 15.5 M19.5 6 C22.5 9 22.5 15 19.5 18"/>`);
 export const GLYPH_SOUND_OFF = glyph(`<path d="M4 9 H8 L13 5 V19 L8 15 H4 Z" fill="currentColor"/><path d="M17 9 L22 14 M22 9 L17 14"/>`);
@@ -107,3 +106,7 @@ export const GLYPH_LOCK = glyph(`<rect x="5" y="10.5" width="14" height="10" rx=
 export const GLYPH_MAP = glyph(`<path d="M3 6 L9 4 L15 6 L21 4 V18 L15 20 L9 18 L3 20 Z M9 4 V18 M15 6 V20"/>`);
 export const GLYPH_COPY = glyph(`<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8 V5.5 A1.5 1.5 0 0 0 14.5 4 H5.5 A1.5 1.5 0 0 0 4 5.5 V14.5 A1.5 1.5 0 0 0 5.5 16 H8"/>`);
 export const GLYPH_SHIRT = glyph(`<path d="M8 4 L4 7 L6 11 L8 10 V20 H16 V10 L18 11 L20 7 L16 4 C15 6 9 6 8 4 Z"/>`);
+export const GLYPH_CLOSE = glyph(`<path d="M6 6 L18 18 M18 6 L6 18"/>`);
+/** Turn chevrons for the direction hint (drawn pointing right; mirrored for left). */
+export const GLYPH_TURN = glyph(`<path d="M5 19 V12 A4 4 0 0 1 9 8 H19 M15 4 L19 8 L15 12" stroke-width="2.6"/>`);
+export const GLYPH_ROUNDABOUT = glyph(`<circle cx="12" cy="12" r="4.5"/><path d="M12 21 V16.5 M16.5 12 H21 M18 9 L21 12 L18 15" stroke-width="2.4"/>`);

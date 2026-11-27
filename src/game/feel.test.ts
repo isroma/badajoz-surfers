@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { LANE_WIDTH } from "../contracts";
 import { clearOfSolids, springStep } from "./camera";
 import { BoxSet } from "./collision";
-import { createEvents, createPlayer, laneEase, stepPlayer, type PlayerAction, type PlayerState } from "./player";
+import { createEvents, createPlayer, laneChangeTime, laneEase, stepPlayer, type PlayerAction, type PlayerState } from "./player";
 import { fadeTarget, segmentHitsBox } from "./world";
 import {
   APEX_BAND,
@@ -68,18 +68,21 @@ describe("game feel targets", () => {
     expect(JUMP_VELOCITY).toBeGreaterThan(Math.sqrt(2 * GRAVITY * 1.7));
   });
 
-  it("lane change: 0.125 s, eases out with ≤ 6 cm overshoot, settles exactly", () => {
-    expect(LANE_CHANGE_TIME).toBeGreaterThanOrEqual(0.11);
-    expect(LANE_CHANGE_TIME).toBeLessThanOrEqual(0.13);
+  it("lane change: 0.22-0.26 s on a real lane, ~0.34 s across the 5 m median, ease-in-out, settles exactly", () => {
+    expect(laneChangeTime(3.3)).toBeGreaterThanOrEqual(0.22);
+    expect(laneChangeTime(3.3)).toBeLessThanOrEqual(0.26);
+    expect(laneChangeTime(5.0)).toBeCloseTo(0.34, 2);
+    expect(laneChangeTime(6.3)).toBeLessThanOrEqual(0.35);
+    expect(LANE_CHANGE_TIME).toBeGreaterThanOrEqual(0.22);
+    // Ease in and out: slow start, fastest in the middle, no overshoot.
+    expect(laneEase(0.5)).toBeCloseTo(0.5, 9);
+    expect(laneEase(0.15)).toBeLessThan(0.05);
     let max = 0;
     for (let t = 0; t <= 1; t += 0.001) max = Math.max(max, laneEase(t));
-    expect((max - 1) * LANE_WIDTH).toBeGreaterThan(0.02);
-    expect((max - 1) * LANE_WIDTH).toBeLessThanOrEqual(0.06);
+    expect(max).toBeLessThanOrEqual(1 + 1e-9);
     expect(laneEase(1)).toBeCloseTo(1, 9);
-    // Fast start: 80% of the way in the first 40% of the time.
-    expect(laneEase(0.4)).toBeGreaterThan(0.8);
     const s = createPlayer();
-    simulate(s, LANE_CHANGE_TIME + TICK, { 0: "right" });
+    simulate(s, laneChangeTime(LANE_WIDTH) + TICK, { 0: "right" });
     expect(s.x).toBeCloseTo(LANE_WIDTH, 9);
   });
 

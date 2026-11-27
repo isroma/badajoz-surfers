@@ -10,14 +10,16 @@ import * as THREE from "three";
 import type { CityLandmark } from "../../city/data";
 import { Acc } from "./acc";
 import { Bag, TS, samples } from "./bag";
-import { facadeMaterial, floodVariant, glassMaterial, glowMaterial, metalMaterial, propMaterial } from "./cmats";
+import { flatMaterial, glassMaterial, glowMaterial, metalMaterial, propMaterial } from "./cmats";
+import { PAL } from "../palette";
 import type { CityCtx } from "./context";
 import { centroid, obb, pointInFlat, ringPoints, signedArea, type P2 } from "./geo";
 import type { GroundLayer } from "./ground";
 import { T, xf } from "../geom";
 import { espantaperros } from "../landmarks/alcazaba";
 import { merlons } from "../landmarks/casco";
-import { FT } from "./textures";
+/** Flat wall colours of the landmark surfaces (the old atlas tile names). */
+const FT = { stone: PAL.stone, stonePlain: PAL.stone, tapial: PAL.albero, renderWindows: 0xfcf8f1, glassShop: 0xfcf8f1 } as const;
 
 const CONCRETE = 0xeeece6;
 const CONCRETE_SHADE = 0xd6d3cb;
@@ -26,9 +28,10 @@ const GRANITE_DARK = 0xb3a78f;
 const TAPIAL_COL = 0xd2a26c;
 
 /** Textured wall quad a→b between y0 and y1 (atlas tile `tile`, all bands), normal to the left of a→b... */
-function texWall(acc: Acc, ax: number, az: number, ay0: number, ay1: number, bx: number, bz: number, by0: number, by1: number, tile: number, tint: THREE.Color, bay = 3.2): void {
+function texWall(acc: Acc, ax: number, az: number, ay0: number, ay1: number, bx: number, bz: number, by0: number, by1: number, tile: number, tintIn: THREE.Color, bay = 3.2): void {
   const len = Math.hypot(bx - ax, bz - az);
   if (len < 0.05) return;
+  const tint = tintIn.clone().multiply(new THREE.Color(tile));
   acc.set("aTile", tile, tile, tile, 1e4);
   acc.set("aSeed", 0, 2);
   const n = new THREE.Vector3(-(bz - az) / len, 0, (bx - ax) / len);
@@ -76,10 +79,9 @@ export function buildLandmarks(ctx: CityCtx, ground: GroundLayer): THREE.Group {
   const ts = new TS(ctx.track);
   const L = (id: string): CityLandmark | undefined => ctx.landmark(id);
   /** Each landmark is its own group (frustum culling, distance hiding). */
-  const FLOOD = new Set(["puente-real", "catedral", "ayuntamiento", "murallas", "espantaperros", "puerta-palmas", "puente-palmas", "siglo-xxi"]);
   const part = (name: string, fn: (bag: Bag, fac: Acc, top: Acc) => void): void => {
     const bag = new Bag();
-    const fac = bag.acc(facadeMaterial(), { aTile: 4, aSeed: 2 });
+    const fac = bag.acc(flatMaterial());
     const top = bag.acc(propMaterial(true));
     fn(bag, fac, top);
     const grp = new THREE.Group();
@@ -88,7 +90,6 @@ export function buildLandmarks(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     for (const c of grp.children) {
       c.matrixAutoUpdate = false;
       c.name = c.name || name;
-      if (FLOOD.has(name) && c instanceof THREE.Mesh && !(c.material instanceof Array) && !(c.material instanceof THREE.MeshBasicMaterial)) c.material = floodVariant(c.material);
     }
     g.add(grp);
   };
@@ -344,7 +345,7 @@ function sigloXXI(bag: Bag, ring: P2[], y0: number, H: number): void {
   const glass = bag.acc(glassMaterial());
   const m = propMaterial(true);
   const top = y0 + H;
-  const c = new THREE.Color(0x6f93b0);
+  const c = new THREE.Color(PAL.glass);
   for (let i = 0; i < ring.length; i++) {
     const a = ring[i]!;
     const b = ring[(i + 1) % ring.length]!;
@@ -609,7 +610,7 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
         top.quad(new THREE.Vector3(a.x - nx, ta, a.z - nz), new THREE.Vector3(b.x - nx, tb, b.z - nz), new THREE.Vector3(b.x + nx, tb, b.z + nz), new THREE.Vector3(a.x + nx, ta, a.z + nz), [0, 0], [1, 0], [1, 1], [0, 1], c, c, c, c, new THREE.Vector3(0, 1, 0));
         continue;
       }
-      if (near) merlons(p, a.x + nx * 0.7, a.z + nz * 0.7, b.x + nx * 0.7, b.z + nz * 0.7, Math.min(ta, tb), 0.85, 0xc4945e, 0.7);
+      if (near) merlons(p, a.x + nx * 0.7, a.z + nz * 0.7, b.x + nx * 0.7, b.z + nz * 0.7, Math.min(ta, tb), 1.4, 0xc4945e, 0.9);
     }
     // square towers at the corners of the near walls
     if (!near || !detail) continue;
@@ -621,15 +622,15 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
       const a2 = Math.atan2(c.z - b.z, c.x - b.x);
       let d = Math.abs(a2 - a1);
       if (d > Math.PI) d = 2 * Math.PI - d;
-      if (d < 0.45) continue;
+      if (d < 0.6) continue;
       const tw = 6.5;
       const th = b.h + 3;
       p.push(xf(b.x, b.g - 3, b.z, 1, 1, 1, 0, -a1, 0));
       p.box(0, (th + 3) / 2, 0, tw, th + 3, tw, TAPIAL_COL, m);
-      merlons(p, -tw / 2, tw / 2 - 0.3, tw / 2, tw / 2 - 0.3, th + 3, 0.85, 0xc4945e, 0.7);
-      merlons(p, -tw / 2, -tw / 2 + 0.3, tw / 2, -tw / 2 + 0.3, th + 3, 0.85, 0xc4945e, 0.7);
-      merlons(p, tw / 2 - 0.3, -tw / 2, tw / 2 - 0.3, tw / 2, th + 3, 0.85, 0xc4945e, 0.7);
-      merlons(p, -tw / 2 + 0.3, -tw / 2, -tw / 2 + 0.3, tw / 2, th + 3, 0.85, 0xc4945e, 0.7);
+      merlons(p, -tw / 2, tw / 2 - 0.3, tw / 2, tw / 2 - 0.3, th + 3, 1.4, 0xc4945e, 0.9);
+      merlons(p, -tw / 2, -tw / 2 + 0.3, tw / 2, -tw / 2 + 0.3, th + 3, 1.4, 0xc4945e, 0.9);
+      merlons(p, tw / 2 - 0.3, -tw / 2, tw / 2 - 0.3, tw / 2, th + 3, 1.4, 0xc4945e, 0.9);
+      merlons(p, -tw / 2 + 0.3, -tw / 2, -tw / 2 + 0.3, tw / 2, th + 3, 1.4, 0xc4945e, 0.9);
       p.pop();
     }
   }
@@ -709,7 +710,7 @@ function puentePalmas(ctx: CityCtx, bag: Bag, fac: Acc, ts: TS): void {
   const m = propMaterial(true);
   const tint = new THREE.Color(0xfff6ea);
   const water = ctx.waterLevel;
-  const ss = samples(a, b, 2);
+  const ss = samples(a, b, 6);
   // spandrel faces + parapets along both sides
   for (const side of [1, -1] as const) {
     const lat = side * half;
@@ -755,7 +756,7 @@ function puentePalmas(ctx: CityCtx, bag: Bag, fac: Acc, ts: TS): void {
     // the span to the next pier: spandrels with an arched opening, and the barrel vault
     const sNext = s + SPAN;
     if (sNext > b - 2) break;
-    const segs = 10;
+    const segs = 6;
     for (const side of [1, -1] as const) {
       const lat = side * (half + 0.45);
       for (let k = 0; k < segs; k++) {
@@ -1023,7 +1024,7 @@ function roundabouts(ctx: CityCtx, bag: Bag, ts: TS, only: number): void {
     for (let k = 0; k < seg; k++) {
       const a = (k / seg) * Math.PI * 2;
       const q = P(a, R - 0.8, y + 0.3);
-      p.blob(q.x, q.y + 0.12, q.z, 0.28, 0.18, 0.28, k % 3 === 0 ? 0xc23b4a : k % 3 === 1 ? 0x4f7f38 : 0xe0a83a, m);
+      p.blob(q.x, q.y + 0.12, q.z, 0.28, 0.18, 0.28, k % 3 === 0 ? 0xe5484d : k % 3 === 1 ? 0x8db87a : 0xfcf8f1, m);
     }
     if (R > 15) {
       // a round fountain basin with a jet

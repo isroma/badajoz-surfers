@@ -75,7 +75,7 @@ export function defaultSave(): SaveData {
     runsPlayed: 0,
     upgrades: { iman: 0, zapatillas: 0, jamon: 0, patinete: 0, ciguena: 0 },
     missions: initialMissions(),
-    settings: { music: true, sfx: true, volume: 0.8 },
+    settings: { music: true, sfx: true, volume: 0.7 },
     seenHowTo: false,
     tutorialDone: false,
     lifetime: emptyLifetime(),

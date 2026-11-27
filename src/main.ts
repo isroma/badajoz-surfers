@@ -33,18 +33,32 @@ const NO_CITY = "No se ha podido cargar el mapa de Badajoz. Comprueba tu conexi�
 const shell = createShell(root);
 
 // The real lap comes first: the page keeps showing "Cargando Badajoz…" until it is ready.
+/** The loading line under the spinner ("Cargando Badajoz… calles"). */
+function progress(step: string): void {
+  const boot = document.getElementById("boot");
+  if (boot) boot.textContent = `Cargando Badajoz… ${step}`;
+}
+
 async function boot(): Promise<void> {
+  const t0 = performance.now();
   let world: { city: Awaited<ReturnType<typeof loadCity>>; track: ReturnType<typeof createTrack> };
   try {
+    progress("el mapa");
     const city = await loadCity();
+    progress("las calles");
     world = { city, track: createTrack(city) };
     setCity(city);
   } catch (error) {
     showError(NO_CITY, error);
     return;
   }
+  const cityMs = performance.now() - t0;
   try {
+    progress("la ciudad");
     const game = createGame(canvas, shell.gameOptions, world);
+    // Keep the loading screen until the menu scene is built and every shader compiled.
+    await (game as typeof game & { ready?: Promise<void> }).ready;
+    (window as Window & { __simpaLoad?: Record<string, number> }).__simpaLoad = { cityMs: Math.round(cityMs), menuMs: Math.round(performance.now() - t0) };
     shell.attach(game);
   } catch (error) {
     showError(NO_WEBGL, error);

@@ -1,8 +1,15 @@
-/** In-run HUD. `render()` is called every frame and only touches the DOM when a value changed. */
+/**
+ * In-run HUD, flat: compact ink chips. Score top right, zone and street top left, letters top
+ * centre, minimap bottom left; power-up timers, the waiter bar and the turn hint only while
+ * they matter. `render()` is called every frame and only touches the DOM when a value changed.
+ */
 import { POWERUPS, WORD, ZONES, type HudSnapshot, type PowerupKind } from "../contracts";
 import { formatInt, formatMetres } from "../meta/format";
-import { POP_SCALE, h, pop, svg } from "./dom";
-import { ICON_BELLOTA, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
+import { h, pop, svg } from "./dom";
+
+/** A small, calm pulse (no bounce). */
+const POP_SCALE: Keyframe[] = [{ transform: "scale(1)" }, { transform: "scale(1.08)" }, { transform: "scale(1)" }];
+import { GLYPH_ROUNDABOUT, GLYPH_TURN, ICON_BELLOTA, ICON_WAITER, powerupIcon } from "./icons";
 import { Minimap, zoneIndexOf } from "./minimap";
 
 /** Street types that go on the small top line of a plaque ("AVENIDA" over "Sinforiano Madroñero"). */
@@ -19,18 +26,20 @@ export function splitStreet(name: string): [string | null, string] {
   return [null, trimmed];
 }
 
-/** Names that are too long for the zone card. */
+/** Names that are too long for the zone chip. */
 const HUD_ZONE_NAMES: Record<string, string> = { "alcazaba-palmas": "Alcazaba y Pta. de Palmas" };
 
-/** Danger vignette: off until the waiter is close (chaser > 0.3), then a smooth ramp. */
-const vignetteOpacity = (chaser: number): number => {
-  const t = Math.min(1, Math.max(0, (chaser - 0.3) / 0.6));
-  return t * t * (3 - 2 * t);
-};
+/** The next turn, as the HUD shows it. */
+export interface TurnHint {
+  dir: "left" | "right" | "straight";
+  roundabout: boolean;
+  /** Street after the turn. */
+  name: string | null;
+}
 
 interface PowerupRow {
   el: HTMLElement;
-  fill: HTMLElement;
+  ring: SVGCircleElement;
   secs: HTMLElement;
   lastSecs: number;
   ending: boolean;
@@ -51,106 +60,67 @@ const freshLast = () => ({
   progress: -1,
   letters: "",
   chaser: -1,
-  roof: -1,
 });
+
+const RING = `<svg viewBox="0 0 36 36" class="ring"><circle cx="18" cy="18" r="16" pathLength="100" class="ring-bg"/><circle cx="18" cy="18" r="16" pathLength="100" class="ring-fg"/></svg>`;
 
 export class Hud {
   readonly el: HTMLElement;
   private readonly zoneName: HTMLElement;
-  private readonly zoneFill: HTMLElement;
   private readonly lapEl: HTMLElement;
   private readonly distEl: HTMLElement;
   private readonly scoreEl: HTMLElement;
   private readonly bellotasEl: HTMLElement;
-  private readonly bellotaPill: HTMLElement;
   private readonly multEl: HTMLElement;
   private readonly lettersEl: HTMLElement;
   private readonly letterEls: HTMLElement[];
   private readonly powerupsEl: HTMLElement;
   private readonly rows = new Map<PowerupKind, PowerupRow>();
-  private readonly vignette: HTMLElement;
   private readonly chaserEl: HTMLElement;
   private readonly chaserFill: HTMLElement;
-  private readonly chaserLabel: HTMLElement;
   private readonly flashEl: HTMLElement;
-  private readonly roofEl: HTMLElement;
-  private readonly comboEl: HTMLElement;
-  private readonly comboNum: HTMLElement;
-  private readonly goldFlash: HTMLElement;
-  private comboShown = false;
-  private readonly roofNum: HTMLElement;
   private readonly minimap = new Minimap({ className: "hud-map" });
   private readonly plaque: HTMLElement;
   private street: string | null = null;
   private readonly hornEl: HTMLElement;
-  /** Roof streak: metres since the runner got onto a roof, and when it last grew. */
-  private roofStreakStart = 0;
-  private roofLastGrow = -1;
-  private roofShown = false;
+  private readonly turnEl: HTMLElement;
+  private turnKey = "";
 
   private last = freshLast();
 
   constructor() {
     this.zoneName = h("div", "zone-name");
-    this.zoneFill = h("i");
     this.lapEl = h("span", "lap");
     this.distEl = h("span", "dist");
     this.plaque = h("div", "plaque");
     this.plaque.hidden = true;
-    const zoneCard = h(
-      "div",
-      "zone-card panel",
-      this.zoneName,
-      h("div", "bar", this.zoneFill),
-      h("div", "zone-meta", this.lapEl, this.distEl),
-      this.plaque,
-    );
-    this.hornEl = h("div", "horn-warn", h("span", undefined, "¡Cuidado!"));
+    const zoneCard = h("div", "chip zone-card", this.zoneName, h("div", "zone-meta", this.lapEl, h("span", "dot", "·"), this.distEl), this.plaque);
     this.powerupsEl = h("div", "powerups");
 
     this.letterEls = [...WORD].map((ch) => h("div", "letter", ch));
-    this.lettersEl = h("div", "letters panel", ...this.letterEls);
+    this.lettersEl = h("div", "chip letters", ...this.letterEls);
+    this.turnEl = h("div", "chip turn");
+    this.hornEl = h("div", "horn-warn");
 
-    this.scoreEl = h("div", "score display", "0");
+    this.scoreEl = h("div", "score", "0");
     this.bellotasEl = h("span", "num", "0");
-    this.bellotaPill = h("div", "pill hud-bellotas", svg(ICON_BELLOTA), this.bellotasEl);
-    this.multEl = h("div", "mult-badge", "×1");
+    this.multEl = h("span", "mult", "×1");
 
-    this.roofNum = h("b", undefined, "0 m");
-    this.roofEl = h("div", "roof-pill", h("span", undefined, "Por los techos"), h("span", "dot", "·"), this.roofNum);
-    this.comboNum = h("b", undefined, "x0");
-    this.comboEl = h("div", "combo-chip", this.comboNum, h("span", undefined, "bellotas seguidas"));
-    this.goldFlash = h("div", "flash gold");
-    this.vignette = h("div", "vignette");
     this.flashEl = h("div", "flash");
     this.chaserFill = h("i");
-    this.chaserLabel = h("b", undefined, "El camarero");
-    this.chaserEl = h(
-      "div",
-      "chaser panel",
-      svg(ICON_WAITER),
-      h("div", "chaser-text", this.chaserLabel, h("div", "bar", this.chaserFill)),
-    );
+    this.chaserEl = h("div", "chip chaser", svg(ICON_WAITER), h("div", "bar", this.chaserFill));
+    this.chaserEl.title = "El camarero";
 
     this.el = h(
       "div",
       "hud",
-      this.vignette,
       this.flashEl,
-      this.goldFlash,
       this.hornEl,
       h("div", "hud-tl", zoneCard, this.powerupsEl),
-      h("div", "hud-tc", this.lettersEl),
-      h(
-        "div",
-        "hud-tr",
-        h("div", "score-label", "Puntos"),
-        this.scoreEl,
-        h("div", "score-row", this.multEl, this.bellotaPill),
-        this.comboEl,
-        this.roofEl,
-      ),
-      h("div", "hud-bl", h("div", "panel map-card", this.minimap.el), this.chaserEl),
+      h("div", "hud-tc", this.lettersEl, this.turnEl),
+      h("div", "hud-tr", h("div", "chip score-card", this.scoreEl, h("div", "score-row", this.multEl, h("span", "bell", svg(ICON_BELLOTA), this.bellotasEl)))),
+      h("div", "hud-bl", h("div", "map-card", this.minimap.el)),
+      h("div", "hud-bc", this.chaserEl),
     );
     this.el.hidden = true;
   }
@@ -165,34 +135,23 @@ export class Hud {
     for (const row of this.rows.values()) row.el.remove();
     this.rows.clear();
     this.lettersEl.classList.remove("complete");
-    this.roofStreakStart = 0;
-    this.roofLastGrow = -1;
-    this.roofShown = false;
-    this.roofEl.classList.remove("show");
-    this.comboShown = false;
-    this.comboEl.classList.remove("show");
     this.street = null;
     this.plaque.replaceChildren();
     this.plaque.hidden = true;
-    // Danger vignette, chaser badge, flashes: back to calm.
-    this.vignette.style.opacity = "0";
-    this.vignette.classList.remove("hot");
+    this.setTurn(null);
     this.chaserEl.classList.remove("show", "hot");
-    for (const el of [this.flashEl, this.goldFlash, this.el]) el.getAnimations?.().forEach((a) => a.cancel());
+    for (const el of [this.flashEl, this.hornEl, this.el]) el.getAnimations?.().forEach((a) => a.cancel());
   }
 
   render(hud: HudSnapshot): void {
     const L = this.last;
     const score = int(hud.score);
     if (score !== L.score) {
-      // Pop on every 1.000 points crossed.
-      if (L.score >= 0 && Math.floor(score / 1000) > Math.floor(L.score / 1000)) pop(this.scoreEl, POP_SCALE, 260);
       L.score = score;
       this.scoreEl.textContent = formatInt(score);
     }
     const bellotas = int(hud.bellotas);
     if (bellotas !== L.bellotas) {
-      if (L.bellotas >= 0 && bellotas > L.bellotas) pop(this.bellotaPill, POP_SCALE, 200);
       L.bellotas = bellotas;
       this.bellotasEl.textContent = formatInt(bellotas);
     }
@@ -203,7 +162,7 @@ export class Hud {
     }
     const mult = Math.max(1, int(hud.multiplier));
     if (mult !== L.multiplier) {
-      if (L.multiplier > 0) pop(this.multEl, POP_SCALE, 320);
+      if (L.multiplier > 0) pop(this.multEl, POP_SCALE, 220, "ease-out");
       L.multiplier = mult;
       this.multEl.textContent = `×${formatInt(mult)}`;
     }
@@ -217,85 +176,80 @@ export class Hud {
       L.lap = lap;
       this.lapEl.textContent = `Vuelta ${formatInt(lap)}`;
     }
-    const progress = Math.round(unit(hud.zoneProgress) * 200) / 200;
+    const progress = Math.round(unit(hud.zoneProgress) * 400) / 400;
     if (progress !== L.progress || L.zone !== L.mapZone) {
       L.progress = progress;
       L.mapZone = L.zone;
-      this.zoneFill.style.transform = `scaleX(${progress})`;
       this.minimap.update(zoneIndexOf(L.zone), progress);
     }
     const flags = Array.isArray(hud.letters) ? hud.letters : [];
     const letters = this.letterEls.map((_, i) => (flags[i] === true ? "1" : "0")).join("");
     if (letters !== L.letters) {
-      this.letterEls.forEach((el, i) => {
-        const on = flags[i] === true;
-        const was = L.letters[i] === "1";
-        el.classList.toggle("on", on);
-        if (on && !was && L.letters !== "") pop(el, [{ transform: "scale(1.6) rotate(-8deg)" }, { transform: "scale(1)" }], 380);
-      });
+      this.letterEls.forEach((el, i) => el.classList.toggle("on", flags[i] === true));
       L.letters = letters;
     }
     this.renderPowerups(hud);
-    this.renderRoof(hud.roofMetres);
     const chaser = Math.round(unit(hud.chaser) * 50) / 50;
     if (chaser !== L.chaser) {
       L.chaser = chaser;
-      this.vignette.style.opacity = vignetteOpacity(chaser).toFixed(3);
-      this.vignette.classList.toggle("hot", chaser > 0.7);
-      this.chaserEl.classList.toggle("show", chaser > 0.04);
+      // Only when the waiter is close.
+      this.chaserEl.classList.toggle("show", chaser > 0.3);
       this.chaserEl.classList.toggle("hot", chaser > 0.6);
       this.chaserFill.style.transform = `scaleX(${chaser})`;
-      this.chaserLabel.textContent = chaser > 0.6 ? "¡Que te pilla!" : chaser > 0.3 ? "Te pisa los talones" : "El camarero";
     }
   }
 
-  /** "Por los techos · 35 m" while the roof metres keep growing; hides shortly after. */
-  private renderRoof(roofMetres: number): void {
-    const now = performance.now();
-    const roof = Math.floor(Number.isFinite(roofMetres) ? roofMetres : 0);
-    const L = this.last;
-    if (L.roof < 0 || roof < L.roof) {
-      L.roof = roof;
+  /**
+   * The street the runner is on, as an enamel street plaque under the zone. A new name slides
+   * in over the old one; null hides the plaque (unnamed links and roundabouts).
+   */
+  setStreet(name: string | null): void {
+    const next = name && name.trim() ? name.trim() : null;
+    if (next === this.street) return;
+    const first = this.street === null;
+    this.street = next;
+    for (const old of [...this.plaque.children]) {
+      if (old.classList.contains("out")) continue;
+      old.classList.add("out");
+      window.setTimeout(() => old.remove(), 260);
+    }
+    if (!next) {
+      this.plaque.classList.add("empty");
       return;
     }
-    if (roof > L.roof) {
-      if (!this.roofShown) this.roofStreakStart = L.roof;
-      this.roofLastGrow = now;
-      L.roof = roof;
-      this.roofNum.textContent = formatMetres(roof - this.roofStreakStart);
-      if (!this.roofShown) {
-        this.roofShown = true;
-        this.roofEl.classList.add("show");
-      }
-    } else if (this.roofShown && now - this.roofLastGrow > 900) {
-      this.roofShown = false;
-      this.roofEl.classList.remove("show");
-    }
+    const [type, rest] = splitStreet(next);
+    const inner = h("div", `plaque-in${first ? "" : " in"}${rest.length > 22 ? " long" : ""}`, type ? h("small", undefined, type) : null, h("b", undefined, rest));
+    inner.title = next;
+    this.plaque.classList.remove("empty");
+    this.plaque.hidden = false;
+    this.plaque.append(inner);
   }
 
-  /** Bellota combo chip ("x25 bellotas seguidas"), shown from 5 in a row. */
-  setCombo(count: number): void {
-    if (count < 5) {
-      this.comboAlive(false);
+  /** The next turn (null hides the hint). */
+  setTurn(turn: TurnHint | null): void {
+    const key = turn ? `${turn.dir}|${turn.roundabout}|${turn.name ?? ""}` : "";
+    if (key === this.turnKey) return;
+    this.turnKey = key;
+    if (!turn) {
+      this.turnEl.classList.remove("show");
       return;
     }
-    this.comboNum.textContent = `x${formatInt(count)}`;
-    if (!this.comboShown) {
-      this.comboShown = true;
-      this.comboEl.classList.add("show");
-    }
-    if (count % 5 === 0) pop(this.comboEl, POP_SCALE, 220);
+    const glyph = svg(turn.roundabout ? GLYPH_ROUNDABOUT : GLYPH_TURN, "turn-icon");
+    const deg = turn.roundabout ? (turn.dir === "left" ? 180 : turn.dir === "straight" ? -90 : 0) : 0;
+    glyph.style.transform = `${turn.dir === "left" && !turn.roundabout ? "scaleX(-1)" : ""} rotate(${deg}deg)`;
+    if (turn.dir === "straight" && !turn.roundabout) glyph.style.transform = "rotate(-90deg)";
+    this.turnEl.replaceChildren(glyph, h("span", undefined, turn.name ?? (turn.roundabout ? "Rotonda" : turn.dir === "left" ? "Gira a la izquierda" : "Gira a la derecha")));
+    this.turnEl.classList.add("show");
   }
 
-  comboAlive(alive: boolean): void {
-    if (alive || !this.comboShown) return;
-    this.comboShown = false;
-    this.comboEl.classList.remove("show");
+  /** Redraw the route map (the real map data arrived). */
+  refreshMap(): void {
+    this.minimap.update(zoneIndexOf(this.last.zone), Math.max(0, this.last.progress));
   }
 
-  /** Brief golden flash for big rewards. */
-  rewardFlash(): void {
-    pop(this.goldFlash, [{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 0 }], 520, "ease-out");
+  /** An oncoming vehicle honked: a red line on the top edge (the shell adds a one-line warning). */
+  horn(): void {
+    pop(this.hornEl, [{ opacity: 0 }, { opacity: 1, offset: 0.1 }, { opacity: 1, offset: 0.7 }, { opacity: 0 }], 1100, "linear");
   }
 
   private renderPowerups(hud: HudSnapshot): void {
@@ -305,23 +259,16 @@ export class Hud {
       active.add(p.kind);
       let row = this.rows.get(p.kind);
       if (!row) {
-        const fill = h("i");
         const secs = h("small");
         const icon = h("div", "pu-icon", svg(powerupIcon(p.kind)));
-        const el = h(
-          "div",
-          "pu panel",
-          icon,
-          h("div", "pu-name", h("span", undefined, POWERUPS[p.kind].name), secs),
-          h("div", "bar", fill),
-        );
-        el.style.setProperty("--pu-color", POWERUP_COLORS[p.kind]);
+        icon.insertAdjacentHTML("afterbegin", RING);
+        const el = h("div", "chip pu", icon, h("span", "pu-name", POWERUPS[p.kind].name), secs);
         this.powerupsEl.append(el);
-        row = { el, fill, secs, lastSecs: -1, ending: false };
+        row = { el, ring: icon.querySelector(".ring-fg") as SVGCircleElement, secs, lastSecs: -1, ending: false };
         this.rows.set(p.kind, row);
       }
       const ratio = p.duration > 0 ? unit(p.remaining / p.duration) : 0;
-      row.fill.style.transform = `scaleX(${ratio.toFixed(3)})`;
+      row.ring.style.strokeDashoffset = (100 - ratio * 100).toFixed(1);
       const s = Math.ceil(Math.max(0, Number.isFinite(p.remaining) ? p.remaining : 0));
       if (s !== row.lastSecs) {
         row.lastSecs = s;
@@ -341,68 +288,17 @@ export class Hud {
     }
   }
 
-  /**
-   * The street the runner is on, as an enamel street plaque in the zone card. A new name slides
-   * in over the old one; null hides the plaque (unnamed links and roundabouts).
-   */
-  setStreet(name: string | null): void {
-    const next = name && name.trim() ? name.trim() : null;
-    if (next === this.street) return;
-    const first = this.street === null;
-    this.street = next;
-    for (const old of [...this.plaque.children]) {
-      if (old.classList.contains("out")) continue;
-      old.classList.add("out");
-      window.setTimeout(() => old.remove(), 420);
-    }
-    if (!next) {
-      this.plaque.classList.add("empty");
-      return;
-    }
-    const [type, rest] = splitStreet(next);
-    const inner = h(
-      "div",
-      `plaque-in${first ? "" : " in"}${rest.length > 22 ? " long" : ""}`,
-      type ? h("small", undefined, type) : null,
-      h("b", undefined, rest),
-    );
-    inner.title = next;
-    this.plaque.classList.remove("empty");
-    this.plaque.hidden = false;
-    this.plaque.append(inner);
-  }
-
-  /** Redraw the route map (the real map data arrived). */
-  refreshMap(): void {
-    this.minimap.update(zoneIndexOf(this.last.zone), Math.max(0, this.last.progress));
-  }
-
-  /** An oncoming vehicle honked: a quick amber flash on the top edge and "¡Cuidado!". */
-  horn(): void {
-    pop(this.hornEl, [{ opacity: 0 }, { opacity: 1, offset: 0.12 }, { opacity: 1, offset: 0.55 }, { opacity: 0 }], 900, "ease-out");
-  }
-
   wordComplete(): void {
-    this.lettersEl.classList.remove("complete");
-    void this.lettersEl.offsetWidth;
-    this.lettersEl.classList.add("complete");
-    window.setTimeout(() => this.lettersEl.classList.remove("complete"), 1600);
+    pop(this.lettersEl, POP_SCALE, 360, "ease-out");
   }
 
   stumble(): void {
     pop(
       this.el,
-      [
-        { transform: "translate(0,0)" },
-        { transform: "translate(-0.6rem,0.2rem)" },
-        { transform: "translate(0.5rem,-0.2rem)" },
-        { transform: "translate(-0.35rem,0.1rem)" },
-        { transform: "translate(0.2rem,0)" },
-        { transform: "translate(0,0)" },
-      ],
-      420,
+      [{ transform: "translate(0,0)" }, { transform: "translate(-0.4rem,0)" }, { transform: "translate(0.3rem,0)" }, { transform: "translate(0,0)" }],
+      260,
       "linear",
     );
-    pop(this.flashEl, [{ opacity: 0 }, { opacity: 1 }, { opacity: 0 }], 380, "ease-out");
+    pop(this.flashEl, [{ opacity: 0 }, { opacity: 1 }, { opacity: 0 }], 300, "ease-out");
   }
 }

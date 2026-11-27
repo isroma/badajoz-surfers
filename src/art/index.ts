@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import type { ArtApi } from "../contracts";
 import { createRunner, createWaiter } from "./characters";
-import { createObstacle } from "./obstacles";
+import { createBlobShadow, createObstacle } from "./obstacles";
 import { createPickup } from "./pickups";
 import { createZoneScenery } from "./scenery";
 import { createSkyDome } from "./sky";
@@ -34,5 +34,6 @@ export const art: ArtApi = {
   createSkyDome,
   createCity,
   configureRenderer,
+  createBlobShadow,
   release,
 };

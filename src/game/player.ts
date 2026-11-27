@@ -15,7 +15,6 @@ import {
   JUMP_BUFFER_TIME,
   JUMP_VELOCITY,
   LANE_CHANGE_TIME,
-  LANE_OVERSHOOT,
   MAX_FALL_SPEED,
   ROLL_HEIGHT,
   ROLL_TIME,
@@ -42,6 +41,11 @@ export interface PlayerWorld {
   prepare(pPrev: number, p: number): void;
   surface(x: number, p: number, feetY: number): SurfaceHit;
   ceiling(x: number, halfWidth: number, p: number, feetY: number, standHeight: number): boolean;
+  /**
+   * The lane `lane` continues as after a layout boundary crossed between `fromS` and `toS`:
+   * the new index, null when it ends there, undefined when unknown (fall back to the nearest lane).
+   */
+  mapLane?(fromS: number, toS: number, lane: number): number | null | undefined;
 }
 
 export interface PlayerState {
@@ -100,8 +104,9 @@ export interface StepEvents {
   impact: number;
   rolled: boolean;
   laneChanged: boolean;
-  /** Tried to change lanes past the edge of the road. */
+  /** Tried to change lanes past the edge of the road (no lane there): -1 left, 1 right. */
   edgeBump: boolean;
+  bumpDir: number;
   /** The lane layout changed and the runner is easing to the nearest lane. */
   laneRemapped: boolean;
 }
@@ -127,20 +132,22 @@ export function copyPlayer(into: PlayerState, from: PlayerState): PlayerState {
 
 export function createEvents(): StepEvents {
   return {
-    jumped: false, superJumped: false, landed: false, impact: 0, rolled: false, laneChanged: false, edgeBump: false,
+    jumped: false, superJumped: false, landed: false, impact: 0, rolled: false, laneChanged: false, edgeBump: false, bumpDir: 0,
     laneRemapped: false,
   };
 }
 
-/** Ease-out-back: fast start, a tiny overshoot, settles exactly on 1. */
+/** Ease-in-out (cubic): the runner visibly crosses, accelerating then settling into the lane. */
 export function laneEase(t: number): number {
-  const u = 1 - t;
-  return 1 - (LANE_OVERSHOOT + 1) * u * u * u + LANE_OVERSHOOT * u * u;
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-/** Lane-change duration for a lateral distance: 0.125 s up to 3.5 m, ~0.2 s across a 6.3 m gap. */
+/**
+ * Lane-change duration for a lateral distance: 0.22 s up to 3 m, 0.24 s for a 3.3 m lane,
+ * 0.34 s across Puente Real's 5 m cable-plane median (and no longer beyond).
+ */
 export function laneChangeTime(distance: number): number {
-  return LANE_CHANGE_TIME + Math.min(0.09, Math.max(0, (Math.abs(distance) - 3.5) * (0.075 / 2.8)));
+  return LANE_CHANGE_TIME + Math.min(0.12, Math.max(0, (Math.abs(distance) - 3) * 0.06));
 }
 
 /** Gap (m) wider than this between neighbouring lanes is a non-runnable median (a vault across it). */
@@ -160,6 +167,7 @@ function startLaneChange(s: PlayerState, dir: number, layout: LaneLayout, ev: St
   const across = Math.abs(laneOffset(layout, target) - laneOffset(layout, s.lane)) > MEDIAN_GAP;
   if (target === s.lane || (s.carried && across)) {
     ev.edgeBump = true;
+    ev.bumpDir = dir;
     return;
   }
   s.prevLane = s.lane;
@@ -240,12 +248,16 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
   const layout = world.layout(s.p);
   const n = layout.offsets.length;
   if (s.lane >= n || laneOffset(layout, s.lane) !== s.targetX || laneKind(layout, s.lane) !== s.laneKind) {
-    const lane = remapLane(layout, s.targetX, s.laneKind, s.laneFlow);
+    // The road's own lane map first (the runner's world position stays continuous); a lane that
+    // ends hands the runner to the nearest surviving lane (a nudge, announced ahead).
+    const mapped = world.mapLane?.(s.pp - 0.5, s.p + 0.5, s.lane);
+    const ended = mapped === null;
+    const lane = typeof mapped === "number" && mapped < n ? mapped : remapLane(layout, ended ? s.x : s.targetX, s.laneKind, s.laneFlow);
     s.prevLane = lane;
     setTarget(s, layout, lane);
     s.fromX = s.x;
     s.laneT = Math.abs(s.targetX - s.x) < 1e-6 ? 1 : 0;
-    s.laneDur = Math.max(laneChangeTime(s.targetX - s.x), TRANSITION_LENGTH / Math.max(4, s.speed));
+    s.laneDur = ended ? laneChangeTime(s.targetX - s.x) : Math.max(laneChangeTime(s.targetX - s.x), TRANSITION_LENGTH / Math.max(4, s.speed));
     s.queuedDir = 0;
     ev.laneRemapped = true;
   }

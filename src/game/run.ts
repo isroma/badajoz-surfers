@@ -30,7 +30,7 @@ import {
   type PlayerAction,
   type PlayerState,
 } from "./player";
-import { getCourse } from "./course";
+import { getCourse, laneEndAhead } from "./course";
 import { laneOffset, layoutAt, type LayoutFn } from "./lanes";
 import { obstacleCentre, pickupD, type PickupSpawn } from "./spawns";
 import { TrackGenerator } from "./track";
@@ -61,6 +61,8 @@ export type RunFx =
   | { type: "reset" }
   /** An obstacle was cleared away to make room for a stork landing. */
   | { type: "remove"; id: number }
+  /** A lane change towards a lane that does not exist: a small bump that way. */
+  | { type: "bump"; dir: number }
   /** An oncoming vehicle in the runner's lane flashes its headlights (and honks). */
   | { type: "flash"; id: number };
 
@@ -94,9 +96,12 @@ interface NearTrack {
 export const COUNTDOWN_TIME = 1.5;
 export const ENDING_TIME = 1.25;
 /** Same-direction traffic is on screen for a long time before you overtake it: generate far ahead. */
-const GENERATE_AHEAD = 440;
+const GENERATE_AHEAD = 760;
 /** Oncoming vehicles in your lane flash and honk this many seconds before they would reach you. */
 export const HORN_TIME = 1.7;
+/** Turns are announced this far ahead (m); lane endings this far. */
+export const TURN_NOTICE = 120;
+export const LANE_END_NOTICE = 80;
 
 export const SCORE = {
   perMetre: 1,
@@ -438,6 +443,7 @@ export class Run {
       cfg.emit({ type: "roll" });
     }
     if (ev.laneChanged) cfg.emit({ type: "lane" });
+    if (ev.edgeBump) cfg.fx({ type: "bump", dir: ev.bumpDir });
     if (!this.tutorialOver) this.updateTutorial(dt);
 
     const dp = s.p - s.pp;
@@ -492,6 +498,7 @@ export class Run {
 
     // Street names (the real ones: a strong "I'm in Badajoz" cue).
     this.updateStreet(false);
+    this.updateGuides();
 
     // Zones.
     const span = zoneAt(s.p);
@@ -645,6 +652,54 @@ export class Run {
 
   /** Real street name at the runner (null on unnamed links and roundabouts). */
   street: string | null = null;
+  /** Turns already announced (their start s, unbounded), and the lane ending already announced. */
+  private announcedTurn = -Infinity;
+  private announcedEnd = -Infinity;
+  /** Metres until the runner's lane ends (null: it continues), for the HUD. */
+  laneEnding: number | null = null;
+
+  /**
+   * Guidance for the shell: a "turn" event ~120 m before each bend or roundabout, and a
+   * "lane-ends" event when the runner's lane will end within 80 m (with the side to move to).
+   */
+  private updateGuides(): void {
+    const course = getCourse();
+    if (!course) return;
+    const s = this.player;
+    const L = course.lapLength;
+    const base = Math.floor(s.p / L) * L;
+    for (let lapBase = base; lapBase <= base + L; lapBase += L) {
+      for (const t of course.turns) {
+        const at = lapBase + t.s;
+        const ahead = at - s.p;
+        if (ahead <= 0 || ahead > TURN_NOTICE || at <= this.announcedTurn) continue;
+        this.announcedTurn = at;
+        this.cfg.emit({ type: "turn", direction: t.direction, roundabout: t.roundabout, street: t.street, distance: Math.round(ahead) });
+      }
+    }
+    const track = course.track as typeof course.track & { laneEndsAhead?: (s: number, lane: number) => number | null };
+    const ending = typeof track.laneEndsAhead === "function" ? track.laneEndsAhead(s.p, s.lane) : laneEndAhead(course, s.p, s.lane, 400);
+    this.laneEnding = ending;
+    if (ending !== null && ending <= LANE_END_NOTICE) {
+      const at = s.p + ending;
+      if (Math.abs(at - this.announcedEnd) > 5) {
+        this.announcedEnd = at;
+        // Move towards a neighbouring lane that carries on (the nearer side first).
+        const layout = this.layoutFn(s.p);
+        let side: "left" | "right" = s.lane > 0 ? "left" : "right";
+        for (const d of [-1, 1]) {
+          const l = s.lane + d;
+          if (l < 0 || l >= layout.offsets.length) continue;
+          const e = typeof track.laneEndsAhead === "function" ? track.laneEndsAhead(s.p, l) : laneEndAhead(course, s.p, l, 400);
+          if (e === null || e > ending + 1) {
+            side = d < 0 ? "left" : "right";
+            break;
+          }
+        }
+        this.cfg.emit({ type: "lane-ends", side });
+      }
+    }
+  }
 
   /** Emit a "street" event whenever the runner enters a street with a new real name. */
   updateStreet(silent: boolean): void {

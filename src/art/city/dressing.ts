@@ -8,7 +8,7 @@ import * as THREE from "three";
 import type { ZoneId } from "../../city/data";
 import { Acc } from "./acc";
 import { Bag, TS } from "./bag";
-import { setFloodlights, canvasMaterial, farMaterial, foliageMaterial, glassMaterial, glowMaterial, lightPoolMaterial, metalMaterial, propMaterial } from "./cmats";
+import { drawLabel, farMaterial, foliageMaterial, glassMaterial, glowMaterial, lightPoolMaterial, metalMaterial, propMaterial, setNightMaterials, signMaterial, signSlot } from "./cmats";
 import type { CityCtx } from "./context";
 import type { GroundLayer } from "./ground";
 import type { EdgeSample } from "./road";
@@ -33,10 +33,9 @@ export function lampGlowMaterial(): THREE.MeshBasicMaterial {
 
 export function setNightDressing(night: boolean): void {
   glowMaterial().color.copy(night ? LAMP_NIGHT : LAMP_DAY);
-  lightPoolMaterial().visible = night;
-  setFloodlights(night);
+  setNightMaterials(night);
   const env = night ? 0.15 : 1;
-  glassMaterial().envMapIntensity = env;
+  void env;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -154,13 +153,13 @@ export function buildPermanentDressing(ctx: CityCtx, ground: GroundLayer): THREE
     else extra.push({ x: jx, z: jz, y, h: 2 + r * 2, r: 2, sp: "shrub", seed: r, chunk: -1 });
   }
   for (const t of [...allTrees(ctx, ground), ...extra]) {
-    const key = `${Math.floor(t.x / 600)},${Math.floor(t.z / 600)}`;
+    const key = `${Math.floor(t.x / 400)},${Math.floor(t.z / 400)}`;
     let acc = tiles.get(key);
     if (!acc) tiles.set(key, (acc = new Acc({ aSway: 2, aChunk: 1 })));
     emitTree(acc, t, false);
   }
   for (const acc of tiles.values()) {
-    const m = acc.mesh(foliageMaterial(true), "trees-far");
+    const m = acc.mesh(foliageMaterial(false), "trees");
     if (m) {
       m.castShadow = false;
       g.add(m);
@@ -301,17 +300,8 @@ function busShelter(b: Bag, x: number, y: number, z: number, ry: number, name: s
   // advert panel (lit at night)
   p.box(2.05, 1.3, -0.4, 0.1, 1.8, 1.2, 0xffffff, glowMaterial());
   // name board on the roof edge
-  const mat = canvasMaterial(`bus-${name}`, (ctx, w, h) => {
-    ctx.fillStyle = "#c4161c";
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 40px Arial, sans-serif";
-    ctx.textBaseline = "middle";
-    let txt = name.toUpperCase();
-    while (ctx.measureText(txt).width > w - 30 && txt.length > 4) txt = txt.slice(0, -1);
-    ctx.fillText(txt, 15, h / 2 + 2);
-  }, 512, 64);
-  p.quad(new THREE.Matrix4().makeScale(3.6, 0.45, 1).setPosition(0, 2.35, 0.66), 0xffffff, mat);
+  const uv = signSlot(`bus-${name}`, drawLabel(name, "#e5484d", "#ffffff", { upper: true }));
+  p.quad(new THREE.Matrix4().makeScale(3.6, 0.6, 1).setPosition(0, 2.35, 0.66), 0xffffff, signMaterial(), uv);
   p.pop();
 }
 
@@ -320,41 +310,9 @@ function bollard(b: Bag, x: number, y: number, z: number): void {
   b.props.cyl(x, y + 0.75, z, 0.095, 0.05, 0xd9b24a, 6, propMaterial(true));
 }
 
-/** Street name plaque: white on blue enamel (blue ceramic on white in the old town). */
-export function plaqueMaterial(name: string, ceramic: boolean): THREE.Material {
-  return canvasMaterial(`plaque-${ceramic}-${name}`, (ctx, w, h) => {
-    if (ceramic) {
-      ctx.fillStyle = "#f6f3ea";
-      ctx.fillRect(0, 0, w, h);
-      ctx.strokeStyle = "#1f4b9a";
-      ctx.lineWidth = 10;
-      ctx.strokeRect(8, 8, w - 16, h - 16);
-      ctx.fillStyle = "#1f4b9a";
-    } else {
-      ctx.fillStyle = "#1d4f9e";
-      ctx.fillRect(0, 0, w, h);
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 6;
-      ctx.strokeRect(10, 10, w - 20, h - 20);
-      ctx.fillStyle = "#ffffff";
-    }
-    const parts = name.split(" ");
-    const kind = parts.length > 1 && /^(Calle|Avenida|Plaza|Paseo|Ronda|Travesía|Carretera|Camino|Glorieta|Puente)$/i.test(parts[0]!) ? parts[0]!.toUpperCase() : "";
-    const rest = kind ? parts.slice(1).join(" ") : name;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    if (kind) {
-      ctx.font = "bold 25px Georgia, serif";
-      ctx.fillText(kind, w / 2, h * 0.3);
-    }
-    let size = 48;
-    ctx.font = `bold ${size}px Georgia, serif`;
-    while (ctx.measureText(rest).width > w - 30 && size > 16) {
-      size -= 2;
-      ctx.font = `bold ${size}px Georgia, serif`;
-    }
-    ctx.fillText(rest, w / 2, kind ? h * 0.64 : h / 2);
-  }, 384, 144);
+/** Street name plaque: white on blue enamel (blue on white ceramic in the old town). */
+function plaqueUv(name: string, ceramic: boolean): [number, number, number, number] {
+  return signSlot(`plaque-${ceramic}-${name}`, ceramic ? drawLabel(name, "#fcf8f1", "#1f4b9a", { serif: true, border: "#1f4b9a" }) : drawLabel(name, "#1d4f9e", "#ffffff", { serif: true, border: "#ffffff" }));
 }
 
 function plaque(b: Bag, x: number, y: number, z: number, ry: number, name: string, ceramic: boolean, pole: boolean): void {
@@ -362,14 +320,15 @@ function plaque(b: Bag, x: number, y: number, z: number, ry: number, name: strin
   if (pole) {
     p.cyl(x, y, z, 0.05, 3.0, 0x3b3f43, 6, metalMaterial());
   }
-  const m = plaqueMaterial(name, ceramic);
-  const w = 1.05;
-  const hgt = 0.4;
+  const uv = plaqueUv(name, ceramic);
+  const m = signMaterial();
+  const w = 1.4;
+  const hgt = w * (96 / 512);
   const fx = Math.sin(ry) * 0.06;
   const fz = Math.cos(ry) * 0.06;
   p.box(x, y + 2.75, z, w + 0.06, hgt + 0.06, 0.04, 0x30343a, metalMaterial(), ry);
-  p.quad(new THREE.Matrix4().makeRotationY(ry).scale(new THREE.Vector3(w, hgt, 1)).setPosition(x + fx * 0.6, y + 2.75, z + fz * 0.6), 0xffffff, m);
-  p.quad(new THREE.Matrix4().makeRotationY(ry + Math.PI).scale(new THREE.Vector3(w, hgt, 1)).setPosition(x - fx * 0.6, y + 2.75, z - fz * 0.6), 0xffffff, m);
+  p.quad(new THREE.Matrix4().makeRotationY(ry).scale(new THREE.Vector3(w, hgt, 1)).setPosition(x + fx * 0.6, y + 2.75, z + fz * 0.6), 0xffffff, m, uv);
+  p.quad(new THREE.Matrix4().makeRotationY(ry + Math.PI).scale(new THREE.Vector3(w, hgt, 1)).setPosition(x - fx * 0.6, y + 2.75, z - fz * 0.6), 0xffffff, m, uv);
 }
 
 /**
@@ -380,11 +339,7 @@ function plaque(b: Bag, x: number, y: number, z: number, ry: number, name: strin
 export type DressingPass = "road" | "trees" | "furniture" | "relief";
 
 export function buildChunkDressing(ctx: CityCtx, bag: Bag, ts: TS, chunk: number, s0: number, s1: number, edges: EdgeSample[], ground: GroundLayer, pass: DressingPass): void {
-  if (pass === "trees") {
-    const tacc = bag.acc(foliageMaterial(false), { aSway: 2, aChunk: 1 });
-    for (const t of allTrees(ctx, ground)) if (t.chunk === chunk) emitTree(tacc, { ...t, chunk: -1 }, true);
-    return;
-  }
+  if (pass === "trees") return; // trees are one permanent, single-LOD layer in the flat style
   if (pass === "furniture") {
     chunkDetail(ctx, bag, ts, chunk, s0, s1, edges, ground);
     return;
@@ -455,7 +410,7 @@ function chunkDetail(ctx: CityCtx, bag: Bag, ts: TS, _chunk: number, s0: number,
     const A = ts.p(s, l0, 5.8);
     const B = ts.p(s, l1, 5.8);
     const n = Math.max(4, Math.round((l1 - l0) / 0.9));
-    const cols = [0xd62828, 0xf2c230, 0x2a9d5f, 0xf4f0e6, 0x2f6fd0, 0xe76f2a];
+    const cols = [0xe5484d, 0xffffff, 0x8db87a, 0x3e7bd6, 0xfcf8f1];
     let prev: [number, number, number] = [A.x, A.y, A.z];
     for (let k = 1; k <= n; k++) {
       const t = k / n;

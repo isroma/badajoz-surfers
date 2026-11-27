@@ -24,6 +24,26 @@ export interface CourseZone {
   toS: number;
 }
 
+/** A lane-layout boundary: which lane of the old layout continues as which lane of the new one. */
+export interface LaneTransition {
+  /** Distance of the boundary within the lap. */
+  s: number;
+  /** map[oldLane] = newLane, or null when the old lane ends there. */
+  map: readonly (number | null)[];
+}
+
+/** A turn of the route worth announcing (a bend sharper than a gentle curve, or a roundabout). */
+export interface Turn {
+  /** Where the turn starts (within the lap). */
+  s: number;
+  /** Where it ends (may exceed the lap length). */
+  endS: number;
+  /** "straight" = through a roundabout (net turn under 20°). */
+  direction: "left" | "right" | "straight";
+  roundabout: boolean;
+  street: string | null;
+}
+
 export interface Course {
   readonly lapLength: number;
   readonly zones: readonly CourseZone[];
@@ -41,8 +61,107 @@ export interface Course {
   readonly trees: readonly { s: number; lateral: number; r: number }[];
   /** Stretches under real arches and gates: nothing tall there (no vehicles, scaffolds or banners). */
   readonly lowClearance: readonly [number, number][];
+  /** Layout boundaries with their lane maps, sorted by s (one lap). */
+  readonly transitions: readonly LaneTransition[];
+  /** Turns to announce, sorted by s (one lap). */
+  readonly turns: readonly Turn[];
   /** The underlying track model (the engine maps track space to the world with it). */
   readonly track: Track;
+}
+
+/** Shapes the reworked city core may provide (read defensively: older cores lack them). */
+interface CoreExtras {
+  transitions?: readonly { s?: number; fromS?: number; at?: number; map?: readonly (number | null | undefined)[] }[];
+  turns?: readonly { s?: number; endS?: number; direction?: string; angle?: number; roundabout?: boolean; exitName?: string | null; street?: string | null }[];
+}
+
+const sameKindFlow = (a: CityLaneLayout, i: number, b: CityLaneLayout, j: number): boolean =>
+  a.kinds[i] === b.kinds[j] && a.flow[i] === b.flow[j];
+
+/**
+ * Lane maps at every layout boundary: the core's when it provides them; else each lane continues
+ * as the nearest lane of the same kind and flow within 3.5 m (else the nearest lane within 3.5 m),
+ * and ends when there is none.
+ */
+function buildTransitions(track: Track): LaneTransition[] {
+  const extras = track as Track & CoreExtras;
+  if (Array.isArray(extras.transitions) && extras.transitions.length > 0) {
+    return extras.transitions
+      .map((t) => ({ s: t.s ?? t.fromS ?? t.at ?? 0, map: (t.map ?? []).map((v: number | null | undefined) => (typeof v === "number" && v >= 0 ? v : null)) }))
+      .sort((a, b) => a.s - b.s);
+  }
+  const out: LaneTransition[] = [];
+  const st = track.stretches;
+  for (let k = 0; k < st.length; k++) {
+    const prev = st[(k + st.length - 1) % st.length];
+    const cur = st[k];
+    if (!prev || !cur) continue;
+    const a = prev.layout;
+    const b = cur.layout;
+    const map = a.offsets.map((x, i) => {
+      let best: number | null = null;
+      let bestD = 3.5;
+      for (let pass = 0; pass < 2 && best === null; pass++) {
+        for (let j = 0; j < b.offsets.length; j++) {
+          if (pass === 0 && !sameKindFlow(a, i, b, j)) continue;
+          const d = Math.abs((b.offsets[j] ?? 0) - x);
+          if (d <= bestD) {
+            best = j;
+            bestD = d;
+          }
+        }
+      }
+      return best;
+    });
+    out.push({ s: cur.fromS, map });
+  }
+  return out.sort((x, y) => x.s - y.s);
+}
+
+/** Turns: the core's when provided, else every stretch of ≥ 25° of heading change within 40 m, and every roundabout. */
+function buildTurns(track: Track): Turn[] {
+  const extras = track as Track & CoreExtras;
+  if (Array.isArray(extras.turns) && extras.turns.length > 0) {
+    return extras.turns
+      .map((t): Turn => {
+        const roundabout = t.roundabout === true;
+        const straight = roundabout && Math.abs(t.angle ?? 90) < 20;
+        return {
+          s: t.s ?? 0,
+          endS: t.endS ?? (t.s ?? 0) + 30,
+          direction: straight ? "straight" : t.direction === "left" ? "left" : "right",
+          roundabout,
+          street: t.exitName ?? t.street ?? null,
+        };
+      })
+      .sort((a, b) => a.s - b.s);
+  }
+  const out: Turn[] = [];
+  const step = 5;
+  const window = 40;
+  let lastEnd = -Infinity;
+  for (let s = 0; s < track.lapLength; s += step) {
+    const sec = track.sectionAt(s);
+    const ring = sec.roundabout !== null;
+    const h0 = track.frameAt(s).heading;
+    const h1 = track.frameAt(s + window).heading;
+    // heading grows when turning left (towards -n)
+    const turn = h1 - h0;
+    if (s < lastEnd) continue;
+    if (Math.abs(turn) > (25 * Math.PI) / 180 || (ring && !track.sectionAt(s - step).roundabout)) {
+      const roundabout = ring || track.sectionAt(s + window / 2).roundabout !== null;
+      // on a roundabout the way you go is where you leave it: the net turn over the ring
+      let dir = turn;
+      if (roundabout) {
+        let e = s;
+        while (e < s + 400 && track.sectionAt(e).roundabout !== null) e += step;
+        dir = track.frameAt(e + 10).heading - track.frameAt(s - 10).heading;
+        lastEnd = e;
+      } else lastEnd = s + window;
+      out.push({ s, endS: lastEnd, direction: roundabout && Math.abs(dir) < (20 * Math.PI) / 180 ? "straight" : dir > 0 ? "left" : "right", roundabout, street: track.streetNameAt(s + window) });
+    }
+  }
+  return out;
 }
 
 const CROSSING_LATERAL = 12;
@@ -136,6 +255,8 @@ export function buildCourse(city: CityData, track: Track): Course {
     bars,
     trees,
     lowClearance,
+    transitions: buildTransitions(track),
+    turns: buildTurns(track),
     track,
   };
 }
@@ -184,4 +305,25 @@ export function underArch(course: Course | null, from: number, to: number): bool
     }
   }
   return false;
+}
+
+/** The lane `lane` continues as after the layout boundary between `fromS` and `toS` (or null: it ends). */
+export function mapLane(course: Course | null, fromS: number, toS: number, lane: number): number | null | undefined {
+  if (!course) return undefined;
+  const L = course.lapLength;
+  for (const { item } of inRange(course.transitions, L, fromS - 0.5, toS + 0.5)) return item.map[lane] ?? null;
+  return undefined;
+}
+
+/** Distance ahead (from s) to where `lane` ends, within `horizon` metres, or null. */
+export function laneEndAhead(course: Course | null, s: number, lane: number, horizon: number): number | null {
+  if (!course) return null;
+  let l: number | null = lane;
+  for (const { item, s: at } of inRange(course.transitions, course.lapLength, s + 0.01, s + horizon)) {
+    if (l === null) break;
+    const next: number | null = item.map[l] ?? null;
+    if (next === null) return at - s;
+    l = next;
+  }
+  return null;
 }

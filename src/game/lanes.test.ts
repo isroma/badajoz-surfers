@@ -9,6 +9,8 @@ import { solve } from "./solver";
 import { TrackGenerator } from "./track";
 import { collides, flowAllows, lateralOverlap } from "./traffic";
 import { TICK, zoneStartDistance } from "./tuning";
+import { setCourse } from "./course";
+import { realCourse } from "./test-course";
 
 const THREE: LaneLayout = { offsets: [-LANE_WIDTH, 0, LANE_WIDTH], flow: [-1, 1, 1] };
 const four: LayoutFn = () => FOUR_LANES;
@@ -133,6 +135,45 @@ describe("lane layouts", () => {
       }
       if (!human) expect(run.player.p).toBeGreaterThan(1450);
       laneCounts = new Set();
+    }
+  }, 120_000);
+
+  it("on the real lap the runner is never dragged sideways: lanes follow the road's own lane map", () => {
+    const course = realCourse();
+    setCourse(course);
+    try {
+      const world = new BoxSet([]);
+      const track = course.track as typeof course.track & { laneEndsAhead?: (s: number, lane: number) => number | null };
+      const start = layoutAt(0);
+      const failures: string[] = [];
+      for (let lane0 = 0; lane0 < start.offsets.length; lane0++) {
+        const s = createPlayer(0, lane0, start);
+        const ev = createEvents();
+        const xs: number[] = [];
+        let announced = -Infinity;
+        let shifted = -Infinity;
+        for (let i = 0; i < Math.round(course.lapLength / 20 / TICK); i++) {
+          s.speed = 20;
+          const ending = track.laneEndsAhead?.(s.p, s.lane) ?? null;
+          if (ending !== null && ending < 80) announced = s.p + ending;
+          stepPlayer(s, [], TICK, world, ev);
+          xs.push(s.x);
+          const back = xs.length - 1 - Math.round(1 / TICK);
+          // Over one second without input the runner moves < 0.5 m sideways, except where its
+          // lane was announced as ending.
+          // (where the road itself narrows into the old town's 2 narrow lanes, the core maps a lane
+          // onto one up to ~1 m off: that eases over the 12 m transition and is allowed)
+          if (ev.laneRemapped) shifted = Math.abs(s.targetX - s.fromX) <= 1.2 ? s.p : shifted;
+          const moved = Math.abs(s.x - (xs[back] ?? s.x));
+          if (back >= 0 && moved > 0.5 && Math.abs(s.p - announced) > 45 && !(s.p - shifted < 45 && moved < 1.2)) {
+            failures.push(`lane ${lane0}: moved ${(s.x - (xs[back] ?? 0)).toFixed(2)} m at s ${s.p.toFixed(0)}`);
+            break;
+          }
+        }
+      }
+      expect(failures).toEqual([]);
+    } finally {
+      setCourse(null);
     }
   }, 120_000);
 });

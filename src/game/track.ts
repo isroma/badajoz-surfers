@@ -10,7 +10,7 @@
  * there, so the traffic can flow; street clutter goes in the other lanes.
  */
 import { OBSTACLE_DEFS, POWERUPS, type PowerupKind, type TutorialAction, type ZoneId } from "../contracts";
-import { getCourse, inRange, underArch } from "./course";
+import { getCourse, inRange, mapLane, underArch } from "./course";
 import { centreLane, laneOffset, layoutAt, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
 import {
   PATTERNS,
@@ -37,6 +37,8 @@ import {
   type ZoneSpan,
 } from "./tuning";
 
+/** A lane that ends is closed to the generator this far before its end (≥ 80 m: the art tapers it over 60 m). */
+const LANE_CLOSE_AHEAD = 160;
 /** Nothing is placed this close to the start or end of a zone (room for the zone banner). */
 export const ZONE_MARGIN = 25;
 /** A fresh run starts with this much empty road... */
@@ -161,7 +163,7 @@ export class TrackGenerator {
   /** Back of the queue at each zone's light, by `${zoneSerial}|${x}`. */
   private readonly queues = new Map<string, number>();
   /** Live traffic lanes (lateral x) of each zone, by zone serial. */
-  private readonly liveByZone = new Map<string, ReadonlySet<number>>();
+  private readonly liveByZone = new Map<string, boolean>();
   /** End (world distance) of the last static obstacle at each lateral x. */
   private readonly lastStatic = new Map<number, number>();
   private fresh: boolean;
@@ -344,16 +346,26 @@ export class TrackGenerator {
    * of them, always at least one, never every lane of the road.
    */
   private liveLanes(span: ZoneSpan, layout: LaneLayout): ReadonlySet<number> {
-    const key = `${span.serial}|${layout.offsets.join(",")}|${layout.flow.join(",")}`;
-    const known = this.liveByZone.get(key);
-    if (known) return known;
-    const traffic = layout.offsets.filter((_, i) => layout.flow[i] === 1 && (layout.kinds?.[i] ?? "road") === "road");
+    // Decided per lateral position for the whole zone, so a lane keeps its role through
+    // roundabouts and junctions (the real lanes keep their offsets).
     const live = new Set<number>();
-    for (const x of traffic) if (this.rng.chance(0.75)) live.add(x);
-    if (live.size === 0 && traffic.length > 0) live.add(this.rng.pick(traffic));
-    if (live.size >= layout.offsets.length) live.delete(this.rng.pick([...live]));
-    this.liveByZone.set(key, live);
-    if (this.liveByZone.size > 64) {
+    const traffic = layout.offsets.filter((_, i) => layout.flow[i] === 1 && (layout.kinds?.[i] ?? "road") === "road");
+    for (const x of traffic) {
+      const key = `${span.lap}|${x.toFixed(1)}`;
+      let on = this.liveByZone.get(key);
+      if (on === undefined) {
+        on = this.rng.chance(0.92);
+        this.liveByZone.set(key, on);
+      }
+      if (on) live.add(x);
+    }
+    if (live.size === 0 && traffic.length > 0) {
+      const x = traffic[traffic.length - 1] ?? 0;
+      live.add(x);
+      this.liveByZone.set(`${span.lap}|${x.toFixed(1)}`, true);
+    }
+    if (live.size >= layout.offsets.length) live.delete([...live][0] ?? 0);
+    if (this.liveByZone.size > 256) {
       const first = this.liveByZone.keys().next().value;
       if (first !== undefined) this.liveByZone.delete(first);
     }
@@ -421,12 +433,13 @@ export class TrackGenerator {
     if (change !== null) {
       if (change - this.cursor < 30) {
         const v = speedAt(change);
-        this.cursor = change + v * (reactionWindow(difficultyAt(change)) + 0.6) + 4;
+        this.cursor = change + Math.max(15, v * (reactionWindow(difficultyAt(change)) + 0.6) + 4);
         const after = this.layoutFn(this.cursor);
         this.lineX = laneOffset(after, nearestLane(after, this.lineX));
         return;
       }
-      limit = Math.min(limit, change - 6);
+      // Nothing within ±15 m of a layout change.
+      limit = Math.min(limit, change - 15);
     }
     if (limit - this.cursor < 10) {
       this.cursor = change !== null && change < span.end ? change : span.end + ZONE_MARGIN;
@@ -434,11 +447,20 @@ export class TrackGenerator {
     }
     const easy = this.fresh && this.cursor < this.easyUntil;
     const ctx = this.context(this.cursor, easy);
+    // Lanes that end at the coming change are closed (barriers taper them off ahead of it).
+    if (change !== null && change - this.cursor < LANE_CLOSE_AHEAD) {
+      const closed = new Set<number>();
+      for (let l = 0; l < ctx.layout.offsets.length; l++) if (mapLane(getCourse(), change - 0.5, change + 0.5, l) === null) closed.add(l);
+      if (closed.size > 0 && closed.size <= ctx.layout.offsets.length - 2) {
+        ctx.closed = closed;
+        if (closed.has(ctx.entryLane)) ctx.entryLane = [...ctx.layout.offsets.keys()].filter((l) => !closed.has(l)).reduce((a, l) => (Math.abs(l - ctx.entryLane) < Math.abs(a - ctx.entryLane) ? l : a));
+      }
+    }
     const tutorial = ctx.zone === "puente-real" && ctx.lap === 1;
     // Signature moments: a finale closing every zone, a roof route in big-vehicle zones.
     let forced: PatternName | null = null;
     const { finaleLength } = finaleRoom(span);
-    const finalePending = !easy && this.finaleSerial !== span.serial && this.cursor < ctx.lightAt + 40;
+    const finalePending = !easy && this.finaleSerial !== span.serial && this.cursor < ctx.lightAt + 90;
     // Ordinary patterns leave room for the finale at the end of the zone (it starts at the light).
     let normalLimit = finalePending ? Math.min(ctx.lightAt, limit) : limit;
     for (const f of this.flights) if (f.clearFrom > this.cursor) normalLimit = Math.min(normalLimit, f.clearFrom - 2);
@@ -469,6 +491,7 @@ export class TrackGenerator {
       // A bus waits at the real stop just ahead.
       forced = "busStop";
     }
+    ctx.roofDue = forced === "rampRoof";
     for (let attempt = 0; attempt < 10; attempt++) {
       const name = forced !== null && attempt < (forced === "busStop" ? 1 : 3) ? forced : this.rng.weighted(weights);
       if (forced === "finale" && name !== "finale") break; // Wait (a breather) rather than crowd the finale out.
@@ -482,9 +505,9 @@ export class TrackGenerator {
       if (name === "rampRoof") this.roofSerial = span.serial;
       this.commit(name, b, limit, easy, span);
       if (name === "finale") {
-        // The finale closes the zone.
+        // The finale closes the zone's traffic; what is left of the zone (a plaza, a paseo)
+        // still gets its street patterns.
         this.finaleSerial = span.serial;
-        this.cursor = Math.max(this.cursor, span.end + ZONE_MARGIN);
       }
       return;
     }
@@ -522,8 +545,39 @@ export class TrackGenerator {
     return false;
   }
 
+  /** End of the last committed pattern (to fill long empty stretches with bellotas). */
+  private contentEnd = -Infinity;
+
+  /**
+   * A bellota trail along the line through an empty stretch (roundabouts, the run-up to a lane
+   * change, zone edges): never more than ~45 m without something on the road.
+   */
+  private fillGap(from: number, to: number, avoid = NaN): void {
+    if (to - from < 45 || !Number.isFinite(from)) return;
+    const pickups: PickupSpawn[] = [];
+    for (let d = from + 10; d <= to - 6; d += 2.6) {
+      if (Math.abs(d - avoid) < 3) continue;
+      const layout = this.layoutFn(d);
+      // The line's lane (or the nearest one), else the nearest lane no vehicle drives through.
+      const order = layout.offsets.map((_, i) => i).sort((p, q) => Math.abs((layout.offsets[p] ?? 0) - this.lineX) - Math.abs((layout.offsets[q] ?? 0) - this.lineX));
+      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, []));
+      if (lane === undefined) continue;
+      pickups.push({ id: this.nextId++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: 0.9 });
+    }
+    if (pickups.length === 0) return;
+    const last = this.pickups[this.pickups.length - 1];
+    for (const p of pickups) this.pickups.push(p);
+    if (last && pickups[0] && pickups[0].d < last.d) this.pickups.sort((a, c) => a.d - c.d);
+  }
+
   private commit(name: PatternName, b: PatternBuilder, limit: number, easy: boolean, span: ZoneSpan): void {
     const ctx = b.ctx;
+    // Fill up to where this pattern's own content begins (some start with a run-up).
+    let begin = b.end;
+    for (const o of b.obstacles) begin = Math.min(begin, footprintOf(o)[0]);
+    for (const p of b.pickups) begin = Math.min(begin, p.d);
+    this.fillGap(this.contentEnd, begin);
+    this.contentEnd = Math.max(this.contentEnd, b.end);
     const vEnd = speedAt(b.end);
     let gap = vEnd * (ctx.reaction + 0.15 + b.tail + 0.35 * (1 - ctx.difficulty)) + this.rng.range(0, vEnd * 0.45);
     if (easy) gap *= 1.7;
@@ -600,6 +654,8 @@ export class TrackGenerator {
           placeReward(kind, gapSpot);
           const plan = flightPlan(gapSpot.d, this.flightDuration);
           this.flights.push(plan);
+          // Ground bellotas up to and through the landing stretch (it stays clear of obstacles).
+          this.fillGap(Math.min(plan.clearFrom - 10, b.end), plan.clearTo + 6, gapSpot.d);
           this.nextPowerupAt = plan.clearTo + this.rng.range(300, 500);
           this.nextLetterAt = Math.max(this.nextLetterAt, plan.clearTo + 20);
         } else {

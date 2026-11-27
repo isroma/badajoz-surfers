@@ -54,6 +54,8 @@ export interface CameraInput {
   grounded?: boolean;
   /** Solids near the camera (track space). */
   solids?: readonly SolidBox[];
+  /** Lateral nudge of the look target towards the inside of the bend ahead (m, + right). */
+  lookBias?: number;
   /** Street width between facades at the runner, when known: the camera stays inside it. */
   clearance?: number | null;
 }
@@ -65,7 +67,7 @@ const BASE_FOV = 62;
 /** Yaw spring rate (rad/s): smooths corners without lagging off the road. */
 const YAW_OMEGA = 9;
 /** Spring rates (rad/s): lateral, height up, height down. */
-const OMEGA_X = 9;
+const OMEGA_X = 11;
 const OMEGA_Y_UP = 7;
 const OMEGA_Y_DOWN = 5.5;
 /** Share of a jump the camera follows (it trails, so the jump reads on screen). */
@@ -271,7 +273,7 @@ export class ChaseCamera {
     // little towards the street's centre so both sides stay in view.
     const pull = Math.max(-2, Math.min(2, i.x * 0.4));
     const targetX = i.x - pull + (i.laneX - i.x) * 0.12;
-    const lookTarget = i.x - pull * 0.9 + (i.laneX - i.x) * 0.3;
+    const lookTarget = i.x - pull * 0.9 + (i.laneX - i.x) * 0.3 + (i.lookBias ?? 0);
     const air = Math.max(0, i.y - i.groundY);
     const targetY = Math.max(0, i.groundY) * 0.8 + (i.flight > 0 ? 0 : air * JUMP_FOLLOW);
     if (modeChanged && (i.mode === "intro" || i.mode === "menu")) {

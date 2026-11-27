@@ -233,6 +233,111 @@ function warningTriangle(): THREE.Object3D {
   return g;
 }
 
+/** A plain dark soft disc on the ground (when the art has no blob shadow). */
+function fallbackBlob(width: number, length: number): THREE.Mesh {
+  const m = new THREE.Mesh(
+    new THREE.CircleGeometry(0.5, 16).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x1f2328, transparent: true, opacity: 0.3, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4 }),
+  );
+  m.scale.set(width * 1.2, 1, length * 1.2);
+  m.renderOrder = 1;
+  return m;
+}
+
+/**
+ * Every bellota on screen in one InstancedMesh (the art's acorn geometry and material) plus one
+ * Points cloud for their sparkles: 2 draw calls instead of 2 per coin. Spin and bob as the art's
+ * own pickup does.
+ */
+class BellotaBatch {
+  private mesh: THREE.InstancedMesh | null = null;
+  private points: THREE.Points | null = null;
+  private failed = false;
+  private readonly local = new THREE.Matrix4();
+  private readonly m = new THREE.Matrix4();
+  private readonly dummy = new THREE.Object3D();
+  private readonly ids: number[] = [];
+  private readonly ss: number[] = [];
+  private readonly xs: number[] = [];
+  private readonly ys: number[] = [];
+  private n = 0;
+  private static readonly CAP = 400;
+
+  constructor(private readonly scene: THREE.Scene) {}
+
+  ready(art: ArtApi): boolean {
+    if (this.mesh) return true;
+    if (this.failed) return false;
+    try {
+      const tpl = art.createPickup("bellota");
+      let src: THREE.Mesh | null = null;
+      let sprite: THREE.Sprite | null = null;
+      tpl.root.traverse((o) => {
+        if (!src && o instanceof THREE.Mesh) src = o;
+        if (!sprite && o instanceof THREE.Sprite) sprite = o;
+      });
+      const mesh = src as THREE.Mesh | null;
+      if (!mesh) throw new Error("no acorn mesh");
+      tpl.root.updateMatrixWorld(true);
+      this.local.copy(mesh.matrixWorld);
+      this.mesh = new THREE.InstancedMesh(mesh.geometry, mesh.material, BellotaBatch.CAP);
+      this.mesh.frustumCulled = false;
+      this.mesh.count = 0;
+      this.mesh.name = "bellotas";
+      this.scene.add(this.mesh);
+      const sp = sprite as THREE.Sprite | null;
+      const map = sp ? (sp.material as THREE.SpriteMaterial).map : null;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(BellotaBatch.CAP * 3), 3).setUsage(THREE.DynamicDrawUsage));
+      g.setDrawRange(0, 0);
+      this.points = new THREE.Points(g, new THREE.PointsMaterial({ map, size: 0.95, sizeAttenuation: true, transparent: true, depthWrite: false, opacity: 0.85, color: 0xffffff }));
+      this.points.frustumCulled = false;
+      this.points.renderOrder = 1;
+      this.scene.add(this.points);
+      return true;
+    } catch (error) {
+      console.error("Badajoz Surfers: instanced bellotas unavailable, drawing them one by one", error);
+      this.failed = true;
+      return false;
+    }
+  }
+
+  begin(): void {
+    this.n = 0;
+  }
+
+  add(id: number, s: number, x: number, y: number): void {
+    if (this.n >= BellotaBatch.CAP) return;
+    this.ids[this.n] = id;
+    this.ss[this.n] = s;
+    this.xs[this.n] = x;
+    this.ys[this.n] = y;
+    this.n++;
+  }
+
+  end(space: TrackSpace, t: number): void {
+    const mesh = this.mesh;
+    const points = this.points;
+    if (!mesh || !points) return;
+    const pos = points.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const d = this.dummy;
+    for (let i = 0; i < this.n; i++) {
+      const phase = ((this.ids[i] ?? 0) * 2.399) % (Math.PI * 2);
+      const bob = Math.sin(t * 3 + phase) * 0.07;
+      space.place(d, this.ss[i] ?? 0, this.xs[i] ?? 0, (this.ys[i] ?? 0) + bob, 0, 0);
+      d.rotateY(t * 2.6 + phase);
+      d.updateMatrix();
+      this.m.multiplyMatrices(d.matrix, this.local);
+      mesh.setMatrixAt(i, this.m);
+      pos.setXYZ(i, d.position.x, d.position.y, d.position.z);
+    }
+    mesh.count = this.n;
+    mesh.instanceMatrix.needsUpdate = true;
+    points.geometry.setDrawRange(0, this.n);
+    pos.needsUpdate = true;
+  }
+}
+
 const LANE_COLOURS: Record<string, number> = { road: 0x3a3d42, sidewalk: 0xb9b2a4, median: 0x5f8a4a, pedestrian: 0xc9b99a };
 
 /**
@@ -295,6 +400,10 @@ export class World {
   /** Lifetime counters (stats). */
   readonly created = { obstacles: 0, released: 0, pickups: 0, pickupsReleased: 0, faded: 0 };
   private readonly pickupPool = new Map<string, PickupMesh[]>();
+  private readonly obstaclePool = new Map<string, THREE.Object3D[]>();
+  private readonly bellotas = new BellotaBatch(this.scene);
+  private readonly runnerBlob: THREE.Object3D;
+  private readonly waiterBlob: THREE.Object3D;
   private frame = 0;
   private lastP = 0;
   private readonly frustum = new THREE.Frustum();
@@ -317,17 +426,8 @@ export class World {
     scene.fog = this.fog;
     scene.background = this.fog.color;
 
-    this.sun.castShadow = true;
-    const cam = this.sun.shadow.camera;
-    cam.left = -18;
-    cam.right = 18;
-    cam.top = 30;
-    cam.bottom = -18;
-    cam.near = 1;
-    cam.far = 200;
-    this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.bias = -0.0005;
-    this.sun.shadow.normalBias = 0.04;
+    // Flat style: no shadow maps (docs/design.md); soft blob shadows under what moves.
+    this.sun.castShadow = false;
     scene.add(this.sun, this.sun.target, this.hemi);
 
     this.sky = art.createSkyDome();
@@ -353,18 +453,116 @@ export class World {
     this.runner = art.createRunner();
     scene.add(this.fill, this.fill.target);
     this.waiter = art.createWaiter();
-    for (const actor of [this.runner, this.waiter]) {
-      actor.root.traverse((o) => {
-        o.castShadow = true;
-      });
-      scene.add(actor.root);
-    }
+    for (const actor of [this.runner, this.waiter]) scene.add(actor.root);
+    this.runnerBlob = this.blob(0.9, 0.9);
+    this.waiterBlob = this.blob(0.9, 0.9);
 
     const first = toState(this.atmosphereAt(0, 1));
     this.atmoFrom = toState(this.atmosphereAt(0, 1));
     this.atmoTo = toState(this.atmosphereAt(0, 1));
     this.atmo = first;
     this.applyAtmosphere();
+  }
+
+  /** A soft ground blob (the art's, else a plain dark disc). */
+  private blob(width: number, length: number): THREE.Object3D {
+    let m: THREE.Object3D;
+    try {
+      m = this.art.createBlobShadow?.(width, length) ?? fallbackBlob(width, length);
+    } catch {
+      m = fallbackBlob(width, length);
+    }
+    const holder = new THREE.Group();
+    holder.add(m);
+    this.scene.add(holder);
+    return holder;
+  }
+
+  /**
+   * Put an actor's blob on the surface under it (`ground`: road 0 or a roof), smaller the higher
+   * the actor is above it.
+   */
+  placeBlob(which: "runner" | "waiter", s: number, lateral: number, ground: number, height: number): void {
+    const b = which === "runner" ? this.runnerBlob : this.waiterBlob;
+    this.space.place(b, s, lateral, ground + 0.03, 0, 1);
+    const k = Math.max(0.35, 1 - Math.max(0, height - ground) / 5);
+    b.scale.set(k, 1, k);
+    b.visible = height - ground < 7;
+  }
+
+  /**
+   * Compile every shader the run will need before it starts: the city's (art prewarm, which also
+   * builds the area round `s`), and one of each obstacle (parked and moving) and pickup, placed in
+   * front of the camera for the compile and then kept in the pools for the first spawns.
+   */
+  async prewarm(renderer: THREE.WebGLRenderer, camera: THREE.Camera, s: number, lap: number): Promise<void> {
+    const lapLength = this.space.lapLength;
+    const within = Number.isFinite(lapLength) ? ((s % lapLength) + lapLength) % lapLength : s;
+    try {
+      await this.cityScenery?.prewarm?.(renderer, camera, within, lap);
+    } catch (error) {
+      console.error("Badajoz Surfers: city prewarm failed", error);
+    }
+    const staging = new THREE.Group();
+    const ahead = new THREE.Vector3(0, 0, -12).applyQuaternion(camera.quaternion).add(camera.position);
+    const made: { obj: THREE.Object3D; key: string }[] = [];
+    const kinds = Object.keys(OBSTACLE_DEFS) as (keyof typeof OBSTACLE_DEFS)[];
+    for (const kind of kinds) {
+      const def = OBSTACLE_DEFS[kind];
+      for (const moving of def.vehicle || kind === "peaton" ? [false, true] : [false]) {
+        try {
+          const obj = this.art.createObstacle(kind, 0, moving, def.lanes === 3 ? 8 : undefined);
+          obj.position.copy(ahead);
+          staging.add(obj);
+          made.push({ obj, key: `${kind}|${moving ? 1 : 0}|${def.lanes === 3 ? "8.0" : ""}|0` });
+        } catch {
+          // a kind the art cannot build yet
+        }
+      }
+    }
+    const pickupKinds: PickupKind[] = ["iman", "zapatillas", "jamon", "patinete", "ciguena", "letra"];
+    const pickups: { mesh: PickupMesh; key: string }[] = [];
+    for (const kind of pickupKinds) {
+      const p = this.takePickup(kind, kind === "letra" ? "B" : undefined);
+      p.mesh.root.position.copy(ahead);
+      staging.add(p.mesh.root);
+      pickups.push(p);
+    }
+    this.bellotas.ready(this.art);
+    this.scene.add(staging);
+    staging.updateMatrixWorld(true);
+    try {
+      await renderer.compileAsync(this.scene, camera);
+    } catch {
+      renderer.compile(this.scene, camera);
+    }
+    this.scene.remove(staging);
+    for (const { obj, key } of made) {
+      obj.removeFromParent();
+      obj.userData["poolKey"] = key;
+      let pool = this.obstaclePool.get(key);
+      if (!pool) this.obstaclePool.set(key, (pool = []));
+      pool.push(obj);
+    }
+    for (const p of pickups) {
+      p.mesh.root.removeFromParent();
+      let pool = this.pickupPool.get(p.key);
+      if (!pool) this.pickupPool.set(p.key, (pool = []));
+      pool.push(p.mesh);
+    }
+  }
+
+  /** Detail level for the city (0 full .. 3 lightest). */
+  setQuality(level: 0 | 1 | 2 | 3): void {
+    try {
+      this.cityScenery?.setQuality?.(level);
+    } catch {
+      // optional
+    }
+  }
+
+  hideBlob(which: "runner" | "waiter"): void {
+    (which === "runner" ? this.runnerBlob : this.waiterBlob).visible = false;
   }
 
   /** Does the real city art draw the world (vs the fallback ribbon)? */
@@ -378,9 +576,6 @@ export class World {
     const old = this.runner;
     this.outfit = outfit;
     const runner = this.art.createRunner(outfit);
-    runner.root.traverse((o) => {
-      o.castShadow = true;
-    });
     runner.root.position.copy(old.root.position);
     this.scene.remove(old.root);
     this.art.release(old.root);
@@ -613,10 +808,12 @@ export class World {
     // the parked orientation (front towards -Z: you see their tail lights).
     // Pedestrians walk when they move (either way); street-wide obstacles span the street here.
     const moving = spawn.kind === "peaton" ? spawn.k !== 0 : spawn.k > 0;
-    const obj = this.art.createObstacle(spawn.kind, spawn.seed, moving, spawn.span);
-    obj.traverse((o) => {
-      o.castShadow = true;
-    });
+    const key = `${spawn.kind}|${moving ? 1 : 0}|${spawn.span?.toFixed(1) ?? ""}|${spawn.seed % 4}`;
+    const pooled = this.obstaclePool.get(key)?.pop();
+    const obj = pooled ?? this.art.createObstacle(spawn.kind, spawn.seed, moving, spawn.span);
+    obj.userData["poolKey"] = key;
+    obj.visible = true;
+    obj.scale.set(1, 1, 1);
     obj.userData["role"] = spawn.role ?? (spawn.k !== 0 ? "driving" : undefined);
     obj.userData["moving"] = spawn.k !== 0;
     this.created.obstacles++;
@@ -663,8 +860,20 @@ export class World {
     }
     view.triangle?.removeFromParent();
     this.scene.remove(view.obj);
-    this.art.release(view.obj);
-    this.created.released++;
+    // Pool it (same kind, direction, span and variant group) instead of rebuilding next time.
+    const key = view.obj.userData["poolKey"] as string | undefined;
+    let pool = key ? this.obstaclePool.get(key) : undefined;
+    if (key && !pool) this.obstaclePool.set(key, (pool = []));
+    if (pool && pool.length < 6) {
+      if (view.body) {
+        view.body.position.y = 0;
+        view.body.rotation.z = 0;
+      }
+      pool.push(view.obj);
+    } else {
+      this.art.release(view.obj);
+      this.created.released++;
+    }
   }
 
   private takePickup(kind: PickupKind, letter: string | undefined): { mesh: PickupMesh; key: string } {
@@ -697,6 +906,8 @@ export class World {
 
   /** Remove every obstacle and pickup mesh (new run, warp, menu). */
   clearDynamic(): void {
+    this.bellotas.begin();
+    this.bellotas.end(this.space, 0);
     for (const view of this.obstacles.values()) this.dropObstacle(view);
     this.obstacles.clear();
     for (const view of this.pickups.values()) this.dropPickup(view);
@@ -829,6 +1040,7 @@ export class World {
     }
 
     // Pickups.
+    this.bellotas.begin();
     const pickups = run.gen.pickups;
     lo = 0;
     hi = pickups.length;
@@ -871,6 +1083,12 @@ export class World {
         pd = pulled.pd + (pulled.d - pulled.pd) * alpha;
       }
       if (pd < p - KEEP_BEHIND && !this.inFrustum(pd, px, py, 0.6)) continue;
+      // Bellotas: one instanced batch (2 draw calls for all of them), no per-coin objects.
+      if (spawn.kind === "bellota" && this.bellotas.ready(this.art)) {
+        const dist = Math.hypot(px - camera.x, py - camera.y, -pd - camera.z);
+        if (dist > 0.6) this.bellotas.add(spawn.id, pd, px, py);
+        continue;
+      }
       if (!view) {
         const { mesh } = this.takePickup(spawn.kind, letter);
         view = { mesh, spawn, key, seen: frame, fade: World.newFade() };
@@ -892,6 +1110,7 @@ export class World {
         this.pickups.delete(id);
       }
     }
+    this.bellotas.end(space, time);
   }
 
   counts(): Record<string, number> {
@@ -904,6 +1123,36 @@ export class World {
       createdObstacles: this.created.obstacles, releasedObstacles: this.created.released,
       createdPickups: this.created.pickups, releasedPickups: this.created.pickupsReleased,
     };
+  }
+
+  /**
+   * Debug: renderable objects that pass the frustum (≈ draw calls; one per material group), by
+   * owner: the city, obstacles, pickups (bellotas batch included), characters, other.
+   */
+  drawBreakdown(): Record<string, number> {
+    const out: Record<string, number> = { city: 0, obstacles: 0, pickups: 0, characters: 0, other: 0 };
+    const owner = new Map<THREE.Object3D, string>();
+    if (this.cityScenery) owner.set(this.cityScenery.root, "city");
+    if (this.ribbon) owner.set(this.ribbon, "city");
+    for (const v of this.obstacles.values()) owner.set(v.obj, "obstacles");
+    for (const v of this.pickups.values()) owner.set(v.mesh.root, "pickups");
+    owner.set(this.runner.root, "characters");
+    owner.set(this.waiter.root, "characters");
+    const visit = (o: THREE.Object3D, tag: string): void => {
+      if (!o.visible) return;
+      const t = owner.get(o) ?? (o.name === "bellotas" || o instanceof THREE.Points ? "pickups" : tag);
+      const r = o as THREE.Mesh;
+      if (r.isMesh || (o as THREE.Points).isPoints || (o as THREE.Sprite).isSprite || (o as THREE.Line).isLine) {
+        if (!o.frustumCulled || this.frustum.intersectsObject(o)) {
+          const mats = Array.isArray(r.material) ? r.material.length : 1;
+          const groups = (r.geometry as THREE.BufferGeometry | undefined)?.groups.length ?? 0;
+          out[t] = (out[t] ?? 0) + Math.max(1, Math.min(mats, groups || 1));
+        }
+      }
+      for (const c of o.children) visit(c, t);
+    };
+    for (const c of this.scene.children) visit(c, "other");
+    return out;
   }
 
   /** Debug/verification: where each live obstacle is drawn (id, kind, z, visible, opacity). */

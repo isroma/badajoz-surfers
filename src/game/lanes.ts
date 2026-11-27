@@ -139,6 +139,10 @@ export function nearestLane(layout: LaneLayout, x: number): number {
  * our carriageway), the right-hand one on a tie (Spain keeps right).
  */
 export function centreLane(layout: LaneLayout): number {
+  // The real layouts name their lanes: start in our kerb lane, "own-1".
+  const ids = (layout as LaneLayout & { ids?: readonly string[] }).ids;
+  const own = ids?.indexOf("own-1") ?? -1;
+  if (own >= 0) return own;
   let best = -1;
   let bestD = Infinity;
   for (let i = 0; i < layout.offsets.length; i++) {

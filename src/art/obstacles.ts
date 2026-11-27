@@ -6,7 +6,8 @@
 import * as THREE from "three";
 import { OBSTACLE_DEFS, type ObstacleKind } from "../contracts";
 import { Builder, T, instance, xf } from "./geom";
-import { CLOTH, GLOW, NET, PAINT, SOLID } from "./materials";
+import { CLOTH, GLASS, GLOW, NET, PAINT, SOLID } from "./materials";
+import { signAtlas } from "./text";
 import { buildPedestrian } from "./pedestrians";
 import { ROLE_VARIANT_BIT, buildBus, buildCar, buildMoto, buildRampTruck, buildVan, wheelAt, wheelSink } from "./vehicles";
 
@@ -283,6 +284,42 @@ const VARIANTS: Record<ObstacleKind, number> = {
 
 const cache = new Map<string, THREE.Group>();
 
+let flatRemap: Map<THREE.Material, THREE.Material> | null = null;
+function FLAT_REMAP(): Map<THREE.Material, THREE.Material> {
+  if (flatRemap) return flatRemap;
+  flatRemap = new Map<THREE.Material, THREE.Material>();
+  for (const m of [GLOW, NET, PAINT, CLOTH, GLASS, signAtlas().material, signAtlas().lit]) flatRemap.set(m, SOLID);
+  return flatRemap;
+}
+
+let blobTex: THREE.Texture | null = null;
+let blobMat: THREE.MeshBasicMaterial | null = null;
+const blobGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+/** A soft dark blob shadow on the ground (no shadow maps in the flat style). Shared geometry and material. */
+export function createBlobShadow(width: number, length: number): THREE.Mesh {
+  if (!blobMat) {
+    const c = document.createElement("canvas");
+    c.width = 64;
+    c.height = 64;
+    const ctx = c.getContext("2d");
+    if (ctx) {
+      const g = ctx.createRadialGradient(32, 32, 4, 32, 32, 32);
+      g.addColorStop(0, "rgba(31,35,40,0.42)");
+      g.addColorStop(1, "rgba(31,35,40,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 64, 64);
+    }
+    blobTex = new THREE.CanvasTexture(c);
+    blobMat = new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 });
+  }
+  const m = new THREE.Mesh(blobGeo, blobMat);
+  m.scale.set(width * 1.25, 1, length * 1.2);
+  m.position.y = 0.02;
+  m.name = "blob-shadow";
+  m.renderOrder = 1;
+  return m;
+}
+
 /**
  * Shrink a freshly built template (never grow) so mirrors, bumpers and plates stay inside the
  * collision box footprint and below its top. The pancarta's posts deliberately stand outside.
@@ -316,10 +353,11 @@ function template(kind: ObstacleKind, variant: number, moving: boolean): THREE.G
     return tpl;
   }
   const b = new Builder();
-  wheelSink.list = [];
-  BUILD[kind](b, variant, moving);
-  const wheels = wheelSink.list;
+  // the flat style: one material, one draw call per obstacle (wheels merged, text plates as flat colour)
+  b.remap = FLAT_REMAP();
   wheelSink.list = null;
+  BUILD[kind](b, variant, moving);
+  const wheels: { x: number; z: number; r: number; w: number }[] = [];
   tpl = b.build(true);
   // wheels as separate meshes, one per axle, origin on the axle: the engine spins "wheel*" about X
   const axles = new Map<number, { x: number; z: number; r: number; w: number }[]>();
@@ -386,5 +424,6 @@ export function createObstacle(kind: ObstacleKind, seed: number, moving = false,
   const root = new THREE.Group();
   root.name = `obstacle:${kind}`;
   root.add(inner);
+  root.add(createBlobShadow(spanWidth ?? def.width, def.length));
   return root;
 }

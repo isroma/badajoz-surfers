@@ -1,129 +1,115 @@
 /**
- * Every building footprint extruded to its LiDAR height with the facade atlas: bays laid out per
- * real edge, ground floor / upper floors / parapet bands, blank party walls, baked ambient
- * occlusion at the street, flat roofs with parapets and lift overruns, clay hip roofs in the old
- * town. Permanent layer (built once), grouped per zone for frustum culling.
+ * Buildings in the flat style (docs/design.md): every real footprint extruded to its LiDAR
+ * height, a flat wall colour from the building palette (varied per building), a regular grid of
+ * flat windows (the tiny shared window texture: u = bays / 4, v = floors / 4), a ground-floor
+ * band, a darker band at the base (baked), one accent per typology, a simple roof (flat with a
+ * parapet, or terracotta hips in the old town). Typology comes from the data's tags first.
+ * Permanent layer, grouped in spatial tiles: two draw calls per tile (flat + windows).
  */
 import * as THREE from "three";
+import { PAL } from "../palette";
 import { Acc } from "./acc";
-import { facadeMaterial } from "./cmats";
+import { flatMaterial, windowsMaterial } from "./cmats";
 import { CLEARANCE, type CityCtx, type PreparedBuilding, type Typology } from "./context";
 import { centroid, obb, pointInRing, signedArea, type P2 } from "./geo";
 import { hash01 } from "./shared";
-import { FT, GROUND_SCALE } from "./textures";
 
 const GROUND_FLOOR = 3.8;
 const FLOOR_H = 3.0;
-
-interface TypDef {
-  bay: number;
-  upper: readonly number[];
-  ground: readonly number[];
-  plain: number;
-  tints: readonly number[];
-  blinds: readonly number[];
-  parapet: number;
-}
-
-const TYP: Record<Typology, TypDef> = {
-  brick: {
-    bay: 3.3,
-    upper: [FT.brickBalcony, FT.brickMirador, FT.brickAwning, FT.brickTerrace, FT.brickOchre, FT.brickBalcony],
-    ground: [FT.shopShutter, FT.portalShop, FT.shopShutter],
-    plain: FT.brickPlain,
-    tints: [0xffffff, 0xf4ece4, 0xfff6ee, 0xe9e2da, 0xfbf3e6],
-    blinds: [0, 2, 0, 1],
-    parapet: 1.0,
-  },
-  render: {
-    bay: 3.2,
-    upper: [FT.renderBalcony, FT.renderWindows, FT.renderMirador, FT.renderBalcony],
-    ground: [FT.stoneShops, FT.shopShutter, FT.portalShop],
-    plain: FT.renderPlain,
-    tints: [0xfff8ec, 0xf8e8c6, 0xf6dfb4, 0xf3e6d8, 0xfdf6ea, 0xf1d3ac, 0xe9e4da],
-    blinds: [0, 1, 0, 2],
-    parapet: 1.0,
-  },
-  casco: {
-    bay: 3.0,
-    upper: [FT.cascoBalcony, FT.cascoWindows],
-    ground: [FT.cascoHouse, FT.cascoGround, FT.cascoShop],
-    plain: FT.cascoPlain,
-    tints: [0xffffff, 0xfffdf8, 0xfbf8f0, 0xf6dc94, 0xffffff, 0xfaf3e3],
-    blinds: [3, 2, 3, 1],
-    parapet: 0.5,
-  },
-  modern: {
-    bay: 3.4,
-    upper: [FT.modernStrip, FT.renderMirador, FT.modernStrip, FT.glassCurtain],
-    ground: [FT.glassShop, FT.portalShop],
-    plain: FT.modernPlain,
-    tints: [0xffffff, 0xf1f1ee, 0xe8e6e0, 0xf6f2ea],
-    blinds: [1, 1, 0],
-    parapet: 1.1,
-  },
-  shed: {
-    bay: 4.0,
-    upper: [FT.shed],
-    ground: [FT.shedGround],
-    plain: FT.shed,
-    tints: [0xffffff, 0xece6da, 0xe0e2e2, 0xf2ebdc],
-    blinds: [1],
-    parapet: 0.6,
-  },
-  stone: {
-    bay: 3.6,
-    upper: [FT.stone],
-    ground: [FT.stonePlain],
-    plain: FT.stonePlain,
-    tints: [0xffffff, 0xf4ede0],
-    blinds: [2],
-    parapet: 0.8,
-  },
-  plazaAlta: {
-    bay: 3.2,
-    upper: [FT.plazaAlta],
-    ground: [FT.plazaAltaArcade],
-    plain: FT.cascoPlain,
-    tints: [0xffffff],
-    blinds: [3],
-    parapet: 0.4,
-  },
-};
-
-export function typDef(t: Typology): TypDef {
-  return TYP[t];
-}
-
-const _c = new THREE.Color();
-const _ca = new THREE.Color();
-const _cb = new THREE.Color();
+const BAY = 3.2;
 const UP = new THREE.Vector3(0, 1, 0);
 const DOWN = new THREE.Vector3(0, -1, 0);
 
 export interface BuildingStyle {
-  def: TypDef;
-  upper: number;
-  ground: number;
-  tint: THREE.Color;
-  blind: number;
+  wall: THREE.Color;
+  /** Ground-floor band colour (shops, plinth). */
+  ground: THREE.Color;
+  accent: THREE.Color;
+  accentKind: "brick" | "albero" | "balconies" | "awnings" | "glass" | "none";
+  roof: THREE.Color;
   floors: number;
-  /** Bottom of the upper floors (absolute y). */
   Gf: number;
-  topV: number;
-  eave: number;
   flat: boolean;
+  parapet: number;
+  windows: boolean;
 }
 
-/** Per-building style choices (deterministic): shared by the extrusion and the relief. */
+const c = (hex: number): THREE.Color => new THREE.Color(hex);
+
+/** Per-building style (deterministic): shared by the extrusion and the near-route relief. */
 export function styleOf(pb: PreparedBuilding): BuildingStyle {
-  const def = TYP[pb.typ];
   const r = pb.seed;
-  const upper = def.upper[Math.floor(r * def.upper.length) % def.upper.length]!;
-  const ground = def.ground[Math.floor(hash01(pb.index, 5) * def.ground.length) % def.ground.length]!;
-  const tint = new THREE.Color(def.tints[Math.floor(hash01(pb.index, 9) * def.tints.length) % def.tints.length]!);
-  tint.multiplyScalar(0.94 + hash01(pb.index, 11) * 0.08);
-  const blind = def.blinds[Math.floor(hash01(pb.index, 13) * def.blinds.length) % def.blinds.length]!;
+  const wall = c(PAL.buildings[Math.floor(hash01(pb.index, 9) * PAL.buildings.length)] ?? PAL.buildings[0]);
+  const t: Typology = pb.typ;
+  let accentKind: BuildingStyle["accentKind"] = "none";
+  let accent = c(PAL.brick);
+  let ground = wall.clone().multiplyScalar(0.93);
+  let roof = c(PAL.flatRoof);
+  let windows = true;
+  switch (t) {
+    case "brick":
+      accentKind = "brick";
+      wall.lerp(c(PAL.brick), 0.55);
+      ground = c(PAL.buildings[2]);
+      break;
+    case "render":
+      accentKind = r < 0.5 ? "balconies" : "awnings";
+      break;
+    case "casco":
+      wall.setHex(0xfbf8f1);
+      accentKind = "albero";
+      accent = c(PAL.albero);
+      ground = c(PAL.albero);
+      roof = c(PAL.terracotta);
+      break;
+    case "plazaAlta":
+      // the red and white painted houses over the arcades
+      wall.setHex(0xfbf8f1);
+      accentKind = "brick";
+      accent = c(PAL.danger);
+      ground = c(0xfbf8f1);
+      roof = c(PAL.terracotta);
+      break;
+    case "modern":
+      accentKind = "glass";
+      accent = c(PAL.glass);
+      break;
+    case "shed":
+    case "retail":
+      wall.setHex(PAL.buildings[3]);
+      ground = c(PAL.kerb);
+      accentKind = "none";
+      windows = t === "retail";
+      break;
+    case "school":
+      wall.setHex(0xf2e6d6);
+      accentKind = "brick";
+      accent = c(PAL.brick);
+      ground = c(PAL.brick);
+      break;
+    case "church":
+    case "stone":
+      wall.setHex(PAL.stone);
+      ground = c(PAL.stone).multiplyScalar(0.94);
+      windows = false;
+      roof = c(PAL.terracotta);
+      break;
+    case "hospital":
+      wall.setHex(0xfcf8f1);
+      accentKind = "glass";
+      accent = c(PAL.glass);
+      break;
+    case "theatre":
+    case "public":
+      wall.setHex(0xf7efe3);
+      ground = c(PAL.stone);
+      accentKind = "none";
+      break;
+    case "hotel":
+      accentKind = "glass";
+      accent = c(PAL.glass);
+      break;
+  }
   const tall = pb.top - pb.G;
   let Gf = pb.G + GROUND_FLOOR;
   let floors = Math.max(0, Math.round((pb.top - Gf) / FLOOR_H));
@@ -132,44 +118,26 @@ export function styleOf(pb: PreparedBuilding): BuildingStyle {
     floors = 0;
   }
   const flat = !pb.pitched;
-  return { def, upper, ground, tint, blind, floors, Gf, topV: 1 + floors, eave: pb.top, flat };
-}
-
-/** f (facade v coordinate) at height y on a vertex whose street level is g. */
-function fAt(y: number, g: number, st: BuildingStyle, top: number): number {
-  if (y <= g) return (y - g) / 3;
-  if (y <= st.Gf) return (y - g) / Math.max(0.5, st.Gf - g);
-  if (st.floors === 0) return 1 + (y - st.Gf) / 3;
-  if (y <= top) return 1 + (st.floors * (y - st.Gf)) / Math.max(0.5, top - st.Gf);
-  return st.topV + (y - top) / 3;
+  return { wall, ground, accent, accentKind, roof, floors, Gf, flat, parapet: flat ? (t === "casco" ? 0.5 : 0.9) : 0, windows };
 }
 
 export interface FacadeAccs {
-  facade: Acc;
-  flatRoof: Acc;
-  tileRoof: Acc;
+  flat: Acc;
+  win: Acc;
 }
 
 export function newFacadeAccs(): FacadeAccs {
-  return {
-    facade: new Acc({ aTile: 4, aSeed: 2 }),
-    // roofs share the facade atlas (cells FT.roofFlat / FT.roofTile): one draw call per tile
-    flatRoof: new Acc({ aTile: 4, aSeed: 2 }).set("aTile", FT.roofFlat, FT.roofFlat, FT.roofFlat, 1e4),
-    tileRoof: new Acc({ aTile: 4, aSeed: 2 }).set("aTile", FT.roofTile, FT.roofTile, FT.roofTile, 1e4),
-  };
+  return { flat: new Acc(), win: new Acc() };
 }
 
-/** Walls of one ring between per-vertex bottoms and a common top. */
-function walls(
-  acc: Acc, ctx: CityCtx, pb: PreparedBuilding, st: BuildingStyle, ring: P2[], groundOf: (p: P2) => number,
-  yFrom: ((g: number) => number) | null, yTo: number, parapet: number, bayPhase: number, simple = false,
-): void {
-  const def = st.def;
-  const pa = new THREE.Vector3();
-  const pb3 = new THREE.Vector3();
-  const pc = new THREE.Vector3();
-  const pd = new THREE.Vector3();
+/** Walls of one ring: ground band (+ baked dark base), window band, parapet. */
+function walls(accs: FacadeAccs, ctx: CityCtx, pb: PreparedBuilding, st: BuildingStyle, ring: P2[], groundOf: (p: P2) => number, yFrom: number | null, yTo: number, parapet: number): void {
+  const A = new THREE.Vector3();
+  const B = new THREE.Vector3();
+  const C = new THREE.Vector3();
+  const D = new THREE.Vector3();
   const n = new THREE.Vector3();
+  const dark = st.ground.clone().multiplyScalar(0.72);
   for (let i = 0; i < ring.length; i++) {
     const a = ring[i]!;
     const d = ring[(i + 1) % ring.length]!;
@@ -177,84 +145,53 @@ function walls(
     if (len < 0.05) continue;
     n.set(-(d.z - a.z) / len, 0, (d.x - a.x) / len);
     const party = ctx.isParty(pb.index, a.x, a.z, d.x, d.z);
-    const bays = Math.max(1, Math.round(len / def.bay));
-    const u0 = bayPhase;
-    const u1 = bayPhase + bays;
-    // party walls (medianeras): bare brick, grey render or the building's own plaster
-    const pv = hash01(pb.index, i + 101);
-    const partyTile = pb.typ === "casco" || pb.typ === "plazaAlta" ? def.plain : pv < 0.3 ? FT.brickPlain : pv < 0.55 ? FT.modernPlain : def.plain;
-    const tile = party ? [partyTile, partyTile, partyTile, 1e4] : [st.upper, st.ground, def.plain, st.topV];
-    acc.set("aTile", ...tile);
-    const ga = groundOf(a);
-    const gd = groundOf(d);
-    const top = yTo + parapet;
-    if (simple && !yFrom) {
-      // far buildings: one band of upper floors from the ground, and the parapet
-      acc.set("aTile", party ? def.plain : st.upper, party ? def.plain : st.upper, def.plain, 1e4);
-      const fb = (y: number, g: number): number => 1 + (y - g) / FLOOR_H;
-      const dk = st.tint.clone().multiplyScalar(0.7);
-      pa.set(a.x, ga - 3, a.z);
-      pb3.set(d.x, gd - 3, d.z);
-      pc.set(d.x, yTo, d.z);
-      pd.set(a.x, yTo, a.z);
-      acc.quad(pa, pb3, pc, pd, [u0, fb(ga - 3, ga)], [u1, fb(gd - 3, gd)], [u1, fb(yTo, gd)], [u0, fb(yTo, ga)], dk, dk, st.tint, st.tint, n);
-      if (parapet > 0) {
-        acc.set("aTile", def.plain, def.plain, def.plain, 1e4);
-        pa.set(a.x, yTo, a.z);
-        pb3.set(d.x, yTo, d.z);
-        pc.set(d.x, top, d.z);
-        pd.set(a.x, top, a.z);
-        acc.quad(pa, pb3, pc, pd, [u0, 2], [u1, 2], [u1, 2.3], [u0, 2.3], st.tint, st.tint, st.tint, st.tint, n);
-      }
-      continue;
-    }
-    // horizontal band boundaries (absolute y); per-vertex bottoms
-    const ya0 = yFrom ? yFrom(ga) : ga - 3;
-    const yd0 = yFrom ? yFrom(gd) : gd - 3;
-    const cuts: [number, number][] = [[ya0, yd0]];
-    const addCut = (y: number): void => {
-      const last = cuts[cuts.length - 1]!;
-      if (y > last[0] + 0.05 && y > last[1] + 0.05 && y < top - 0.05) cuts.push([y, y]);
+    const ga = yFrom ?? groundOf(a);
+    const gd = yFrom ?? groundOf(d);
+    const q = (acc: Acc, y0a: number, y0d: number, y1a: number, y1d: number, c0: THREE.Color, c1: THREE.Color, uv?: [number, number, number, number]): void => {
+      if (y1a <= y0a && y1d <= y0d) return;
+      A.set(a.x, y0a, a.z);
+      B.set(d.x, y0d, d.z);
+      C.set(d.x, y1d, d.z);
+      D.set(a.x, y1a, a.z);
+      const [u0, v0, u1, v1] = uv ?? [0, 0, 0, 0];
+      acc.quad(A, B, C, D, [u0, v0], [u1, v0], [u1, v1], [u0, v1], c0, c0, c1, c1, n);
     };
-    if (!yFrom) {
-      cuts.push([ga, gd]);
-      addCut(Math.min(st.Gf, yTo));
-    } else addCut(Math.min(st.Gf, yTo));
-    addCut(yTo);
-    cuts.push([top, top]);
-    for (let k = 0; k + 1 < cuts.length; k++) {
-      const [yaB, ydB] = cuts[k]!;
-      const [yaT, ydT] = cuts[k + 1]!;
-      if (yaT <= yaB && ydT <= ydB) continue;
-      pa.set(a.x, yaB, a.z);
-      pb3.set(d.x, ydB, d.z);
-      pc.set(d.x, ydT, d.z);
-      pd.set(a.x, yaT, a.z);
-      const fa0 = fAt(yaB, ga, st, yTo);
-      const fd0 = fAt(ydB, gd, st, yTo);
-      const fa1 = fAt(yaT, ga, st, yTo);
-      const fd1 = fAt(ydT, gd, st, yTo);
-      // baked ambient occlusion: dark at the street, full at the first-floor line
-      const ao = (y: number, g: number): number => (y <= g ? 0.5 : y >= st.Gf ? 1 : 0.62 + 0.38 * Math.min(1, (y - g) / 2.6));
-      const cA = _c.copy(st.tint).multiplyScalar(ao(yaB, ga)).clone();
-      const cB = _ca.copy(st.tint).multiplyScalar(ao(ydB, gd)).clone();
-      const cC = _cb.copy(st.tint).multiplyScalar(ao(ydT, gd)).clone();
-      const cD = new THREE.Color().copy(st.tint).multiplyScalar(ao(yaT, ga));
-      acc.quad(pa, pb3, pc, pd, [u0, fa0], [u1, fd0], [u1, fd1], [u0, fa1], cA, cB, cC, cD, n);
-      if (k === cuts.length - 2 && parapet > 0) {
-        // inside face of the parapet
-        pa.set(a.x, yTo, a.z);
-        pb3.set(d.x, yTo, d.z);
-        acc.set("aTile", def.plain, def.plain, def.plain, 1e4);
-        const ni = n.clone().negate();
-        acc.quad(pb3, pa, pd, pc, [u1, 2], [u0, 2], [u0, 2.3], [u1, 2.3], st.tint, st.tint, st.tint, st.tint, ni);
-        acc.set("aTile", ...tile);
+    const gTop = Math.min(st.Gf, yTo);
+    const simple = pb.src.dist > 18;
+    // below the street (hides slopes) and the ground floor with its darker base band
+    if (yFrom === null && simple) q(accs.flat, ga - 3, gd - 3, gTop, gTop, dark, st.ground);
+    else if (yFrom === null) {
+      q(accs.flat, ga - 3, gd - 3, ga, gd, dark, dark);
+      q(accs.flat, ga, gd, Math.min(gTop, ga + 1.0), Math.min(gTop, gd + 1.0), dark, st.ground);
+      q(accs.flat, Math.min(gTop, ga + 1.0), Math.min(gTop, gd + 1.0), gTop, gTop, st.ground, st.ground);
+    } else q(accs.flat, ga, gd, gTop, gTop, st.ground, st.ground);
+    // upper floors: windows (not on party walls or windowless typologies)
+    if (st.floors > 0 && yTo > gTop) {
+      const bays = Math.max(1, Math.round(len / BAY));
+      if (party || !st.windows) q(accs.flat, gTop, gTop, yTo, yTo, st.wall, st.wall);
+      else {
+        const accentBand = st.accentKind === "brick" ? Math.min(yTo, gTop + FLOOR_H * Math.min(2, st.floors)) : gTop;
+        if (accentBand > gTop) q(accs.win, gTop, gTop, accentBand, accentBand, st.accent, st.accent, [0, 0, bays / 4, (accentBand - gTop) / FLOOR_H / 4]);
+        q(accs.win, accentBand, accentBand, yTo, yTo, st.wall, st.wall, [0, ((accentBand - gTop) / FLOOR_H) / 4, bays / 4, st.floors / 4]);
       }
+    }
+    if (parapet > 0 && simple) {
+      const pc = st.accentKind === "albero" ? st.accent : st.wall.clone().multiplyScalar(0.97);
+      q(accs.flat, yTo, yTo, yTo + parapet, yTo + parapet, pc, pc);
+    } else if (parapet > 0) {
+      const pc = st.accentKind === "albero" ? st.accent : st.wall.clone().multiplyScalar(0.97);
+      q(accs.flat, yTo, yTo, yTo + parapet, yTo + parapet, pc, pc);
+      // inside face
+      A.set(d.x, yTo, d.z);
+      B.set(a.x, yTo, a.z);
+      C.set(a.x, yTo + parapet, a.z);
+      D.set(d.x, yTo + parapet, d.z);
+      accs.flat.quad(A, B, C, D, [0, 0], [0, 0], [0, 0], [0, 0], pc, pc, pc, pc, n.clone().negate());
     }
   }
 }
 
-function roofFlat(acc: Acc, ring: P2[], y: number, color: THREE.Color, scale: number, down = false): void {
+function roofFlat(acc: Acc, ring: P2[], y: number, color: THREE.Color, down = false): void {
   const contour = ring.map((p) => new THREE.Vector2(p.x, p.z));
   let tris: number[][];
   try {
@@ -264,30 +201,28 @@ function roofFlat(acc: Acc, ring: P2[], y: number, color: THREE.Color, scale: nu
   }
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
-  const c = new THREE.Vector3();
+  const cc = new THREE.Vector3();
   for (const t of tris) {
     const p0 = ring[t[0]!]!;
     const p1 = ring[t[1]!]!;
     const p2 = ring[t[2]!]!;
     a.set(p0.x, y, p0.z);
     b.set(p1.x, y, p1.z);
-    c.set(p2.x, y, p2.z);
-    // upward (or downward) facing: cross_y = dz1*dx2 - dx1*dz2
-    const cy = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
+    cc.set(p2.x, y, p2.z);
+    const cy = (b.z - a.z) * (cc.x - a.x) - (b.x - a.x) * (cc.z - a.z);
     const flip = down ? cy > 0 : cy < 0;
-    const [q1, q2] = flip ? [c, b] : [b, c];
-    acc.tri(a, q1, q2, [a.x / scale, 1000 + a.z / scale], [q1.x / scale, 1000 + q1.z / scale], [q2.x / scale, 1000 + q2.z / scale], color, down ? DOWN : UP);
+    const [q1, q2] = flip ? [cc, b] : [b, cc];
+    acc.tri(a, q1, q2, [0, 0], [0, 0], [0, 0], color, down ? DOWN : UP);
   }
 }
 
 /** Hip roof over the footprint's oriented box, eave at y. */
-function hipRoof(acc: Acc, ring: P2[], y: number, seed: number): boolean {
+function hipRoof(acc: Acc, ring: P2[], y: number, col: THREE.Color): boolean {
   const o = obb(ring);
   const area = -signedArea(ring);
   if (ring.length > 10 || area / (4 * o.hl * o.hw) < 0.82 || o.hw < 1.5) return false;
-  const ov = 0.3;
-  const hl = o.hl + ov;
-  const hw = o.hw + ov;
+  const hl = o.hl + 0.3;
+  const hw = o.hw + 0.3;
   const rise = Math.min(2.4, o.hw * 0.5);
   const ux = o.ux;
   const uz = o.uz;
@@ -298,23 +233,53 @@ function hipRoof(acc: Acc, ring: P2[], y: number, seed: number): boolean {
   const e = [P(-hl, -hw, 0), P(hl, -hw, 0), P(hl, hw, 0), P(-hl, hw, 0)];
   const r0 = P(-r, 0, rise);
   const r1 = P(r, 0, rise);
-  const col = new THREE.Color().setHSL(0.04, 0.35, 0.62 + seed * 0.1);
-  const S = 1.5;
-  const uvOf = (p: THREE.Vector3, along: THREE.Vector2, across: THREE.Vector2): [number, number] => [(p.x * along.x + p.z * along.y) / S, 1000 + ((p.x * across.x + p.z * across.y) / S) * 1.1];
-  const faces: [THREE.Vector3[], THREE.Vector2, THREE.Vector2][] = [
-    [[e[0]!, e[1]!, r1, r0], new THREE.Vector2(ux, uz), new THREE.Vector2(vx, vz)],
-    [[e[2]!, e[3]!, r0, r1], new THREE.Vector2(-ux, -uz), new THREE.Vector2(-vx, -vz)],
-    [[e[1]!, e[2]!, r1], new THREE.Vector2(vx, vz), new THREE.Vector2(-ux, -uz)],
-    [[e[3]!, e[0]!, r0], new THREE.Vector2(-vx, -vz), new THREE.Vector2(ux, uz)],
-  ];
-  for (const [pts, al, ac] of faces) {
-    // make the face point up
+  const faces: THREE.Vector3[][] = [[e[0]!, e[1]!, r1, r0], [e[2]!, e[3]!, r0, r1], [e[1]!, e[2]!, r1], [e[3]!, e[0]!, r0]];
+  faces.forEach((pts, k) => {
     const nrm = new THREE.Vector3().subVectors(pts[1]!, pts[0]!).cross(new THREE.Vector3().subVectors(pts[2]!, pts[0]!));
     const list = nrm.y < 0 ? [...pts].reverse() : pts;
-    if (list.length === 4) acc.quad(list[0]!, list[1]!, list[2]!, list[3]!, uvOf(list[0]!, al, ac), uvOf(list[1]!, al, ac), uvOf(list[2]!, al, ac), uvOf(list[3]!, al, ac), col);
-    else acc.tri(list[0]!, list[1]!, list[2]!, uvOf(list[0]!, al, ac), uvOf(list[1]!, al, ac), uvOf(list[2]!, al, ac), col);
-  }
+    const cc = col.clone().multiplyScalar(k % 2 ? 0.92 : 1);
+    if (list.length === 4) acc.quad(list[0]!, list[1]!, list[2]!, list[3]!, [0, 0], [0, 0], [0, 0], [0, 0], cc);
+    else acc.tri(list[0]!, list[1]!, list[2]!, [0, 0], [0, 0], [0, 0], cc);
+  });
   return true;
+}
+
+/** Church towers / bell gables and the like: simple flat volumes. */
+function extras(acc: Acc, pb: PreparedBuilding, st: BuildingStyle, ring: P2[]): void {
+  if (pb.typ !== "church" || pb.src.id === "r9755446") return;
+  const o = obb(ring);
+  const tall = pb.top - pb.G;
+  // tower at the end of the long axis (or a bell gable on small chapels)
+  const ex = o.cx + o.ux * (o.hl - 2.5);
+  const ez = o.cz + o.uz * (o.hl - 2.5);
+  const w = Math.min(5, o.hw * 1.2);
+  const h = Math.max(tall + 7, (pb.src.peak ?? 0) || 0);
+  const box = (x: number, z: number, hw: number, y0: number, y1: number, col: THREE.Color): void => {
+    const cs: P2[] = [
+      { x: x - o.ux * hw - o.uz * hw, z: z - o.uz * hw + o.ux * hw },
+      { x: x + o.ux * hw - o.uz * hw, z: z + o.uz * hw + o.ux * hw },
+      { x: x + o.ux * hw + o.uz * hw, z: z + o.uz * hw - o.ux * hw },
+      { x: x - o.ux * hw + o.uz * hw, z: z - o.uz * hw - o.ux * hw },
+    ];
+    const r = signedArea(cs) > 0 ? cs.reverse() : cs;
+    for (let i = 0; i < 4; i++) {
+      const a = r[i]!;
+      const b = r[(i + 1) % 4]!;
+      acc.quad(new THREE.Vector3(a.x, y0, a.z), new THREE.Vector3(b.x, y0, b.z), new THREE.Vector3(b.x, y1, b.z), new THREE.Vector3(a.x, y1, a.z), [0, 0], [0, 0], [0, 0], [0, 0], col);
+    }
+    roofFlat(acc, r, y1, col.clone().multiplyScalar(0.95));
+  };
+  if (o.hl > 9 && tall > 6) {
+    box(ex, ez, w / 2, pb.G, pb.G + h, st.wall);
+    // belfry: dark openings band and a little pyramid cap
+    box(ex, ez, w / 2 + 0.05, pb.G + h - 3.2, pb.G + h - 1.2, c(0x6b5d4e));
+    box(ex, ez, w / 2 + 0.2, pb.G + h, pb.G + h + 0.4, st.wall.clone().multiplyScalar(0.95));
+  } else {
+    // espadaña: a flat bell gable on the front
+    const gx = o.cx + o.ux * o.hl;
+    const gz = o.cz + o.uz * o.hl;
+    box(gx, gz, 1.2, pb.top - 0.5, pb.top + 3, st.wall);
+  }
 }
 
 /** Extrude one prepared building into the accumulators. */
@@ -322,73 +287,59 @@ export function emitBuilding(accs: FacadeAccs, ctx: CityCtx, pb: PreparedBuildin
   const st = styleOf(pb);
   const b = pb.src;
   const groundOf = (p: P2): number => (pb.streetGround ? ctx.streetLevel(p.x, p.z, b.s) : b.h0);
-  accs.facade.set("aSeed", Math.floor(pb.seed * 97), st.blind);
-  const phase = Math.floor(hash01(pb.index, 3) * 2);
-  const parapet = st.flat ? st.def.parapet : 0;
   const roofY = pb.top;
   const rings = [pb.ring, ...pb.extra];
-  const flatCol = new THREE.Color(0xd8d2c6).multiplyScalar(0.92 + pb.seed * 0.1);
   if (pb.upperRing) {
-    // an arch over the street: piers below the clearance, the full building above
+    // an arch over the street: piers below the clearance, the building above it
     const arch = Math.min(roofY - 1.5, pb.G + CLEARANCE);
-    for (const r of rings) walls(accs.facade, ctx, pb, st, r, groundOf, null, arch, 0, phase);
-    walls(accs.facade, ctx, pb, st, pb.upperRing, groundOf, () => arch, roofY, parapet, phase);
-    roofFlat(accs.flatRoof, pb.upperRing, arch, new THREE.Color(0x8a8378), 3, true);
-    if (st.flat) roofFlat(accs.flatRoof, pb.upperRing, roofY, flatCol, 3);
-    else roofFlat(accs.tileRoof, pb.upperRing, roofY, new THREE.Color(0xffffff), 1.5);
+    for (const r of rings) walls(accs, ctx, pb, { ...st, floors: 0, Gf: arch }, r, groundOf, null, arch, 0);
+    walls(accs, ctx, pb, { ...st, Gf: arch }, pb.upperRing, groundOf, arch, roofY, st.parapet);
+    roofFlat(accs.flat, pb.upperRing, arch, st.wall.clone().multiplyScalar(0.7), true);
+    if (st.flat) roofFlat(accs.flat, pb.upperRing, roofY, st.roof);
+    else roofFlat(accs.flat, pb.upperRing, roofY, st.roof);
     return;
   }
   for (const r of rings) {
-    const pitched = pb.pitched && hipRoof(accs.tileRoof, r, roofY - 0.6, pb.seed);
-    walls(accs.facade, ctx, pb, st, r, groundOf, null, pitched ? roofY - 0.6 : roofY, pitched ? 0 : parapet, phase, pb.src.dist > 45);
-    if (pitched) continue;
-    if (st.flat) roofFlat(accs.flatRoof, r, roofY, flatCol, 3);
-    else roofFlat(accs.tileRoof, r, roofY, new THREE.Color(0xffffff), 1.5);
-    // lift overrun / stair box on the roofs of apartment blocks
+    const pitched = pb.pitched && hipRoof(accs.flat, r, roofY - 0.6, st.roof);
+    walls(accs, ctx, pb, st, r, groundOf, null, pitched ? roofY - 0.6 : roofY, pitched ? 0 : st.parapet);
+    if (!pitched) roofFlat(accs.flat, r, roofY, st.roof);
+    extras(accs.flat, pb, st, r);
+    // lift overrun on apartment blocks
     const tall = roofY - pb.G;
     if (st.flat && tall > 11 && -signedArea(r) > 120 && pb.typ !== "shed") {
-      const c = centroid(r);
-      if (pointInRing(c.x, c.z, r)) {
-        const w = 2.2 + pb.seed * 1.5;
-        const box: P2[] = [
-          { x: c.x - w, z: c.z - w * 0.7 }, { x: c.x - w, z: c.z + w * 0.7 }, { x: c.x + w, z: c.z + w * 0.7 }, { x: c.x + w, z: c.z - w * 0.7 },
-        ];
-        if (box.every((p) => pointInRing(p.x, p.z, r))) {
-          const plain = st.def.plain;
-          walls(accs.facade, ctx, pb, { ...st, upper: plain, ground: plain, floors: 0, Gf: roofY + 10, topV: 1 }, box, () => roofY, () => roofY, roofY + 2.6, 0, phase);
-          roofFlat(accs.flatRoof, box, roofY + 2.6, flatCol, 3);
-        }
+      const cc = centroid(r);
+      const w = 2.2 + pb.seed * 1.5;
+      const box: P2[] = [
+        { x: cc.x - w, z: cc.z - w * 0.7 }, { x: cc.x - w, z: cc.z + w * 0.7 }, { x: cc.x + w, z: cc.z + w * 0.7 }, { x: cc.x + w, z: cc.z - w * 0.7 },
+      ];
+      if (box.every((p) => pointInRing(p.x, p.z, r))) {
+        walls(accs, ctx, pb, { ...st, floors: 0, Gf: roofY + 3, ground: st.wall, windows: false }, box, () => roofY, roofY, roofY + 2.6, 0);
+        roofFlat(accs.flat, box, roofY + 2.6, st.roof);
       }
     }
   }
 }
 
-/** Build the whole permanent building layer, one mesh per zone and material. */
+/** Build the whole permanent building layer: big tiles, two draw calls each. */
 export function buildAllBuildings(ctx: CityCtx): THREE.Group {
   const g = new THREE.Group();
   g.name = "buildings";
-  const byZone = new Map<string, FacadeAccs>();
+  const tiles = new Map<string, FacadeAccs>();
   for (const pb of ctx.buildings) {
-    // buildings by the route cast shadows on the street (small tiles: the shadow camera culls them);
-    // the rest of the city is grouped in big tiles that cast none
-    const near = pb.src.dist < 35;
-    const T = near ? 300 : 520;
-    const key = `${near ? "n" : "f"}${Math.floor((pb.ring[0]?.x ?? 0) / T)},${Math.floor((pb.ring[0]?.z ?? 0) / T)}`;
-    let a = byZone.get(key);
-    if (!a) byZone.set(key, (a = newFacadeAccs()));
+    const T = 360;
+    const key = `${Math.floor((pb.ring[0]?.x ?? 0) / T)},${Math.floor((pb.ring[0]?.z ?? 0) / T)}`;
+    let a = tiles.get(key);
+    if (!a) tiles.set(key, (a = newFacadeAccs()));
     emitBuilding(a, ctx, pb);
   }
-  for (const [zone, a] of byZone) {
-    a.facade.append(a.flatRoof);
-    a.facade.append(a.tileRoof);
-    const f = a.facade.mesh(facadeMaterial(), `facade-${zone}`);
-    for (const m of [f]) {
-      if (!m) continue;
-      if (zone.startsWith("f")) m.castShadow = false;
-      g.add(m);
-    }
+  for (const [key, a] of tiles) {
+    const f = a.flat.mesh(flatMaterial(), `walls-${key}`);
+    const w = a.win.mesh(windowsMaterial(), `windows-${key}`);
+    for (const m of [f, w]) if (m) g.add(m);
   }
   return g;
 }
 
-export const ROOF_SCALE = GROUND_SCALE.roofFlat;
+export function typDefColour(t: Typology): number {
+  return t === "casco" ? PAL.albero : PAL.brick;
+}

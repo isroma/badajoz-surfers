@@ -13,7 +13,7 @@ export const TICK = 1 / TICK_RATE;
 // Target feel (verified in player.test.ts):
 // - jump: snappy rise, a slightly floaty ~80 ms apex, a faster fall; feet ≈ 1.75 m (zapatillas
 //   ≈ 3.6 m) with ≈ 0.63 s of airtime (≈ 0.88 s super). No hold-to-jump-higher.
-// - lane change 0.125 s, ease-out with a ≤ 6 cm overshoot that settles by the end.
+// - lane change 0.22-0.24 s on a 3-3.3 m lane (0.34 s across a 5 m median), ease-in-out.
 // - roll 0.65 s, the hitbox is low from the first tick.
 /** Gravity while rising. */
 export const GRAVITY = 32;
@@ -71,9 +71,8 @@ export function jumpAirtime(v0 = JUMP_VELOCITY): number {
 }
 export const MAX_FALL_SPEED = 30;
 export const FAST_FALL_SPEED = 22;
-export const LANE_CHANGE_TIME = 0.125;
-/** Ease-out-back strength of the lane change: ≈ 6 cm overshoot over a 2.6 m lane. */
-export const LANE_OVERSHOOT = 0.79;
+/** Lane change over a normal lane (≤ 3 m); longer across wider gaps (see laneChangeTime). */
+export const LANE_CHANGE_TIME = 0.22;
 export const ROLL_TIME = 0.65;
 export const COYOTE_TIME = 0.1;
 export const JUMP_BUFFER_TIME = 0.15;
