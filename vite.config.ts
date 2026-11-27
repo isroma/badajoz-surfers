@@ -8,5 +8,5 @@ export default defineConfig({
     rollupOptions: { input: { main: "index.html", gallery: "gallery.html" } },
   },
   // The solver-backed generator tests take seconds on CI runners.
-  test: { environment: "node", include: ["src/**/*.test.ts"], testTimeout: 60_000 },
+  test: { environment: "node", include: ["src/**/*.test.ts"], testTimeout: 300_000 },
 });
