@@ -2,7 +2,7 @@
  * The persistent profile: wallet, records, upgrades, missions and settings, saved in
  * localStorage. Works (in memory only) when storage is unavailable, and never throws.
  */
-import type { GameOptions, PowerupKind } from "../contracts";
+import { OUTFITS, type GameOptions, type OutfitId, type PowerupKind } from "../contracts";
 import { baseMultiplier, powerupDuration, upgradeCost } from "./economy";
 import { formatInt } from "./format";
 import { commitRun, describeMission, emptyRunStats, getTemplate, updateLive, type MissionView, type RunStats } from "./missions";
@@ -136,7 +136,38 @@ export class MetaStore {
     powerupDuration: (kind) => powerupDuration(kind, this.data.upgrades[kind]),
     baseMultiplier: () => this.multiplier,
     tutorial: () => !this.data.tutorialDone,
+    outfit: () => this.data.outfits.equipped,
   };
+
+  private get extra(): { outfitsOwned: number; outfitsTotal: number } {
+    return { outfitsOwned: this.data.outfits.owned.length, outfitsTotal: OUTFITS.length };
+  }
+
+  /**
+   * Buy an outfit (and equip it). Returns the achievements it unlocked, or null when it can't be
+   * bought (unknown, already owned or too expensive).
+   */
+  buyOutfit(id: OutfitId): AchievementDef[] | null {
+    const info = OUTFITS.find((o) => o.id === id);
+    if (!info || this.data.outfits.owned.includes(id) || this.data.wallet < info.price) return null;
+    this.data = {
+      ...this.data,
+      wallet: this.data.wallet - info.price,
+      outfits: { owned: [...this.data.outfits.owned, id], equipped: id },
+    };
+    const unlocked = newAchievements(this.data.achievements, this.data.lifetime, this.extra);
+    // Shop unlocks are not part of a run's tally.
+    this.unlock(unlocked, false);
+    this.persist();
+    return unlocked;
+  }
+
+  equipOutfit(id: OutfitId): boolean {
+    if (!this.data.outfits.owned.includes(id) || this.data.outfits.equipped === id) return false;
+    this.data = { ...this.data, outfits: { ...this.data.outfits, equipped: id } };
+    this.persist();
+    return true;
+  }
 
   completeTutorial(): void {
     if (this.data.tutorialDone) return;
@@ -163,11 +194,13 @@ export class MetaStore {
     return new Set(this.data.achievements);
   }
 
-  private unlock(defs: AchievementDef[]): void {
+  private unlock(defs: AchievementDef[], inRun = true): void {
     if (defs.length === 0) return;
     const reward = defs.reduce((n, a) => n + a.reward, 0);
-    this.runAchievements.push(...defs);
-    this.runBonus += reward;
+    if (inRun) {
+      this.runAchievements.push(...defs);
+      this.runBonus += reward;
+    }
     this.data = {
       ...this.data,
       wallet: this.data.wallet + reward,
@@ -231,7 +264,7 @@ export class MetaStore {
       this.data = { ...this.data, daily: d.state };
       changed = true;
     }
-    const ach = newAchievements(this.data.achievements, addRunToLifetime(this.data.lifetime, run));
+    const ach = newAchievements(this.data.achievements, addRunToLifetime(this.data.lifetime, run), this.extra);
     if (ach.length > 0) {
       this.unlock(ach);
       out.achievements = ach;
@@ -272,7 +305,7 @@ export class MetaStore {
     const lifetime = addRunToLifetime(this.data.lifetime, run);
     const rec = addRecord(this.data.records, { date, score: Math.floor(run.score), distance: Math.floor(run.distance), zones: run.zones });
     this.data = { ...this.data, daily: d.state, lifetime, records: rec.records };
-    this.unlock(newAchievements(this.data.achievements, lifetime));
+    this.unlock(newAchievements(this.data.achievements, lifetime, this.extra));
     this.persist();
     const result: RunResult = {
       bellotasEarned: earned,

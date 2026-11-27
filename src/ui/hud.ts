@@ -55,6 +55,10 @@ export class Hud {
   private readonly chaserLabel: HTMLElement;
   private readonly flashEl: HTMLElement;
   private readonly roofEl: HTMLElement;
+  private readonly comboEl: HTMLElement;
+  private readonly comboNum: HTMLElement;
+  private readonly goldFlash: HTMLElement;
+  private comboShown = false;
   private readonly roofNum: HTMLElement;
   private readonly minimap = new Minimap({ className: "hud-map" });
   /** Roof streak: metres since the runner got onto a roof, and when it last grew. */
@@ -88,6 +92,9 @@ export class Hud {
 
     this.roofNum = h("b", undefined, "0 m");
     this.roofEl = h("div", "roof-pill", h("span", undefined, "Por los techos"), h("span", "dot", "·"), this.roofNum);
+    this.comboNum = h("b", undefined, "x0");
+    this.comboEl = h("div", "combo-chip", this.comboNum, h("span", undefined, "bellotas seguidas"));
+    this.goldFlash = h("div", "flash gold");
     this.vignette = h("div", "vignette");
     this.flashEl = h("div", "flash");
     this.chaserFill = h("i");
@@ -104,6 +111,7 @@ export class Hud {
       "hud",
       this.vignette,
       this.flashEl,
+      this.goldFlash,
       h("div", "hud-tl", zoneCard, this.powerupsEl),
       h("div", "hud-tc", this.lettersEl),
       h(
@@ -112,6 +120,7 @@ export class Hud {
         h("div", "score-label", "Puntos"),
         this.scoreEl,
         h("div", "score-row", this.multEl, this.bellotaPill),
+        this.comboEl,
         this.roofEl,
       ),
       h("div", "hud-bl", h("div", "panel map-card", this.minimap.el), this.chaserEl),
@@ -133,6 +142,8 @@ export class Hud {
     this.roofLastGrow = -1;
     this.roofShown = false;
     this.roofEl.classList.remove("show");
+    this.comboShown = false;
+    this.comboEl.classList.remove("show");
   }
 
   render(hud: HudSnapshot): void {
@@ -222,6 +233,31 @@ export class Hud {
     }
   }
 
+  /** Bellota combo chip ("x25 bellotas seguidas"), shown from 5 in a row. */
+  setCombo(count: number): void {
+    if (count < 5) {
+      this.comboAlive(false);
+      return;
+    }
+    this.comboNum.textContent = `x${formatInt(count)}`;
+    if (!this.comboShown) {
+      this.comboShown = true;
+      this.comboEl.classList.add("show");
+    }
+    if (count % 5 === 0) pop(this.comboEl, POP_SCALE, 220);
+  }
+
+  comboAlive(alive: boolean): void {
+    if (alive || !this.comboShown) return;
+    this.comboShown = false;
+    this.comboEl.classList.remove("show");
+  }
+
+  /** Brief golden flash for big rewards. */
+  rewardFlash(): void {
+    pop(this.goldFlash, [{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 0 }], 520, "ease-out");
+  }
+
   private renderPowerups(hud: HudSnapshot): void {
     const active = new Set<PowerupKind>();
     for (const p of hud.powerups) {
@@ -266,10 +302,6 @@ export class Hud {
 
   wordComplete(): void {
     this.lettersEl.classList.remove("complete");
-    this.roofStreakStart = 0;
-    this.roofLastGrow = -1;
-    this.roofShown = false;
-    this.roofEl.classList.remove("show");
     void this.lettersEl.offsetWidth;
     this.lettersEl.classList.add("complete");
     window.setTimeout(() => this.lettersEl.classList.remove("complete"), 1600);

@@ -84,13 +84,20 @@ export function formatDay(key: string): string {
 
 // ------------------------------------------------------------------ achievements
 
+/** What achievements look at besides the lifetime totals. */
+export interface AchievementExtra {
+  /** Outfits owned, including the free one. */
+  outfitsOwned: number;
+  outfitsTotal: number;
+}
+
 export interface AchievementDef {
   id: string;
   name: string;
   description: string;
   reward: number;
   /** `life` already includes the run in progress. */
-  check(life: Lifetime): boolean;
+  check(life: Lifetime, extra: AchievementExtra): boolean;
 }
 
 export const ACHIEVEMENTS: readonly AchievementDef[] = [
@@ -110,12 +117,18 @@ export const ACHIEVEMENTS: readonly AchievementDef[] = [
   { id: "atracon", name: "Atracón de bellotas", description: "Recoge 300 bellotas en una carrera", reward: 300, check: (l) => l.bestRun.bellotas >= 300 },
   { id: "jamonero", name: "Jamonero", description: "Usa 50 potenciadores", reward: 250, check: (l) => l.totals.powerups >= 50 },
   { id: "parroquiano", name: "Parroquiano", description: "Juega 25 carreras", reward: 200, check: (l) => l.totals.runs >= 25 },
+  { id: "estrenando", name: "De estreno", description: "Compra tu primer atuendo", reward: 100, check: (_l, x) => x.outfitsOwned >= 2 },
+  { id: "fondo-de-armario", name: "Fondo de armario", description: "Consigue todos los atuendos", reward: 1500, check: (_l, x) => x.outfitsTotal > 0 && x.outfitsOwned >= x.outfitsTotal },
 ];
 
 /** Achievements newly unlocked by `life` (not in `unlocked`). */
-export function newAchievements(unlocked: readonly string[], life: Lifetime): AchievementDef[] {
+export function newAchievements(
+  unlocked: readonly string[],
+  life: Lifetime,
+  extra: AchievementExtra = { outfitsOwned: 1, outfitsTotal: 0 },
+): AchievementDef[] {
   const have = new Set(unlocked);
-  return ACHIEVEMENTS.filter((a) => !have.has(a.id) && a.check(life));
+  return ACHIEVEMENTS.filter((a) => !have.has(a.id) && a.check(life, extra));
 }
 
 // ------------------------------------------------------------------ daily challenge

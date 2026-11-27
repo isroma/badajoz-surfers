@@ -202,7 +202,7 @@ const PALETTES: Readonly<Record<ZoneId, Palette>> = {
     full: [["valla-larga", 2], ["pancarta", 1]],
   },
   "san-francisco": {
-    low: [["terraza", 4], ["valla", 1], ["moto", 2]],
+    low: [["terraza", 3], ["valla", 1.5], ["conos", 1], ["moto", 1.5]],
     wall: [["contenedor", 4], ["coche", 2], ["furgoneta", 1]],
     over: [["andamio", 2]],
     movers: [["moto", 3], ["coche", 1]],
@@ -264,7 +264,9 @@ function nearLane(rng: Rng, from: Lane): Lane {
 
 /** Gap after a row: one reaction window, longer when the line needed an action there. */
 function rowGap(b: PatternBuilder, action: boolean): number {
-  return b.s(b.ctx.reaction + (action ? 0.35 : 0.05));
+  // Early on (low difficulty) rows breathe a little more: humans need time to read them.
+  const early = 0.25 * (1 - b.ctx.difficulty);
+  return b.s(b.ctx.reaction + (action ? 0.35 : 0.05) + early);
 }
 
 /** Bellotas on the line for a row passed by a jump/roll/run. */
@@ -296,7 +298,8 @@ const single: PatternFn = (b) => {
   const lane = rng.pick(LANES3);
   const front = b.start;
   const end = b.place(kind, lane, front);
-  if (role !== "wall" && rng.chance(0.55)) {
+  const gentle = b.ctx.zone === "puente-real" && b.ctx.lap === 1;
+  if (role !== "wall" && rng.chance(gentle ? 0.3 : 0.55)) {
     b.line = lane;
     lineCell(b, lane, kind, front);
     if (role === "low") b.slot(lane, front + OBSTACLE_DEFS[kind].length / 2, 2.4, true);
@@ -347,7 +350,7 @@ const slalom: PatternFn = (b) => {
     }
     b.trail(gap, front - 1, front + rowLen, 0.9, 2.2);
     b.line = gap;
-    front += rowLen + rowGap(b, false);
+    front += rowLen + rowGap(b, true);
     const options = LANES3.filter((l) => Math.abs(l - gap) === 1);
     gap = rng.pick(options);
   }
@@ -359,8 +362,9 @@ const carHop: PatternFn = (b) => {
   const { rng, ctx } = b;
   const lane = rng.pick(LANES3);
   const count = rng.int(3, 5);
-  const gapLen = Math.min(1.5, 0.08 * ctx.v);
-  const jam = !ctx.easy && ctx.difficulty + (ctx.lap - 1) * 0.3 > 0.15 && rng.chance(0.45);
+  // Bumper to bumper: the roofs form one continuous walkway (no falling between cars).
+  const gapLen = 0.4;
+  const jam = !ctx.easy && ctx.difficulty + (ctx.lap - 1) * 0.3 > 0.35 && rng.chance(0.45);
   const front = b.start;
   const lanes = jam ? LANES3 : [lane];
   for (const l of lanes) {
@@ -595,16 +599,22 @@ const lowZigzag: PatternFn = (b) => {
 const mixedRows: PatternFn = (b) => {
   const { rng, ctx } = b;
   const pal = palette(ctx);
-  const rows = rng.int(2, 3 + Math.round(ctx.difficulty * 2));
+  const rows = rng.int(2, 2 + Math.round(ctx.difficulty * 3));
   let front = b.start;
   let line = ctx.entryLane;
   for (let r = 0; r < rows; r++) {
     // Pick which lanes get something; at least one lane stays free or passable.
-    const count = rng.chance(0.45 + 0.3 * ctx.difficulty) ? 2 : 1;
+    const count = rng.chance(0.3 + 0.45 * ctx.difficulty) ? 2 : 1;
     const lanes = shuffled(rng, LANES3).slice(0, count);
     let rowLen = 0;
     let lineKind: ObstacleKind | null = null;
-    const newLine = rng.chance(0.6) ? line : nearLane(rng, line);
+    // Early on the line prefers a free lane (fewer forced jumps); later it may run through clutter.
+    const freeLanes = LANES3.filter((l) => !lanes.includes(l));
+    const preferFree = rng.chance(0.8 - 0.5 * ctx.difficulty);
+    const newLine =
+      preferFree && freeLanes.length > 0
+        ? freeLanes.reduce((a, l) => (Math.abs(l - line) < Math.abs(a - line) ? l : a))
+        : rng.chance(0.6) ? line : nearLane(rng, line);
     for (const l of lanes) {
       const role = rng.weighted([["low", 3], ["wall", 2], ["over", 1.2]] as const);
       const kind = rng.weighted(role === "low" ? pal.low : role === "wall" ? pal.wall : pal.over);
@@ -642,7 +652,7 @@ const finale: PatternFn = (b) => {
     }
     b.trail(gap, front - b.s(0.45), front + rowLen + 1, 0.9, 1.5);
     b.line = gap;
-    front += rowLen + rowGap(b, false);
+    front += rowLen + rowGap(b, true);
     const options = LANES3.filter((l) => Math.abs(l - gap) === 1);
     gap = rng.pick(options);
   }
@@ -691,7 +701,7 @@ export function patternWeights(ctx: PatternContext): Weights<PatternName> {
   switch (ctx.zone) {
     case "puente-real":
       return [
-        ["single", tutorial ? 4 : 2], ["twoBlock", 3], ["arcValla", 3], ["lowZigzag", 3], ["slalom", 2],
+        ["single", tutorial ? 4 : 2], ["twoBlock", 3], ["arcValla", tutorial ? 2 : 3], ["lowZigzag", 3], ["slalom", 2],
         ["carHop", 1.2], ["fullBarrier", 1], ["andamioRoll", 0.5], ["oncoming", tutorial ? 0.5 : 2],
         ["trafficJam", tutorial ? 0 : 1],
       ];
@@ -702,8 +712,8 @@ export function patternWeights(ctx: PatternContext): Weights<PatternName> {
       ];
     case "san-francisco":
       return [
-        ["mixedRows", 4], ["fullBarrier", 2], ["oncoming", 1.5 + d], ["twoBlock", 2], ["arcValla", 2],
-        ["andamioRoll", 1.5], ["slalom", 1], ["lowZigzag", 1.5],
+        ["mixedRows", 2.5 + 2 * d], ["fullBarrier", 1.5], ["oncoming", 1.5 + d], ["twoBlock", 2.5], ["arcValla", 2],
+        ["andamioRoll", 1.5], ["slalom", 1.5], ["lowZigzag", 1.5], ["single", 1.5 - d],
       ];
     case "casco-antiguo":
       return [

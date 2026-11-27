@@ -154,7 +154,22 @@ export class Builder {
   private buckets = new Map<THREE.Material, Bucket>();
   private stack: THREE.Matrix4[] = [new THREE.Matrix4()];
 
-  private bucket(mat: THREE.Material): Bucket {
+  /** Optional material substitution (e.g. floodlit versions of landmarks at night). */
+  remap: Map<THREE.Material, THREE.Material> | null = null;
+  /** Use the brighter, self-lit sign material (night). */
+  litSigns = false;
+
+  /** Run `fn` with materials substituted according to `map`. */
+  with(map: Map<THREE.Material, THREE.Material> | null, fn: () => void): this {
+    const prev = this.remap;
+    this.remap = map;
+    fn();
+    this.remap = prev;
+    return this;
+  }
+
+  private bucket(material: THREE.Material): Bucket {
+    const mat = this.remap?.get(material) ?? material;
     let b = this.buckets.get(mat);
     if (!b) {
       b = { mat, pos: [], nrm: [], col: [], uv: [] };
@@ -362,7 +377,7 @@ export class Builder {
    */
   sign(name: string, x: number, y: number, z: number, h: number, ry = 0, w?: number, rx = 0): this {
     const r = signRect(name);
-    return this.quad(xf(x, y, z, w ?? h * r.aspect, h, 1, rx, ry, 0), 0xffffff, signAtlas().material, r.uv);
+    return this.quad(xf(x, y, z, w ?? h * r.aspect, h, 1, rx, ry, 0), 0xffffff, this.litSigns ? signAtlas().lit : signAtlas().material, r.uv);
   }
 
   /** A limb capsule of radius r and total length len, hanging down from the origin. */

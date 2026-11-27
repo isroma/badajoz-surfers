@@ -4,6 +4,7 @@
  * through `emit`, and visual cues (bursts, knocked obstacles, shakes) through `fx`.
  */
 import {
+  FLIGHT_HEIGHT,
   OBSTACLE_DEFS,
   POWERUPS,
   WORD,
@@ -30,9 +31,16 @@ import {
 } from "./player";
 import type { PickupSpawn } from "./spawns";
 import { TrackGenerator } from "./track";
+import { moverEffectiveHalf } from "./patterns";
+import { createRng, type Rng } from "./rng";
 import {
+  FLIGHT_DESCENT_TIME,
+  FLIGHT_RISE_TIME,
+  FLIGHT_SPEED_FACTOR,
   LAP_LENGTH,
   MAGNET_RADIUS,
+  difficultyAt,
+  reactionWindow,
   PATINETE_SPEED_FACTOR,
   SHIELD_INVULNERABLE_TIME,
   STUMBLE_SLOWDOWN,
@@ -47,7 +55,9 @@ export type RunFx =
   | { type: "knock"; id: number; dir: number }
   | { type: "shake"; amount: number }
   /** Everything ahead was regenerated (debug warp): the scene must drop its objects. */
-  | { type: "reset" };
+  | { type: "reset" }
+  /** An obstacle was cleared away to make room for a stork landing. */
+  | { type: "remove"; id: number };
 
 export type RunPhase = "countdown" | "running" | "ending" | "over";
 
@@ -121,6 +131,10 @@ export class Run {
   roofMetres = 0;
   powerupsTaken = 0;
   wordsCompleted = 0;
+  /**
+   * Zone boundaries crossed since the start of lap 1's Puente Real, counting zones skipped by a
+   * debug warp too, so `ZONES[zonesCompleted % ZONES.length]` is always the runner's current zone.
+   */
   zonesCompleted = 0;
   lettersCollected = 0;
   /** Letters picked up in the whole run. */
@@ -147,6 +161,16 @@ export class Run {
   private ticks = 0;
   private lastCount = -1;
 
+  /** Obstacles cleared for a stork landing (not drawn, not collided with). */
+  readonly removed = new Set<number>();
+  private flightStartY = 0;
+  private landingCleared = false;
+  /** Brief protection right after touching down from a flight. */
+  private landingGrace = 0;
+  private readonly flightRng: Rng;
+  /** Ids for bellotas placed in the air (far from the generator's ids). */
+  private airIds = 1_000_000_000;
+
   readonly actions: PlayerAction[] = [];
   private readonly ev = createEvents();
   private readonly near = new Map<number, NearTrack>();
@@ -155,7 +179,11 @@ export class Run {
   private readonly b: Aabb = { xMin: 0, xMax: 0, yMin: 0, yMax: 0, dMin: 0, dMax: 0 };
 
   constructor(private readonly cfg: RunConfig) {
-    this.gen = new TrackGenerator(cfg.seed, 0, { tutorial: cfg.tutorial === true });
+    this.gen = new TrackGenerator(cfg.seed, 0, {
+      tutorial: cfg.tutorial === true,
+      flightDuration: Math.max(1, cfg.powerupDuration("ciguena") || POWERUPS.ciguena.baseDuration),
+    });
+    this.flightRng = createRng(cfg.seed ^ 0x5f3759df);
     this.tutorialOver = this.gen.tutorial.length === 0;
     this.gen.generateUntil(GENERATE_AHEAD);
     this.boxes = new BoxSet(this.gen.obstacles, this.ignore);
@@ -163,9 +191,12 @@ export class Run {
   }
 
   /** Emit the run-start events (zone banner, countdown 3). */
-  begin(): void {
-    const span = zoneAt(0);
+  /** Emit the run-start events (zone banner, countdown 3). `startZone`: debug start elsewhere. */
+  begin(startZone?: ZoneId): void {
+    if (startZone && startZone !== "puente-real") this.jumpTo(startZone);
+    const span = zoneAt(this.player.p);
     this.zoneSerial = span.serial;
+    this.zonesCompleted = span.serial;
     this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: true });
     this.startCountdown(true);
   }
@@ -226,7 +257,90 @@ export class Run {
   /** Planned + power-up + stumble speed. */
   targetSpeed(): number {
     const base = this.speedOverride ?? speedAt(this.player.p);
-    return base * (this.active("patinete") ? PATINETE_SPEED_FACTOR : 1) * this.slow;
+    return base * (this.active("patinete") ? PATINETE_SPEED_FACTOR : 1) * (this.player.carried ? FLIGHT_SPEED_FACTOR : 1) * this.slow;
+  }
+
+  /** Carried by the stork. */
+  get flying(): boolean {
+    return this.player.carried;
+  }
+
+  /** Rise, cruise, and glide down over the last FLIGHT_DESCENT_TIME seconds. */
+  private updateFlight(): void {
+    const s = this.player;
+    const f = this.active("ciguena");
+    if (!f || !s.carried) return;
+    const elapsed = f.duration - f.remaining;
+    const smooth = (t: number): number => {
+      const c = Math.min(1, Math.max(0, t));
+      return c * c * (3 - 2 * c);
+    };
+    let y = FLIGHT_HEIGHT;
+    if (elapsed < FLIGHT_RISE_TIME) y = this.flightStartY + (FLIGHT_HEIGHT - this.flightStartY) * smooth(elapsed / FLIGHT_RISE_TIME);
+    if (f.remaining < FLIGHT_DESCENT_TIME) {
+      y = Math.min(y, FLIGHT_HEIGHT * smooth(f.remaining / FLIGHT_DESCENT_TIME));
+      if (!this.landingCleared) this.clearLanding();
+    }
+    s.flightY = y;
+  }
+
+  private startFlight(duration: number): void {
+    const s = this.player;
+    s.carried = true;
+    s.flightY = s.y;
+    s.roll = 0;
+    this.flightStartY = s.y;
+    this.landingCleared = false;
+    this.chaser.lag = 8;
+    // Dense bellota lines in the air, weaving between lanes, for the whole cruise.
+    const v = this.targetSpeed();
+    const from = s.p + v * FLIGHT_RISE_TIME + 2;
+    const to = s.p + v * (duration - FLIGHT_DESCENT_TIME) - 2;
+    const rng = this.flightRng;
+    let lane = s.lane;
+    let left = rng.int(7, 11);
+    const list = this.gen.pickups;
+    for (let d = from; d <= to; d += 3.3) {
+      list.push({ id: this.airIds++, kind: "bellota", lane, d, y: FLIGHT_HEIGHT + 0.9 });
+      if (--left <= 0) {
+        const options = ([-1, 0, 1] as const).filter((l) => Math.abs(l - lane) === 1);
+        lane = rng.pick(options);
+        left = rng.int(7, 12);
+        d += 3.3; // A beat to steer.
+      }
+    }
+    list.sort((a, b) => a.d - b.d);
+  }
+
+  private endFlight(): void {
+    const s = this.player;
+    if (!s.carried) return;
+    s.carried = false;
+    s.vy = 0;
+    s.grounded = false;
+    this.landingGrace = 0.4;
+    this.chaser.lag = 0;
+  }
+
+  /**
+   * Safety net for the landing: the generator reserves a clear stretch where a nominal flight
+   * lands, but the real speed can differ (patinete, stumbles). Anything still in the way is cleared.
+   */
+  private clearLanding(): void {
+    this.landingCleared = true;
+    const s = this.player;
+    const v = Math.max(1, s.speed);
+    const from = s.p;
+    const to = s.p + v * (FLIGHT_DESCENT_TIME + reactionWindow(difficultyAt(s.p)) + 0.8) + 4;
+    for (const o of this.gen.obstacles) {
+      if (o.d > to + 30) break;
+      const half = o.k > 0 ? moverEffectiveHalf(o.kind, o.k) : OBSTACLE_DEFS[o.kind].length / 2;
+      if (o.d + half < from || o.d - half > to) continue;
+      if (this.removed.has(o.id)) continue;
+      this.removed.add(o.id);
+      this.ignore.add(o.id);
+      this.cfg.fx({ type: "remove", id: o.id });
+    }
   }
 
   tick(dt: number): void {
@@ -277,6 +391,8 @@ export class Run {
     this.stumbleAnim = Math.max(0, this.stumbleAnim - dt);
     s.speed = this.targetSpeed();
     s.superJump = this.active("zapatillas") !== undefined;
+    this.landingGrace = Math.max(0, this.landingGrace - dt);
+    this.updateFlight();
 
     stepPlayer(s, this.actions, dt, this.boxes, this.ev);
     this.actions.length = 0;
@@ -297,7 +413,7 @@ export class Run {
     if (s.grounded && s.supportId >= 0) this.roofMetres += dp;
 
     // Contacts.
-    if (!this.invincible) {
+    if (!this.invincible && !s.carried && this.landingGrace <= 0) {
       const contact = this.boxes.contact(prevRunnerBox(s, this.a), runnerBox(s, this.b));
       if (contact) {
         const spawn = contact.spawn;
@@ -325,7 +441,7 @@ export class Run {
       }
     }
 
-    this.trackNearMisses();
+    if (!s.carried) this.trackNearMisses();
     this.collectPickups(dt);
 
     this.score += dp * SCORE.perMetre * this.multiplier;
@@ -337,6 +453,7 @@ export class Run {
       p.remaining -= dt;
       if (p.remaining <= 0) {
         this.powerups.splice(i, 1);
+        if (p.kind === "ciguena") this.endFlight();
         cfg.emit({ type: "powerup-end", kind: p.kind });
       }
     }
@@ -345,7 +462,7 @@ export class Run {
     const span = zoneAt(s.p);
     if (span.serial !== this.zoneSerial) {
       this.zoneSerial = span.serial;
-      this.zonesCompleted++;
+      this.zonesCompleted = span.serial;
       this.score += SCORE.zone * lapAt(s.pp) * this.multiplier;
       cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
     }
@@ -598,6 +715,7 @@ export class Run {
           existing.duration = duration;
         } else this.powerups.push({ kind, remaining: duration, duration });
         this.powerupsTaken++;
+        if (kind === "ciguena" && !existing) this.startFlight(duration);
         cfg.emit({ type: "pickup", kind });
         cfg.emit({ type: "powerup-start", kind, duration });
         break;
@@ -607,9 +725,23 @@ export class Run {
 
   /** Debug: jump to the start of a zone (the next one with this id). */
   warp(zone: ZoneId): void {
+    if (!this.jumpTo(zone)) return;
+    const span = zoneAt(this.player.p);
+    this.cfg.fx({ type: "reset" });
+    this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
+  }
+
+  /** Move to the start of the next zone with this id (no events). */
+  private jumpTo(zone: ZoneId): boolean {
     const index = ZONES.findIndex((z) => z.id === zone);
-    if (index < 0) return;
+    if (index < 0) return false;
     const s = this.player;
+    const ciguena = this.powerups.findIndex((p) => p.kind === "ciguena");
+    if (ciguena >= 0) {
+      this.powerups.splice(ciguena, 1);
+      this.endFlight();
+      this.cfg.emit({ type: "powerup-end", kind: "ciguena" });
+    }
     let start = zoneStartDistance(index, this.lap);
     if (start <= s.p + 1) start += LAP_LENGTH;
     this.gen.restartAt(start);
@@ -628,8 +760,8 @@ export class Run {
     this.chaser.far();
     const span = zoneAt(s.p);
     this.zoneSerial = span.serial;
-    this.cfg.fx({ type: "reset" });
-    this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
+    this.zonesCompleted = span.serial;
+    return true;
   }
 
   summary(): RunSummary {

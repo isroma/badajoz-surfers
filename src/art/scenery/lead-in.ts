@@ -42,9 +42,15 @@ function abandonedTable(s: Seg, x: number, z: number): void {
   b.boxB(x - 0.75, y + 0.42, z, 0.4, 0.05, 0.4, 0xb22222, SOLID);
   b.boxB(x - 0.75, y, z, 0.36, 0.42, 0.36, 0x8a8f96, SOLID);
   b.box(x + 0.4, y + 0.003, z + 0.7, 0.25, 0.006, 0.25, 0xffffff, SOLID, 0.7);
-  // parasol above, red like the bar
-  b.cyl(x, y, z, 0.03, 2.4, 0xdddddd, 6, SOLID);
-  b.add(T.cone(8), xf(x, y + 2.45, z, 1.4, 0.5, 1.4), 0xb22222, SOLID);
+  // the parasol knocked flat across the pavement in the rush
+  b.push(xf(x + 0.9, y + 0.05, z + 0.3, 1, 1, 1, 0, 0.5, Math.PI / 2 - 0.08));
+  b.cyl(0, 0, 0, 0.03, 2.3, 0xdddddd, 6, SOLID);
+  b.add(T.cone(8), xf(0, 2.35, 0, 1.3, 0.5, 1.3), 0xb22222, SOLID);
+  b.pop();
+  // the unpaid bill, big and bright, propped up on the table (readable both ways)
+  b.box(x - 0.05, y + 1.05, z, 0.03, 0.62, 0.48, 0xfffdf2, SOLID, Math.PI / 2);
+  b.sign("la-cuenta", x - 0.05, y + 1.05, z + 0.02, 0.6, 0, 0.44);
+  b.sign("la-cuenta", x - 0.05, y + 1.05, z - 0.02, 0.6, Math.PI, 0.44);
 }
 
 function riverside(s: Seg): void {

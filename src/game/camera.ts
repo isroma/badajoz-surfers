@@ -19,6 +19,10 @@ export interface CameraInput {
   /** End shot: which side to orbit to (+1 right, -1 left) and the waiter's z. */
   endSide: number;
   waiterZ: number;
+  /** 0..1 stork flight blend: pull back and up, look down at the street. */
+  flight: number;
+  /** Camera roll in radians (banking on lane changes in flight). */
+  bank: number;
 }
 
 const BACK = 6.5;
@@ -61,6 +65,14 @@ export class ChaseCamera {
   }
 
   private chasePose(i: CameraInput, pos: THREE.Vector3, look: THREE.Vector3): void {
+    const f = i.flight;
+    if (f > 0) {
+      // Flying: higher and further back, tilted down so the traffic and the city show below.
+      const flyY = i.y * 0.85;
+      pos.set(this.camX, this.camY + (flyY - this.camY) * f + UP + 2.6 * f, i.z + BACK + 3.5 * f);
+      look.set(this.camX * 0.9, this.camY + (flyY - this.camY) * f + 1.0 - 3.2 * f, i.z - LOOK_AHEAD - 8 * f);
+      return;
+    }
     pos.set(this.camX, this.camY + UP, i.z + BACK);
     look.set(this.camX * 0.9, this.camY + 1.0, i.z - LOOK_AHEAD);
   }
@@ -78,7 +90,7 @@ export class ChaseCamera {
     this.camX = damp(this.camX, targetX, 7, dt);
     this.camY = damp(this.camY, targetY, i.groundY > this.camY ? 4 : 2.5, dt);
 
-    let targetFov = BASE_FOV + 10 * smooth((i.speed - 11) / 20) + i.fovKick;
+    let targetFov = BASE_FOV + 10 * smooth((i.speed - 11) / 20) + i.fovKick + 4 * i.flight;
     const pos = this.pos;
     const look = this.look;
     switch (i.mode) {
@@ -142,6 +154,7 @@ export class ChaseCamera {
     }
     this.camera.position.copy(pos);
     this.camera.lookAt(look);
+    if (i.bank !== 0) this.camera.rotateZ(i.bank);
     this.fov = damp(this.fov, targetFov, 3, dt);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;

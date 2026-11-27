@@ -2,7 +2,7 @@
  * Seeded, pattern-based track generator: obstacle and pickup spawns for the stretch ahead.
  * Pure: no three.js. Deterministic for a given seed and sequence of calls.
  */
-import { OBSTACLE_DEFS, type Lane, type PowerupKind, type TutorialAction, type ZoneId } from "../contracts";
+import { OBSTACLE_DEFS, POWERUPS, type Lane, type PowerupKind, type TutorialAction, type ZoneId } from "../contracts";
 import {
   PATTERNS,
   PatternBuilder,
@@ -17,7 +17,16 @@ import {
 } from "./patterns";
 import { createRng, type Rng } from "./rng";
 import type { ObstacleSpawn, PickupSpawn } from "./spawns";
-import { START_SPEED, difficultyAt, reactionWindow, speedAt, zoneAt } from "./tuning";
+import {
+  FLIGHT_DESCENT_TIME,
+  FLIGHT_MIN_DISTANCE,
+  FLIGHT_SPEED_FACTOR,
+  START_SPEED,
+  difficultyAt,
+  reactionWindow,
+  speedAt,
+  zoneAt,
+} from "./tuning";
 
 /** Nothing is placed this close to the start or end of a zone (room for the zone banner). */
 export const ZONE_MARGIN = 25;
@@ -43,9 +52,35 @@ export interface TutorialStep {
 export interface TrackOptions {
   /** Open a fresh run with the scripted tutorial instead of generated patterns. */
   tutorial?: boolean;
+  /** Stork flight duration in seconds (with upgrades), to reserve a clear landing. */
+  flightDuration?: number;
+}
+
+/** Where a stork flight that starts at `start` will glide down, and the clear stretch it needs. */
+export interface FlightPlan {
+  start: number;
+  /** Nominal distance where the feet touch down. */
+  land: number;
+  /** No obstacles in any lane between these distances. */
+  clearFrom: number;
+  clearTo: number;
+}
+
+export function flightPlan(start: number, duration: number): FlightPlan {
+  const v = speedAt(start) * FLIGHT_SPEED_FACTOR;
+  const land = start + v * duration;
+  const reaction = reactionWindow(difficultyAt(land));
+  return {
+    start,
+    land,
+    clearFrom: start + v * (duration - FLIGHT_DESCENT_TIME) * 0.95 - 6,
+    clearTo: land + (land - start) * 0.05 + speedAt(land) * (reaction + 1.2) + 8,
+  };
 }
 
 const POWERUP_KINDS: readonly PowerupKind[] = ["iman", "zapatillas", "jamon", "patinete"];
+/** Weight of the stork against 1 for each other power-up (≈ 1 in 6 spawns). */
+const CIGUENA_WEIGHT = 0.75;
 
 export interface PlacedPattern {
   name: PatternName;
@@ -85,9 +120,13 @@ export class TrackGenerator {
   readonly tutorial: TutorialStep[] = [];
   /** Distance where the tutorial is over ("complete"). */
   tutorialEnd = 0;
+  /** Landing stretches reserved for stork pickups (kept clear of obstacles). */
+  readonly flights: FlightPlan[] = [];
+  private readonly flightDuration: number;
 
   constructor(seed: number, startDistance = 0, options: TrackOptions = {}) {
     this.rng = createRng(seed);
+    this.flightDuration = options.flightDuration ?? POWERUPS.ciguena.baseDuration;
     this.fresh = startDistance <= 0;
     this.cursor = this.fresh ? EMPTY_START : startDistance + ZONE_MARGIN;
     this.nextPowerupAt = this.cursor + this.rng.range(160, 260);
@@ -146,6 +185,7 @@ export class TrackGenerator {
     this.obstacles.length = 0;
     this.pickups.length = 0;
     this.reservations = [];
+    this.flights.length = 0;
     this.fresh = false;
     this.cursor = distance + ZONE_MARGIN;
     this.nextPowerupAt = this.cursor + this.rng.range(60, 160);
@@ -163,6 +203,7 @@ export class TrackGenerator {
     if (j > 0) this.pickups.splice(0, j);
     if (this.placed.length > 200) this.placed.splice(0, this.placed.length - 100);
     this.reservations = this.reservations.filter((r) => r.to > cut);
+    while (this.flights.length > 0 && (this.flights[0]?.clearTo ?? Infinity) < cut) this.flights.shift();
   }
 
   generateUntil(distance: number): void {
@@ -187,6 +228,10 @@ export class TrackGenerator {
   }
 
   private step(): void {
+    // Skip over reserved stork landings.
+    for (const f of this.flights) {
+      if (this.cursor >= f.clearFrom - 1 && this.cursor < f.clearTo) this.cursor = f.clearTo;
+    }
     const span = zoneAt(this.cursor);
     if (this.cursor < span.start + ZONE_MARGIN) this.cursor = span.start + ZONE_MARGIN;
     const limit = span.end - ZONE_MARGIN;
@@ -200,24 +245,29 @@ export class TrackGenerator {
     // Signature moments: a finale closing every zone, a roof route in big-vehicle zones.
     let forced: PatternName | null = null;
     const finaleRows = ctx.difficulty > 0.3 ? 4 : 3;
-    const finaleLength = finaleRows * (5.4 + ctx.v * (ctx.reaction + 0.05)) + ctx.v * 0.25 + 1;
+    const finaleLength = finaleRows * (5.4 + ctx.v * (ctx.reaction + 0.35 + 0.25 * (1 - ctx.difficulty))) + ctx.v * 0.25 + 1;
     const finalePending = !easy && this.finaleSerial !== span.serial;
     // Ordinary patterns leave room for the finale at the end of the zone.
-    const normalLimit = finalePending ? limit - finaleLength - ctx.v * (ctx.reaction + 0.65) - 4 : limit;
+    let normalLimit = finalePending ? limit - finaleLength - ctx.v * (ctx.reaction + 1.1 + 0.35 * (1 - ctx.difficulty)) - 4 : limit;
+    for (const f of this.flights) if (f.clearFrom > this.cursor) normalLimit = Math.min(normalLimit, f.clearFrom - 2);
     // Oncoming traffic reserves its lane far ahead: none just before the finale.
     const finaleSoon = finalePending && normalLimit - this.cursor < 70;
+    // A pending roof route needs its lanes free of oncoming traffic: hold the traffic back.
+    const roofPending = !easy && ROOF_ZONES.has(ctx.zone) && this.roofSerial !== span.serial && ctx.zoneT > 0.15;
     const weights = patternWeights(ctx).filter(([name]) => {
       const def: PatternDef = PATTERNS[name];
       if (def.special) return false;
-      if (def.movers && finaleSoon) return false;
+      if (def.movers && (finaleSoon || roofPending)) return false;
       if (easy && !def.easy) return false;
       if (def.movers && tutorial && this.cursor < 250) return false;
+      // The first stretch of the first lap: single obstacles and simple pairs only.
+      if (tutorial && this.cursor < 360 && (name === "slalom" || name === "carHop" || name === "fullBarrier")) return false;
       return true;
     });
     if (finalePending && normalLimit - this.cursor < 25) {
       forced = "finale";
       if (limit - this.cursor < finaleLength * 0.6) this.finaleSerial = span.serial; // No room left: give up.
-    } else if (!easy && ROOF_ZONES.has(ctx.zone) && this.roofSerial !== span.serial && ctx.zoneT > 0.4) {
+    } else if (!easy && ROOF_ZONES.has(ctx.zone) && this.roofSerial !== span.serial && ctx.zoneT > 0.25) {
       forced = "rampRoof";
     }
     for (let attempt = 0; attempt < 10; attempt++) {
@@ -225,7 +275,8 @@ export class TrackGenerator {
       if (forced === "finale" && name !== "finale") break; // Wait (a breather) rather than crowd the finale out.
       const b = new PatternBuilder(ctx, this.cursor);
       if (!PATTERNS[name].fn(b)) continue;
-      if (b.end > (name === "finale" ? limit : normalLimit)) continue;
+      const flightLimit = this.flights.reduce((m, f) => (f.clearFrom > this.cursor ? Math.min(m, f.clearFrom - 2) : m), Infinity);
+      if (b.end > Math.min(name === "finale" ? limit : normalLimit, flightLimit)) continue;
       if (this.conflicts(b)) {
         b.mirror();
         if (this.conflicts(b)) continue;
@@ -262,7 +313,7 @@ export class TrackGenerator {
   private commit(name: PatternName, b: PatternBuilder, limit: number, easy: boolean): void {
     const ctx = b.ctx;
     const vEnd = speedAt(b.end);
-    let gap = vEnd * (ctx.reaction + 0.15 + b.tail) + this.rng.range(0, vEnd * 0.45);
+    let gap = vEnd * (ctx.reaction + 0.15 + b.tail + 0.35 * (1 - ctx.difficulty)) + this.rng.range(0, vEnd * 0.45);
     if (easy) gap *= 1.7;
     else if (ctx.zone === "puente-real" && ctx.lap === 1) gap *= 1.25;
 
@@ -302,14 +353,30 @@ export class TrackGenerator {
     if (b.end >= this.nextPowerupAt && !easy) {
       const slot = takeSlot(false);
       if (slot) {
-        const options = POWERUP_KINDS.filter((k) => k !== this.lastPowerup);
-        const kind = this.rng.pick(options);
+        const lastFlight = this.flights[this.flights.length - 1];
+        const storkOk =
+          gapSpot !== null && gapSpot.d >= FLIGHT_MIN_DISTANCE && (!lastFlight || gapSpot.d > lastFlight.clearTo) &&
+          gapSpot.d > this.tutorialEnd;
+        const options: [PowerupKind, number][] = POWERUP_KINDS.filter((k) => k !== this.lastPowerup).map((k) => [k, 1]);
+        if (storkOk && this.lastPowerup !== "ciguena") options.push(["ciguena", CIGUENA_WEIGHT]);
+        const kind = this.rng.weighted(options);
         this.lastPowerup = kind;
-        placeReward(kind, slot);
-        this.nextPowerupAt = slot.d + this.rng.range(250, 400);
+        if (kind === "ciguena" && gapSpot) {
+          // The stork sits at normal height in the open; its landing stretch is reserved now.
+          if (slot !== gapSpot) used.add(gapSpot);
+          placeReward(kind, gapSpot);
+          const plan = flightPlan(gapSpot.d, this.flightDuration);
+          this.flights.push(plan);
+          this.nextPowerupAt = plan.clearTo + this.rng.range(150, 300);
+          this.nextLetterAt = Math.max(this.nextLetterAt, plan.clearTo + 20);
+        } else {
+          placeReward(kind, slot);
+          this.nextPowerupAt = slot.d + this.rng.range(250, 400);
+        }
       }
     }
-    if (b.end >= this.nextLetterAt) {
+    const lastFlight = this.flights[this.flights.length - 1];
+    if (b.end >= this.nextLetterAt && !(lastFlight && b.end > lastFlight.start && b.end < lastFlight.clearTo)) {
       const slot = takeSlot(this.rng.chance(0.5));
       if (slot) {
         placeReward("letra", slot);

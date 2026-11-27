@@ -41,3 +41,9 @@ export const NET = tag(
 );
 /** Double-sided lit material (cloth, fronds, flags). */
 export const CLOTH = tag(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide }), true);
+
+/** Night floodlighting: landmarks keep their colours but glow softly (warm stone, cool concrete). */
+export const WARMLIT = tag(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, emissive: 0xc07a3a, emissiveIntensity: 0.55 }), false);
+export const COOLLIT = tag(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, emissive: 0x9fb4ff, emissiveIntensity: 0.6 }), false);
+/** Unlit and unfogged, for fireworks frozen in the night sky. */
+export const SKYGLOW = tag(new THREE.MeshBasicMaterial({ vertexColors: true, fog: false }), false, false);

@@ -126,3 +126,32 @@ describe("store progression", () => {
     expect(parseSave({ achievements: ["turista", "nope", "turista"] }).achievements).toEqual(["turista"]);
   });
 });
+
+describe("outfits", () => {
+  it("buys, equips, persists and unlocks the outfit achievements", () => {
+    const m = new MetaStore(null);
+    expect(m.gameOptions.outfit()).toBe("clasico");
+    expect(m.buyOutfit("futbolera")).toBeNull();
+    m.addBellotas(20000);
+    const first = m.buyOutfit("futbolera");
+    expect(first?.map((a) => a.id)).toEqual(["estrenando"]);
+    expect(m.gameOptions.outfit()).toBe("futbolera");
+    expect(m.buyOutfit("futbolera")).toBeNull();
+    expect(m.equipOutfit("clasico")).toBe(true);
+    expect(m.equipOutfit("romano")).toBe(false);
+    for (const id of ["feria", "carnaval", "romano"] as const) expect(m.buyOutfit(id)).toEqual([]);
+    expect(m.buyOutfit("cigueno")?.map((a) => a.id)).toEqual(["fondo-de-armario"]);
+    // 20000 − 400 − 900 − 1500 − 2500 − 4000 + 100 + 1500 rewards.
+    expect(m.save.wallet).toBe(12300);
+  });
+
+  it("migrates v2 saves and sanitises outfits", () => {
+    expect(parseSave({ version: 2, wallet: 5 }).outfits).toEqual({ owned: ["clasico"], equipped: "clasico" });
+    expect(parseSave({ outfits: { owned: ["feria", "nope"], equipped: "romano" } }).outfits).toEqual({
+      owned: ["clasico", "feria"],
+      equipped: "clasico",
+    });
+    expect(parseSave({ outfits: { owned: ["feria"], equipped: "feria" } }).outfits.equipped).toBe("feria");
+    expect(parseSave({ upgrades: { ciguena: 3 } }).upgrades.ciguena).toBe(3);
+  });
+});

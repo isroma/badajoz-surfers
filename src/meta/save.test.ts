@@ -48,7 +48,7 @@ describe("parseSave", () => {
     });
     expect(s.wallet).toBe(0);
     expect(s.bestScore).toBe(1234);
-    expect(s.upgrades).toEqual({ iman: 5, zapatillas: 2, jamon: 0, patinete: 0 });
+    expect(s.upgrades).toEqual({ iman: 5, zapatillas: 2, jamon: 0, patinete: 0, ciguena: 0 });
     expect(s.settings).toEqual({ music: false, sfx: true, volume: 1 });
     // Invalid mission list is redrawn for the stored set.
     expect(s.missions.setsCompleted).toBe(2);
@@ -74,7 +74,7 @@ describe("parseSave", () => {
     const s = parseSave({ bellotas: 321, runsPlayed: 4 });
     expect(s.wallet).toBe(321);
     expect(s.seenHowTo).toBe(true);
-    expect(s.version).toBe(2);
+    expect(s.version).toBe(3);
   });
 });
 
@@ -88,7 +88,7 @@ describe("MetaStore", () => {
     expect(b.save.wallet).toBe(800);
     expect(b.save.upgrades.iman).toBe(1);
     expect(b.gameOptions.powerupDuration("iman")).toBe(12);
-    expect(JSON.parse(mem.getItem(SAVE_KEY) ?? "{}").version).toBe(2);
+    expect(JSON.parse(mem.getItem(SAVE_KEY) ?? "{}").version).toBe(3);
   });
 
   it("migrates from the legacy keys", () => {

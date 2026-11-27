@@ -277,6 +277,40 @@ const SPECS: Record<string, SignSpec> = {
   "led-9": led("9  San Roque"),
   "led-18": led("18 Universidad"),
   "led-3": led("3  Casco Antiguo"),
+  "la-cuenta": {
+    w: 256,
+    h: 352,
+    draw(ctx, w, h) {
+      ctx.fillStyle = "#fffdf2";
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = "#d0192a";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      fit(ctx, "¡LA CUENTA!", w * 0.9, h * 0.14);
+      ctx.fillText("¡LA CUENTA!", w / 2, h * 0.12);
+      ctx.fillStyle = "#555";
+      const items: [string, string][] = [["2 cañas", "3,00"], ["Jamón", "12,50"], ["Pan", "1,20"], ["Tostada", "2,30"]];
+      items.forEach(([a, p], i) => {
+        ctx.font = `bold ${h * 0.065}px 'Courier New', monospace`;
+        ctx.textAlign = "left";
+        ctx.fillText(a, w * 0.08, h * (0.3 + i * 0.1));
+        ctx.textAlign = "right";
+        ctx.fillText(p, w * 0.92, h * (0.3 + i * 0.1));
+      });
+      ctx.fillStyle = "#111";
+      ctx.fillRect(w * 0.08, h * 0.7, w * 0.84, 4);
+      ctx.font = `bold ${h * 0.08}px 'Courier New', monospace`;
+      ctx.textAlign = "left";
+      ctx.fillText("TOTAL", w * 0.08, h * 0.79);
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#d0192a";
+      ctx.fillText("19,00", w * 0.92, h * 0.79);
+      ctx.fillStyle = "#d0192a";
+      ctx.textAlign = "center";
+      fit(ctx, "¡SIN PAGAR!", w * 0.85, h * 0.09);
+      ctx.fillText("¡SIN PAGAR!", w / 2, h * 0.92);
+    },
+  },
   obras: plain("OBRAS", "#ffcc00", "#111111", 320, 128, { border: "#111111" }),
   "peligro-obras": plain("PELIGRO OBRAS", "#ffcc00", "#c00000", 512, 96, { border: "#c00000" }),
   envases: plain("ENVASES", "#ffffff", "#b07d00", 384, 96, { border: "#b07d00" }),
@@ -422,6 +456,8 @@ export type UvRect = readonly [number, number, number, number];
 
 interface Atlas {
   material: THREE.MeshLambertMaterial;
+  /** Night version: the signs light themselves. */
+  lit: THREE.MeshLambertMaterial;
   rects: Map<string, { uv: UvRect; aspect: number }>;
 }
 
@@ -484,7 +520,10 @@ function buildAtlas(): Atlas {
     side: THREE.FrontSide,
   });
   material.userData["cast"] = false;
-  return { material, rects };
+  const lit = material.clone();
+  lit.emissiveIntensity = 0.95;
+  lit.userData["cast"] = false;
+  return { material, lit, rects };
 }
 
 export function signAtlas(): Atlas {
@@ -878,6 +917,35 @@ export function surfaceMat(name: SurfaceName): THREE.Material {
     const map = canvasTex(size, name === "plaza-alta" ? 1024 : size, (c, w, h) => drawSurface(name, c, w, h));
     const m = new THREE.MeshLambertMaterial({ map, vertexColors: true });
     m.userData["cast"] = false;
+    return m;
+  });
+}
+
+/** Floodlit (warm, self-lit) version of a surface material, for landmarks at night. */
+export function surfaceMatLit(name: SurfaceName): THREE.Material {
+  return cachedMat(`surface-lit-${name}`, () => {
+    const base = surfaceMat(name);
+    const m = new THREE.MeshLambertMaterial({ vertexColors: true });
+    if (base instanceof THREE.MeshLambertMaterial && base.map) {
+      m.map = base.map;
+      m.emissiveMap = base.map;
+    }
+    m.emissive.set(0xffb070);
+    m.emissiveIntensity = 0.55;
+    m.userData["cast"] = false;
+    return m;
+  });
+}
+
+/** Additive soft light pool on the ground under street lamps (night). */
+export function lightPoolMat(): THREE.Material {
+  return cachedMat("light-pool", () => {
+    const m = new THREE.MeshBasicMaterial({
+      map: glowTexture(), vertexColors: true, transparent: true, blending: THREE.AdditiveBlending,
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+    m.userData["cast"] = false;
+    m.userData["receive"] = false;
     return m;
   });
 }

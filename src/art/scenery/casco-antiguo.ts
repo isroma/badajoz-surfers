@@ -14,7 +14,7 @@ import { ayuntamiento, catedral, plazaAltaRow } from "../landmarks/casco";
 import { xf } from "../geom";
 import { FAR, SOLID, WATER } from "../materials";
 import {
-  L, RW, bench, building, bunting, pigeons, storkNest, terraceSet, darken, flat, groundQuad, lampClassic, lampWall, orangeTree, pavement, person, planeTree, road, type Seg, type Side,
+  L, RW, bench, building, bunting, farolillos, firework, floodlit, pigeons, storkNest, terraceSet, darken, flat, groundQuad, lampClassic, lampWall, orangeTree, pavement, person, planeTree, road, type Seg, type Side,
 } from "./common";
 
 const HOUSES = [0xf7f4ee, 0xf7f4ee, 0xf6f1e4, 0xf3dc95, 0xeec07a, 0xf0b9a6, 0xc9dde6, 0xf7f4ee];
@@ -72,6 +72,7 @@ function narrowStreet(s: Seg, fx = 5.6, tight = false): void {
     b.span(side * (fx + 10), side * (fx + 40), tight ? 12 : 9, (tight ? 12 : 9) + 0.3, 0, -L, 0xb5532f, FAR);
   }
   bunting(s, -10, fx, 4.7);
+  farolillos(s, -20, fx, 5.0);
   if (s.index % 2 === 0) bunting(s, -30, fx, 4.9, [0xffffff, 0xd62828, 0xffd23f]);
 }
 
@@ -91,7 +92,8 @@ function plazaEspana(s: Seg): void {
     for (const z of [-6, -14, -31, -38]) orangeTree(s, -r.range(7, 10), z);
   }
   if (i === 4) {
-    catedral(b, -22, -12);
+    floodlit(s, "warm", () => catedral(b, -22, -12));
+    firework(s, -60, 75, -70, 12, 0xffd23f);
     ayuntamiento(b, 13, -20, s.night);
     // statue of Luis de Morales on a plinth
     b.boxB(-9, 0.15, -30, 2.2, 2.2, 2.2, 0xd8cdb5, SOLID);
@@ -167,6 +169,8 @@ function plazaAlta(s: Seg): void {
   lampWall(s, 1, 6.4, -20, 4.9);
   // festive bunting across the square entrance
   bunting(s, -2, 6.4, 5.0, [0xd62828, 0xffffff, 0xd62828, 0xffd23f]);
+  farolillos(s, -14, 6.4, 5.2);
+  farolillos(s, -28, 6.4, 5.2);
 }
 
 export function buildCascoAntiguo(s: Seg): void {

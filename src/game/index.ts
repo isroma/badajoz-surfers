@@ -31,6 +31,8 @@ export interface GameDebug {
   setBot(on: boolean): void;
   warp(zone: ZoneId): void;
   setSpeed(mps: number | null): void;
+  /** Drop a power-up pickup 8 m ahead in the runner's lane (e.g. "ciguena"). */
+  powerup(kind: PowerupKind): void;
   stats(): Record<string, unknown>;
 }
 
@@ -73,6 +75,8 @@ class Game implements GameApi {
   private readonly pathSample: PathSample = { x: 0, y: 0, rolling: false, airborne: false };
   /** Fractional ticks owed when the simulation runs slowed (tutorial slow-mo). */
   private slowAcc = 0;
+  /** 0..1 smoothed stork flight (camera blend). */
+  private flight = 0;
   private endSide = 1;
   private wasEnd = false;
   private waiterZ = 0;
@@ -119,6 +123,8 @@ class Game implements GameApi {
 
     window.addEventListener("resize", this.onResize);
     document.addEventListener("visibilitychange", this.onVisibility);
+    window.addEventListener("blur", this.onBlur);
+    window.addEventListener("simpa:outfit", this.onOutfit);
     new Input(canvas, (c) => this.onCommand(c));
 
     this.enterMenuScene();
@@ -215,6 +221,7 @@ class Game implements GameApi {
   }
 
   private enterMenuScene(): void {
+    this.world.setOutfit(this.options.outfit?.());
     this.world.clearDynamic();
     this.effects.clear();
     this.world.updateSegments(Game.MENU_DISTANCE, 99, 4);
@@ -226,6 +233,8 @@ class Game implements GameApi {
   }
 
   private newRun(): void {
+    this.world.setOutfit(this.options.outfit?.());
+    this.flight = 0;
     const seed = this.fixedSeed ?? (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0;
     const run = new Run({
       seed,
@@ -255,20 +264,29 @@ class Game implements GameApi {
     this.cam.snap();
     this.bot.reset();
     this.setState("playing");
-    run.begin();
-    if (this.startZone && this.startZone !== "puente-real") run.warp(this.startZone);
+    run.begin(this.startZone ?? undefined);
+    if (run.player.p > 1) {
+      // Debug start in another zone: build the scenery there straight away.
+      this.world.clearSegments();
+      this.world.updateSegments(run.player.p, 99, 1);
+    }
   }
 
   private onRunEvent(e: GameEvent): void {
     switch (e.type) {
       case "zone":
-        this.world.setZone(e.zone.id, e.first);
+        this.world.setZone(e.zone.id, e.first, e.lap);
         break;
       case "powerup-start":
         if (e.kind === "patinete") this.world.runner.setRiding?.(true);
+        if (e.kind === "ciguena") {
+          this.world.runner.setCarried?.(true);
+          this.cam.shake(0.15);
+        }
         break;
       case "powerup-end":
         if (e.kind === "patinete") this.world.runner.setRiding?.(false);
+        if (e.kind === "ciguena") this.world.runner.setCarried?.(false);
         break;
       default:
         break;
@@ -291,6 +309,11 @@ class Game implements GameApi {
       case "shake":
         this.cam.shake(f.amount);
         break;
+      case "remove": {
+        const o = this.run?.gen.obstacles.find((x) => x.id === f.id);
+        if (o) this.effects.burst("crash", 0, 1, -o.d);
+        break;
+      }
       case "reset":
         this.path.clear();
         this.world.clearDynamic();
@@ -324,8 +347,20 @@ class Game implements GameApi {
     this.cam.camera.updateProjectionMatrix();
   };
 
+  /** Automated testing (?nopause=1) disables the auto-pause. */
+  private autoPause = true;
+
   private readonly onVisibility = (): void => {
-    if (document.hidden && this.state === "playing") this.pause();
+    if (this.autoPause && document.hidden && this.state === "playing") this.pause();
+  };
+
+  private readonly onBlur = (): void => {
+    if (this.autoPause && this.state === "playing") this.pause();
+  };
+
+  /** The shell's shop can ask for the menu runner to be re-dressed: `window` event "simpa:outfit". */
+  private readonly onOutfit = (): void => {
+    if (this.state === "menu") this.world.setOutfit(this.options.outfit?.());
   };
 
   private tick(dt: number): void {
@@ -339,7 +374,11 @@ class Game implements GameApi {
       if (this.botOn) this.bot.update(run);
       run.tick(dt);
       const s = run.player;
-      if (run.phase === "running") this.path.record(s.p, s.x, s.y, s.roll > 0, !s.grounded);
+      // While the runner flies, the waiter stays on the street below.
+      if (run.phase === "running") {
+        if (s.carried) this.path.record(s.p, s.x, 0, false, false);
+        else this.path.record(s.p, s.x, s.y, s.roll > 0, !s.grounded);
+      }
     }
   }
 
@@ -392,7 +431,9 @@ class Game implements GameApi {
 
       // Lean into lane changes.
       const vx = (s.x - s.px) / TICK;
-      this.lean += (Math.max(-0.35, Math.min(0.35, -vx * 0.018)) - this.lean) * Math.min(1, dt * 14);
+      const leanGain = s.carried ? 0.04 : 0.018;
+      this.lean += (Math.max(-0.5, Math.min(0.5, -vx * leanGain)) - this.lean) * Math.min(1, dt * (s.carried ? 6 : 14));
+      this.flight += ((s.carried ? 1 : 0) - this.flight) * Math.min(1, dt * (s.carried ? 1.8 : 1.4));
       runner.root.position.set(px, py, -p);
       runner.root.rotation.set(0, 0, this.lean);
       runner.update(animDt, this.runnerAnim(run), speed);
@@ -400,7 +441,7 @@ class Game implements GameApi {
 
       // The waiter follows the runner's own path a few metres behind (lane changes, jumps, roofs).
       const waiter = world.waiter;
-      const gap = run.chaser.gap;
+      const gap = run.chaser.distance;
       const wp = p - gap;
       const sample = this.pathSample;
       let wy = 0;
@@ -432,7 +473,7 @@ class Game implements GameApi {
     const introT = run && run.intro ? Math.min(1, Math.max(0, (COUNTDOWN_TIME - run.countdown) / COUNTDOWN_TIME) * 1.15) : 1;
     this.cam.update(dt, {
       mode, x: px, y: py, z: -p, groundY: run ? this.groundY : 0, speed, intro: introT, fovKick: this.fovKick,
-      endSide: this.endSide, waiterZ: this.waiterZ,
+      endSide: this.endSide, waiterZ: this.waiterZ, flight: run ? this.flight : 0, bank: run && this.flight > 0.05 ? this.lean * 0.35 * this.flight : 0,
     });
     if (this.fade > 0) {
       this.fade = Math.max(0, this.fade - dt * 2.2);
@@ -477,6 +518,13 @@ class Game implements GameApi {
       if (!isZoneId(zone)) return;
       if (this.run && (this.run.phase === "running" || this.run.phase === "countdown")) this.run.warp(zone);
       else this.startZone = zone;
+    },
+    powerup: (kind) => {
+      const run = this.run;
+      if (!run || run.phase !== "running") return;
+      const s = run.player;
+      run.gen.pickups.push({ id: 900_000_000 + Math.floor(this.time * 1000), kind, lane: s.lane, d: s.p + 8, y: 1 });
+      run.gen.pickups.sort((a, b) => a.d - b.d);
     },
     setSpeed: (mps) => {
       this.speedOverride = mps;
@@ -523,6 +571,7 @@ class Game implements GameApi {
     const speed = params.get("speed");
     if (speed !== null && Number(speed) > 0) this.debug.setSpeed(Number(speed));
     // Defer so the shell can subscribe first.
+    if (params.get("nopause") === "1") this.autoPause = false;
     if (params.get("autostart") === "1") setTimeout(() => this.start(), 60);
   }
 }

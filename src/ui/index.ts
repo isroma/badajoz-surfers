@@ -4,14 +4,17 @@
  * start/pause/resume/toMenu, so UI and engine never disagree.
  */
 import "./styles.css";
-import { POWERUPS, ZONES, type GameApi, type GameEvent, type GameState, type HudSnapshot, type RunSummary, type Shell } from "../contracts";
+import { OUTFITS, POWERUPS, ZONES, type GameApi, type GameEvent, type GameState, type HudSnapshot, type RunSummary, type Shell } from "../contracts";
 import { AudioEngine } from "../audio";
 import { MetaStore, emptyRunStats, type LiveUnlocks, type RunResult, type RunStats } from "../meta";
 import { formatInt } from "../meta/format";
 import { button, h, setUiSound } from "./dom";
 import { Fx } from "./fx";
+import { Combo, comboStep, lapCaption, milestoneText, milestonesCrossed } from "./feel";
 import { Hud } from "./hud";
-import { GLYPH_CHECK, GLYPH_FLAG, GLYPH_MEDAL, ICON_BELLOTA, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
+import { shortZoneName } from "./minimap";
+import { copyText } from "./clipboard";
+import { GLYPH_CHECK, GLYPH_COPY, GLYPH_FLAG, GLYPH_MEDAL, GLYPH_RUN, GLYPH_SHIRT, ICON_BELLOTA, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
 import {
   achievementsScreen,
   gameoverScreen,
@@ -73,6 +76,14 @@ export function createShell(root: HTMLElement): Shell {
     toasted: new Set<string>(),
   };
   let lastHud: HudSnapshot | null = null;
+  const combo = new Combo();
+  let scoreRate = 0;
+  /** A reward waiting a few frames so its score bonus can be measured. */
+  let reward: { title: string; baseScore: number; frames: number; span: number } | null = null;
+  const measureReward = (title: string): void => {
+    const base = lastHud?.score ?? 0;
+    reward = { title, baseScore: base, frames: 4, span: 4 };
+  };
 
   const beginRun = (): void => {
     if (run.active) return;
@@ -83,6 +94,9 @@ export function createShell(root: HTMLElement): Shell {
     run.lastCheck = 0;
     run.toasted.clear();
     lastHud = null;
+    combo.reset();
+    reward = null;
+    scoreRate = 0;
     store.beginRun();
     hud.reset();
     fx.clear();
@@ -182,6 +196,24 @@ export function createShell(root: HTMLElement): Shell {
     resume: () => game?.resume(),
     toMenu: () => game?.toMenu(),
     restart: () => startRun(),
+    buyOutfit: (id) => {
+      const unlocked = store.buyOutfit(id);
+      if (unlocked === null) {
+        audio.play("denied");
+        return;
+      }
+      audio.play("purchase");
+      const info = OUTFITS.find((o) => o.id === id);
+      fx.toast({ title: "¡Estreno!", text: `${info?.name ?? ""}: ya lo llevas puesto`, icon: GLYPH_SHIRT, glyph: true, color: "#ffc53d", key: "shop" });
+      unlockToasts({ missions: [], achievements: unlocked, daily: null });
+      outfitChanged();
+    },
+    equipOutfit: (id) => {
+      if (!store.equipOutfit(id)) return;
+      audio.play("click");
+      outfitChanged();
+    },
+    share: (text) => void copyText(text).then((ok) => fx.toast({ title: ok ? "¡Copiado!" : "No se ha podido copiar", text: ok ? "Pégalo donde quieras presumir" : undefined, icon: GLYPH_COPY, glyph: true, color: "#7cc6f2", key: "share", duration: 2000 })),
     buy: (kind) => {
       if (store.buyUpgrade(kind)) {
         audio.play("purchase");
@@ -195,6 +227,12 @@ export function createShell(root: HTMLElement): Shell {
     setVolume: (volume) => store.updateSettings({ volume }),
   };
   const ctx: ScreenCtx = { store, actions };
+
+  /** Tell the engine to rebuild the runner in the new outfit (menu hero shot). */
+  const outfitChanged = (): void => {
+    panel?.update?.();
+    window.dispatchEvent(new CustomEvent("simpa:outfit"));
+  };
 
   // ---------------------------------------------------------------- screens
   const mapPos = (snap: HudSnapshot): MapPosition => ({
@@ -368,7 +406,13 @@ export function createShell(root: HTMLElement): Shell {
         audio.play("lane");
         break;
       case "pickup":
-        if (e.kind === "bellota") audio.bellota();
+        if (e.kind === "bellota") {
+          audio.bellota();
+          const n = combo.hit(performance.now());
+          hud.setCombo(n);
+          const step = comboStep(n);
+          if (step >= 0) audio.play("combo", step);
+        }
         else if (e.kind === "letra") {
           run.stats.letters++;
           audio.play("letter", e.letterIndex ?? 0);
@@ -377,10 +421,10 @@ export function createShell(root: HTMLElement): Shell {
         break;
       case "powerup-start":
         run.stats.powerups++;
-        audio.play("powerupStart");
+        audio.play(e.kind === "ciguena" ? "flight" : "powerupStart");
         audio.setPowerup(true);
         fx.toast({
-          title: POWERUPS[e.kind].name,
+          title: e.kind === "ciguena" ? "¡A volar!" : POWERUPS[e.kind].name,
           text: POWERUPS[e.kind].description,
           icon: powerupIcon(e.kind),
           color: POWERUP_COLORS[e.kind],
@@ -389,7 +433,7 @@ export function createShell(root: HTMLElement): Shell {
         checkMissions();
         break;
       case "powerup-end":
-        audio.play("powerupEnd");
+        audio.play(e.kind === "ciguena" ? "flightEnd" : "powerupEnd");
         break;
       case "shield-break":
         audio.play("shieldBreak");
@@ -400,6 +444,8 @@ export function createShell(root: HTMLElement): Shell {
         run.stats.words++;
         audio.play("word");
         hud.wordComplete();
+        hud.rewardFlash();
+        measureReward("¡BADAJOZ!");
         fx.toast({ title: "¡BADAJOZ!", text: "Palabra completa: ¡bonus!", icon: GLYPH_FLAG, glyph: true, variant: "gold", duration: 2800, key: "word" });
         checkMissions();
         break;
@@ -427,7 +473,12 @@ export function createShell(root: HTMLElement): Shell {
         break;
       case "zone": {
         if (e.first) beginRun();
-        else run.stats.zones++;
+        else {
+          run.stats.zones++;
+          const prev = ZONES[(ZONES.findIndex((z) => z.id === e.zone.id) + ZONES.length - 1) % ZONES.length];
+          hud.rewardFlash();
+          measureReward(`¡${prev ? shortZoneName(ZONES.indexOf(prev)) : "Zona"} superada!`);
+        }
         audio.setZone(Math.max(0, ZONES.findIndex((z) => z.id === e.zone.id)));
         audio.play("zone");
         const lapStart = e.lap > 1 && e.zone.id === ZONES[0]?.id;
@@ -435,7 +486,7 @@ export function createShell(root: HTMLElement): Shell {
           e.first ? "Empieza la huida" : lapStart ? "¡Nueva vuelta!" : `Vuelta ${e.lap}`,
           e.zone.name,
           e.zone.subtitle,
-          lapStart ? `Vuelta ${e.lap} · ¡más rápido!` : undefined,
+          lapStart ? lapCaption(e.lap) : undefined,
         );
         checkMissions();
         break;
@@ -461,12 +512,32 @@ export function createShell(root: HTMLElement): Shell {
     } catch {
       return;
     }
+    const prevHud = lastHud;
     lastHud = snap;
     hud.render(snap);
+    hud.comboAlive(combo.alive(performance.now()));
+    if (prevHud && state === "playing") {
+      // Typical score per frame, so a reward can be told apart from normal running.
+      const d = snap.score - prevHud.score;
+      if (d >= 0 && d < 2000) scoreRate += (d - scoreRate) * 0.1;
+      if (reward && --reward.frames <= 0) {
+        const bonus = Math.round((snap.score - reward.baseScore - scoreRate * reward.span) / 10) * 10;
+        fx.floater(reward.title, bonus >= 50 ? `+${formatInt(bonus)}` : undefined, "reward");
+        audio.play("reward");
+        reward = null;
+      }
+      const ms = run.active ? milestonesCrossed(prevHud.distance, snap.distance) : [];
+      const m = ms[ms.length - 1];
+      if (m !== undefined) {
+        const txt = milestoneText(m);
+        fx.toast({ title: txt.title, text: txt.text, icon: GLYPH_RUN, glyph: true, color: "#7cc6f2", key: "milestone", duration: 2400 });
+      }
+    }
     if (run.active && Number.isFinite(snap.roofMetres)) run.stats.roofMetres = snap.roofMetres;
     if (state !== "playing") return;
     audio.setSpeed(snap.speed);
     audio.setPowerup(snap.powerups.length > 0);
+    audio.setFlight(snap.powerups.some((p) => p.kind === "ciguena"));
     if (run.active) {
       run.stats.bellotas = snap.bellotas;
       run.stats.distance = snap.distance;
@@ -520,6 +591,8 @@ export function createShell(root: HTMLElement): Shell {
   return {
     gameOptions: store.gameOptions,
     attach(g: GameApi) {
+      // The page shows "Cargando Badajoz…" until the game exists.
+      document.getElementById("boot")?.remove();
       unsubscribe?.();
       game = g;
       unsubscribe = g.on(onEvent);

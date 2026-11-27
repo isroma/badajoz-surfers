@@ -1,5 +1,9 @@
 /** Builders for the menu, panels (how to play, missions, shop), pause and game-over screens. */
-import { POWERUPS, ZONES, type PowerupKind, type RunSummary } from "../contracts";
+import { OUTFITS, POWERUPS, ZONES, type OutfitId, type PowerupKind, type RunSummary } from "../contracts";
+import { outfitPreview } from "./outfits";
+import { shareText } from "./feel";
+
+export const APP_VERSION = "0.3";
 import { ACHIEVEMENTS, type MetaStore, type MissionView, type RunResult } from "../meta";
 import { formatDay, zoneReached } from "../meta/progress";
 import { MAX_UPGRADE_LEVEL, powerupDuration, upgradeCost } from "../meta/economy";
@@ -15,12 +19,14 @@ import {
   GLYPH_MAP,
   GLYPH_MEDAL,
   GLYPH_CHECK,
+  GLYPH_COPY,
   GLYPH_FLAG,
   GLYPH_HELP,
   GLYPH_HOME,
   GLYPH_MUSIC,
   GLYPH_PLAY,
   GLYPH_REPLAY,
+  GLYPH_SHIRT,
   GLYPH_SHOP,
   GLYPH_SOUND_ON,
   GLYPH_TROPHY,
@@ -43,6 +49,9 @@ export interface ScreenActions {
   toMenu(): void;
   restart(): void;
   buy(kind: PowerupKind): void;
+  buyOutfit(id: OutfitId): void;
+  equipOutfit(id: OutfitId): void;
+  share(text: string): void;
   toggle(setting: "music" | "sfx"): void;
   setVolume(volume: number): void;
 }
@@ -227,7 +236,14 @@ export function menuScreen(ctx: ScreenCtx): HTMLElement {
     stat("Multiplicador", h("div", "stat-value", h("span", "mult-badge", `×${formatInt(store.multiplier)}`))),
   );
   const right = h("div", "menu-right", stats, dailyCard(store), missionsMini(ctx));
-  return h("div", "screen menu", left, right, h("div", "menu-top", soundToggles(ctx, false)));
+  return h(
+    "div",
+    "screen menu",
+    left,
+    right,
+    h("div", "menu-top", soundToggles(ctx, false)),
+    h("div", "credit", `Hecho en Badajoz · v${APP_VERSION}`),
+  );
 }
 
 function dailyCard(store: MetaStore): HTMLElement {
@@ -339,6 +355,7 @@ export function missionsScreen(ctx: ScreenCtx): HTMLElement {
 export interface ShopScreen {
   el: HTMLElement;
   update(): void;
+  setTab(tab: "upgrades" | "outfits"): void;
 }
 
 export function shopScreen(ctx: ScreenCtx): ShopScreen {
@@ -385,10 +402,57 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
     };
     return { el, update };
   });
+  const upgradesBody = h("div", "shop-grid", ...cards.map((c) => c.el));
+
+  // Outfits ("Atuendos"): the 3D runner in the menu behind is the real preview, so this tab
+  // moves the panel to the left and leaves the right of the screen clear.
+  const outfitRows = OUTFITS.map((o) => {
+    const btn = button("", () => {}, { size: "md" });
+    const price = h("div", "of-price");
+    const el = h(
+      "div",
+      "of-row",
+      h("div", "of-preview", svg(outfitPreview(o.id))),
+      h("div", "of-body", h("div", "of-name", o.name), Object.assign(h("div", "of-desc", o.description), { title: o.description })),
+      price,
+      btn,
+    );
+    const update = (): void => {
+      const owned = store.save.outfits.owned.includes(o.id);
+      const equipped = store.save.outfits.equipped === o.id;
+      el.classList.toggle("equipped", equipped);
+      el.classList.toggle("owned", owned);
+      price.replaceChildren(...(owned ? [] : [svg(ICON_BELLOTA), h("span", undefined, formatInt(o.price))]));
+      btn.className = `btn btn-md ${equipped ? "btn-ghost" : owned ? "btn-secondary" : "btn-primary"}`;
+      btn.disabled = equipped || (!owned && store.save.wallet < o.price);
+      btn.replaceChildren(
+        ...(equipped ? [svg(GLYPH_CHECK, "btn-icon")] : []),
+        h("span", "btn-label", equipped ? "Equipado" : owned ? "Equipar" : "Comprar"),
+      );
+    };
+    btn.onclick = () => {
+      if (store.save.outfits.owned.includes(o.id)) actions.equipOutfit(o.id);
+      else actions.buyOutfit(o.id);
+    };
+    return { el, update };
+  });
+  const outfitsBody = h("div", "of-list", ...outfitRows.map((r) => r.el));
+  outfitsBody.hidden = true;
+
+  const tabUpgrades = button("Mejoras", () => setTab("upgrades"), { variant: "ghost", size: "sm", className: "tab on" });
+  const tabOutfits = button("Atuendos", () => setTab("outfits"), { variant: "ghost", size: "sm", icon: GLYPH_SHIRT, className: "tab" });
+  const sub = h("p", "modal-sub", "Mejora tus potenciadores para que duren más.");
   const el = modal(
     "shop",
-    modalHead("Tienda", "Mejora tus potenciadores para que duren más.", walletPill(store)),
-    h("div", "shop-grid", ...cards.map((c) => c.el)),
+    h(
+      "div",
+      "modal-head",
+      h("div", undefined, h("h2", "modal-title display tilt", "Tienda"), sub),
+      walletPill(store),
+    ),
+    h("div", "tabs", tabUpgrades, tabOutfits),
+    upgradesBody,
+    outfitsBody,
     h(
       "div",
       "modal-foot",
@@ -396,12 +460,22 @@ export function shopScreen(ctx: ScreenCtx): ShopScreen {
       button("Volver", actions.closePanel, { icon: GLYPH_BACK, size: "lg" }),
     ),
   );
+  const setTab = (tab: "upgrades" | "outfits"): void => {
+    const outfits = tab === "outfits";
+    upgradesBody.hidden = outfits;
+    outfitsBody.hidden = !outfits;
+    tabUpgrades.classList.toggle("on", !outfits);
+    tabOutfits.classList.toggle("on", outfits);
+    el.classList.toggle("peek", outfits);
+    sub.textContent = outfits ? "Ropa nueva para huir con estilo. Mírate a la derecha." : "Mejora tus potenciadores para que duren más.";
+  };
   const update = (): void => {
     for (const c of cards) c.update();
+    for (const r of outfitRows) r.update();
     syncBindings(el, store);
   };
   update();
-  return { el, update };
+  return { el, update, setTab };
 }
 
 // ------------------------------------------------------------------ achievements
@@ -558,7 +632,7 @@ export function gameoverScreen(ctx: ScreenCtx, summary: RunSummary, result: RunR
   const receipt = h(
     "div",
     "receipt",
-    h("div", "r-bar", h("strong", undefined, "BAR EL GUADIANA"), `Terraza · Mesa ${table}`, h("br"), "Badajoz"),
+    h("div", "r-bar", h("strong", undefined, "BAR EL PUENTE"), `Terraza · Mesa ${table}`, h("br"), "Badajoz"),
     h("div", "r-title", "LA CUENTA"),
     h("div", "r-sep"),
     line("Distancia", formatMetres(summary.distance)),
@@ -633,6 +707,12 @@ export function gameoverScreen(ctx: ScreenCtx, summary: RunSummary, result: RunR
         button("Menú", actions.toMenu, { icon: GLYPH_HOME }),
       ),
       h("div", "hint", "Pulsa", ...keys("Espacio"), "o", ...keys("Intro"), "para volver a correr"),
+      button("Copiar resultado", () => actions.share(shareText(summary.distance, ZONES[pos.zoneIndex]?.name ?? "", pos.lap)), {
+        variant: "ghost",
+        size: "sm",
+        icon: GLYPH_COPY,
+        className: "share-btn",
+      }),
     ),
   );
 

@@ -19,6 +19,8 @@ import {
   type ObstacleKind,
   type PickupKind,
   type ZoneId,
+  OUTFITS,
+  type OutfitId,
 } from "./contracts";
 
 const params = new URLSearchParams(location.search);
@@ -178,11 +180,12 @@ function showActors(): void {
   scene.add(groundPlane(60, 0x8a8f96));
   let anim = (params.get("anim") ?? "run") as ActorAnim;
   let riding = params.get("ride") === "1";
-  const runner = art.createRunner();
+  const outfit = (params.get("outfit") ?? "clasico") as OutfitId;
+  const runner = art.createRunner(outfit);
   const waiter = art.createWaiter();
   runner.root.position.set(-3, 0, 0);
   waiter.root.position.set(-1, 0, 0);
-  const runner2 = art.createRunner();
+  const runner2 = art.createRunner(outfit);
   const waiter2 = art.createWaiter();
   runner2.root.position.set(1, 0, 0);
   runner2.root.rotation.y = Math.PI;
@@ -191,6 +194,9 @@ function showActors(): void {
   scene.add(runner.root, waiter.root, runner2.root, waiter2.root);
   runner.setRiding?.(riding);
   runner2.setRiding?.(riding);
+  const carry = params.get("carry") === "1";
+  runner.setCarried?.(carry);
+  runner2.setCarried?.(carry);
   // reference heights
   for (const h of [0.8, 1.8]) {
     const line = new THREE.Line(
@@ -235,7 +241,7 @@ function showActors(): void {
 function showPickups(): void {
   scene.background = new THREE.Color(0x9cc9f5);
   scene.add(groundPlane(60, 0x8a8f96));
-  const kinds: PickupKind[] = ["bellota", "iman", "zapatillas", "jamon", "patinete", "letra"];
+  const kinds: PickupKind[] = ["bellota", "iman", "zapatillas", "jamon", "patinete", "ciguena", "letra"];
   let x = -kinds.length;
   for (const k of kinds) {
     const p = art.createPickup(k, "B");
@@ -273,9 +279,10 @@ function showZone(): void {
   const n = Number(params.get("n") ?? "8");
   const lap = Number(params.get("lap") ?? "1");
   const scenery = art.createZoneScenery(zone);
-  applyAtmosphere(scenery.atmosphere);
+  const atm = scenery.atmosphereFor(Number(params.get("lap") ?? "1"));
+  applyAtmosphere(atm);
   const sky = art.createSkyDome();
-  sky.setColors(new THREE.Color(scenery.atmosphere.skyTop), new THREE.Color(scenery.atmosphere.skyBottom));
+  sky.setColors(new THREE.Color(atm.skyTop), new THREE.Color(atm.skyBottom));
   scene.add(sky.mesh);
   const lines: string[] = [`${zone} segments ${from}..${from + n - 1} of ${count}`];
   const chain: { id: ZoneId; from: number; n: number }[] = [{ id: zone, from, n }];
@@ -364,7 +371,7 @@ function showZone(): void {
 
 /** Scan every segment of every zone for triangles intruding into the runnable volume. */
 function showCheck(): void {
-  const lines: string[] = ["road intrusion check: |x| < 4.2, 0.1 < y < 4"];
+  const lines: string[] = ["road intrusion check (laps 1 and 2): |x| < 4.2, 0.1 < y < 4"];
   let total = 0;
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
@@ -372,12 +379,17 @@ function showCheck(): void {
   for (const z of ZONES) {
     const scenery = art.createZoneScenery(z.id);
     const count = z.length / SEGMENT_LENGTH;
-    for (let i = z.id === "puente-real" ? -4 : 0; i < count; i++) {
-      const seg = scenery.buildSegment(i, count, 1);
+    for (let n = 0; n < (count + 4) * 2; n++) {
+      const lap = n < count + 4 ? 1 : 2;
+      const i = (n % (count + 4)) - (z.id === "puente-real" ? 4 : 0);
+      if (i >= count) continue;
+      const seg = scenery.buildSegment(i, count, lap);
       let bad = 0;
       let example = "";
       seg.traverse((o) => {
         if (!(o instanceof THREE.Mesh)) return;
+        // additive light-pool decals are not solid
+        if (o.material instanceof THREE.Material && o.material.blending === THREE.AdditiveBlending) return;
         const pos = (o.geometry as THREE.BufferGeometry).getAttribute("position");
         for (let t = 0; t < pos.count; t += 3) {
           a.fromBufferAttribute(pos, t);
@@ -408,7 +420,7 @@ function showCheck(): void {
       art.release(seg);
       if (bad > 0) {
         total += bad;
-        lines.push(`${z.id} #${i}: ${bad} tris, e.g. ${example}`);
+        lines.push(`${z.id} #${i} lap ${lap}: ${bad} tris, e.g. ${example}`);
       }
     }
   }
@@ -442,47 +454,109 @@ function showLeak(): void {
   camera.lookAt(0, 1.6, -12);
   const zones = ZONES.map((z) => ({ id: z.id, count: z.length / SEGMENT_LENGTH, scenery: art.createZoneScenery(z.id) }));
   const kinds = Object.keys(OBSTACLE_DEFS) as ObstacleKind[];
-  const churn = (n: number): void => {
-    for (let k = 0; k < n; k++) {
-      const z = zones[k % zones.length];
-      if (!z) continue;
-      const idx = z.id === "puente-real" ? (k % (z.count + 4)) - 4 : k % z.count;
-      const seg = z.scenery.buildSegment(idx, z.count, 1 + (k % 3));
-      seg.position.z = -20;
-      scene.add(seg);
-      const kind = kinds[k % kinds.length] ?? "valla";
-      const o = art.createObstacle(kind, k, k % 2 === 0);
-      o.position.z = -15;
-      scene.add(o);
-      const p = art.createPickup(k % 2 ? "bellota" : "letra", "BADAJOZ"[k % 7]);
-      p.root.position.z = -10;
-      scene.add(p.root);
-      const sky = art.createSkyDome();
-      scene.add(sky.mesh);
-      renderer.render(scene, camera);
-      for (const obj of [seg, o, p.root, sky.mesh]) {
-        scene.remove(obj);
-        art.release(obj);
-      }
+  const show = (objs: THREE.Object3D[]): void => {
+    for (const o of objs) scene.add(o);
+    renderer.render(scene, camera);
+    for (const o of objs) {
+      scene.remove(o);
+      art.release(o);
     }
   };
-  churn(zones.reduce((a, z) => a + z.count + 4, 0)); // warm every shared cache once
+  /** Every segment of every zone (lead-in included) for laps 1-4. */
+  const allSegments = (): number => {
+    let n = 0;
+    for (let lap = 1; lap <= 4; lap++) {
+      for (const z of zones) {
+        for (let i = z.id === "puente-real" ? -4 : 0; i < z.count; i++) {
+          const seg = z.scenery.buildSegment(i, z.count, lap);
+          seg.position.z = -20;
+          const sky = art.createSkyDome();
+          show([seg, sky.mesh]);
+          n++;
+        }
+      }
+    }
+    return n;
+  };
+  const obstacles = (n: number, seedOf: (k: number) => number): void => {
+    for (let k = 0; k < n; k += 20) {
+      const batch: THREE.Object3D[] = [];
+      for (let j = 0; j < 20; j++) {
+        const kind = kinds[(k + j) % kinds.length] ?? "valla";
+        const o = art.createObstacle(kind, seedOf(k + j), (k + j) % 3 === 0);
+        o.position.set(((j % 5) - 2) * 3, 0, -10 - Math.floor(j / 5) * 6);
+        batch.push(o);
+        const pk: PickupKind[] = ["bellota", "letra", "ciguena", "iman"];
+        const p = art.createPickup(pk[j % 4] ?? "bellota", "BADAJOZ"[j % 7]);
+        p.root.position.set(0, 1, -8);
+        batch.push(p.root);
+      }
+      show(batch);
+    }
+  };
+  // warm every shared cache: all variants of all kinds, all segments of laps 1-4
+  obstacles(kinds.length * 60, (k) => Math.floor(k / kinds.length));
+  const segs = allSegments();
   renderer.render(scene, camera);
   const before = { ...renderer.info.memory };
-  churn(200);
+  // churn: 2,000 obstacles with random 32-bit seeds, then every segment of laps 1-4 again
+  obstacles(2000, () => Math.floor(Math.random() * 4294967296));
+  allSegments();
   renderer.render(scene, camera);
   const after = { ...renderer.info.memory };
   const ok = after.geometries === before.geometries && after.textures === before.textures;
   label.textContent = [
-    "leak test: 200 segments + obstacles + pickups + skies built, rendered, released",
-    `baseline  geometries ${before.geometries}  textures ${before.textures}`,
-    `after 200 geometries ${after.geometries}  textures ${after.textures}`,
-    ok ? "OK: back to baseline" : "LEAK",
+    `leak test: 2,000 obstacles (random 32-bit seeds) + pickups, ${segs} segments x laps 1-4 + skies`,
+    `after warm-up  geometries ${before.geometries}  textures ${before.textures}`,
+    `after churn    geometries ${after.geometries}  textures ${after.textures}`,
+    ok ? "OK: plateau, nothing leaks" : "LEAK",
   ].join("\n");
   label.style.fontSize = "16px";
 }
 
+function showOutfits(): void {
+  scene.background = new THREE.Color(0x9cc9f5);
+  scene.add(groundPlane(60, 0x8a8f96));
+  const anim = (params.get("anim") ?? "idle") as ActorAnim;
+  const actors = OUTFITS.flatMap((o, i) => {
+    const front = art.createRunner(o.id);
+    const back = art.createRunner(o.id);
+    const x = (i - (OUTFITS.length - 1) / 2) * 1.3;
+    front.root.position.set(x, 0, 1.6);
+    front.root.rotation.y = Math.PI;
+    back.root.position.set(x, 0, -0.6);
+    scene.add(front.root, back.root);
+    const lab = textSprite(o.name);
+    lab.position.set(x, 2.25, 1.6);
+    lab.scale.set(2, 0.25, 1);
+    scene.add(lab);
+    return [front, back];
+  });
+  const box = new THREE.Box3();
+  updaters.push((dt) => {
+    let worst = 0;
+    for (const a of actors) {
+      a.update(dt, anim, 14);
+      box.makeEmpty();
+      a.root.updateMatrixWorld(true);
+      a.root.traverseVisible((o) => {
+        if (o instanceof THREE.Mesh) box.expandByObject(o, true);
+      });
+      worst = Math.max(worst, box.max.y);
+    }
+    label.textContent = `outfits, anim ${anim}: tallest now ${worst.toFixed(2)} m`;
+  });
+  if (!params.get("cam")) {
+    camera.position.set(0, 1.6, 7.5);
+    controls.target.set(0, 0.9, 0.5);
+  }
+  setSunAround(new THREE.Vector3(0, 0, 0));
+}
+
 switch (view) {
+  case "outfits":
+    showOutfits();
+    break;
   case "leak":
     showLeak();
     break;

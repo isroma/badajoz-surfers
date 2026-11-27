@@ -42,6 +42,7 @@ export function createSkyDome(): SkyDome {
   const uniforms = {
     top: { value: new THREE.Color(0x2f7fd8) },
     bottom: { value: new THREE.Color(0xcfe8ff) },
+    night: { value: 0 },
   };
   const mat = new THREE.ShaderMaterial({
     uniforms,
@@ -57,13 +58,26 @@ export function createSkyDome(): SkyDome {
     fragmentShader: /* glsl */ `
       uniform vec3 top;
       uniform vec3 bottom;
+      uniform float night;
       varying vec3 vDir;
+      float hash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
       void main() {
         float h = clamp(vDir.y, 0.0, 1.0);
         float t = pow(h, 0.55);
         vec3 col = mix(bottom, top, smoothstep(0.0, 1.0, t));
         // a little brighter haze right at the horizon
         col += (1.0 - smoothstep(0.0, 0.08, h)) * 0.04;
+        if (night > 0.0) {
+          // stars: sparse hashed cells, fading out towards the horizon haze
+          vec3 cell = floor(vDir * 260.0);
+          float st = step(0.9965, hash(cell)) * smoothstep(0.08, 0.35, h);
+          col += vec3(0.9, 0.92, 1.0) * st * night * (0.6 + 0.4 * hash(cell + 7.0));
+          // the moon, with a soft halo
+          vec3 md = normalize(vec3(-0.35, 0.42, -0.84));
+          float d = dot(vDir, md);
+          col += vec3(1.0, 0.97, 0.88) * smoothstep(0.99935, 0.9996, d) * night;
+          col += vec3(0.35, 0.4, 0.6) * pow(max(d, 0.0), 180.0) * 0.6 * night;
+        }
         gl_FragColor = vec4(col, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -89,6 +103,9 @@ export function createSkyDome(): SkyDome {
     setColors(top, bottom) {
       uniforms.top.value.copy(top);
       uniforms.bottom.value.copy(bottom);
+      const lumTop = top.r * 0.3 + top.g * 0.59 + top.b * 0.11;
+      uniforms.night.value = Math.min(1, Math.max(0, (0.06 - lumTop) / 0.045));
+      cloudMat.color.multiplyScalar(1 - 0.55 * uniforms.night.value);
       // clouds pick up the horizon tint (pink at sunset, blue-grey at dusk)
       cloudMat.color.copy(white).lerp(bottom, 0.45);
       const lum = bottom.r * 0.3 + bottom.g * 0.59 + bottom.b * 0.11;

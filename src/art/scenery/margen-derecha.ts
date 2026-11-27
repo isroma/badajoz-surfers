@@ -13,7 +13,7 @@ import { pylon, torreCaja } from "../landmarks/puente-real";
 import { PYLON_SEG, TOWER_X, TOWER_Z } from "./puente-real";
 import { FAR, GLASS, GLOW, SOLID, WATER } from "../materials";
 import {
-  L, RW, building, farBlock, flat, groundQuad, lampModern, pavement, person, pine, planeTree, shrub, road, type Seg, type Side,
+  L, RW, building, farBlock, flat, floodlit, groundQuad, lampModern, pavement, person, pine, planeTree, shrub, road, type Seg, type Side,
 } from "./common";
 
 const MODERN = [0xe9e6df, 0xd9d4ca, 0xc9b79a, 0xf2efe8, 0xb5a08a];
@@ -186,7 +186,7 @@ export function buildMargenDerecha(s: Seg): void {
   // where puente-real draws them (slim stand-ins hidden inside the real ones once those load)
   if (i === s.count - 1) {
     const zr = -L; // puente-real segment 0 starts where this segment ends
-    pylon(b, zr - PYLON_SEG * L - 20, -13, FAR, true);
+    floodlit(s, "cool", () => pylon(b, zr - PYLON_SEG * L - 20, -13, FAR, true));
     torreCaja(b, TOWER_X, zr - L + TOWER_Z, 0.1, true, FAR, true);
   }
 }
