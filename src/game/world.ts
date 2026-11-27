@@ -32,12 +32,16 @@ const PICKUP_VIEW = 140;
 /** Removed once this far behind the runner (the camera is 6.5 m back). */
 const BEHIND = 12;
 const POOL_CAP = 8;
+/** Lead-in segments before distance 0 (Puente Real indices -1..-4). */
+const LEAD_IN_SEGMENTS = 4;
+/** Obstacles and pickups this close to the camera are hidden so the view stays readable. */
+const CAMERA_CLEARANCE = 2.5;
+const PICKUP_CAMERA_CLEARANCE = 3;
 const BELLOTA_POOL_CAP = 80;
 
 interface ObstacleView {
   obj: THREE.Object3D;
   spawn: ObstacleSpawn;
-  key: string;
   knocked: { t: number; dir: number } | null;
   seen: number;
 }
@@ -95,6 +99,14 @@ function copyState(into: AtmosphereState, from: AtmosphereState): void {
   into.ambientIntensity = from.ambientIntensity;
 }
 
+/** Distance from a point to an axis-aligned box. */
+function boxDistance(pt: THREE.Vector3, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): number {
+  const dx = Math.max(x0 - pt.x, 0, pt.x - x1);
+  const dy = Math.max(y0 - pt.y, 0, pt.y - y1);
+  const dz = Math.max(z0 - pt.z, 0, pt.z - z1);
+  return Math.hypot(dx, dy, dz);
+}
+
 export class World {
   readonly scene = new THREE.Scene();
   readonly sun = new THREE.DirectionalLight(0xffffff, 2);
@@ -106,9 +118,11 @@ export class World {
 
   private readonly scenery = new Map<ZoneId, ZoneScenery>();
   private readonly segments = new Map<number, THREE.Object3D>();
+  private readonly failedSegments = new Set<number>();
   private readonly obstacles = new Map<number, ObstacleView>();
   private readonly pickups = new Map<number, PickupView>();
-  private readonly obstaclePool = new Map<string, THREE.Object3D[]>();
+  /** Lifetime counters (stats). */
+  readonly created = { obstacles: 0, released: 0, segments: 0, segmentsReleased: 0, pickups: 0, pickupsReleased: 0 };
   private readonly pickupPool = new Map<string, PickupMesh[]>();
   private frame = 0;
 
@@ -241,23 +255,39 @@ export class World {
       if (index < from || index > to) {
         this.scene.remove(obj);
         this.art.release(obj);
+        this.created.segmentsReleased++;
         this.segments.delete(index);
       }
     }
     let built = 0;
     for (let index = from; index <= to && built < maxBuilds; index++) {
       if (this.segments.has(index)) continue;
+      // Before the start of the run: the street leading to Puente Real (indices -1..-4).
+      if (index < -LEAD_IN_SEGMENTS || this.failedSegments.has(index)) continue;
       const start = index * SEGMENT_LENGTH;
-      const span = zoneAt(start);
-      const count = Math.max(1, Math.round(span.zone.length / SEGMENT_LENGTH));
-      const local = Math.round((start - span.start) / SEGMENT_LENGTH);
-      const obj = this.sceneryFor(span.zone.id).buildSegment(local, count, span.lap);
+      let obj: THREE.Object3D;
+      try {
+        if (index < 0) {
+          const zone = zoneAt(0).zone;
+          obj = this.sceneryFor(zone.id).buildSegment(index, Math.round(zone.length / SEGMENT_LENGTH), 1);
+        } else {
+          const span = zoneAt(start);
+          const count = Math.max(1, Math.round(span.zone.length / SEGMENT_LENGTH));
+          const local = Math.round((start - span.start) / SEGMENT_LENGTH);
+          obj = this.sceneryFor(span.zone.id).buildSegment(local, count, span.lap);
+        }
+      } catch {
+        // Defensive: a scenery builder that cannot build this index is skipped (once).
+        this.failedSegments.add(index);
+        continue;
+      }
       obj.position.z = -start;
       obj.traverse((o) => {
         if (o instanceof THREE.Mesh) o.receiveShadow = true;
       });
       this.scene.add(obj);
       this.segments.set(index, obj);
+      this.created.segments++;
       built++;
     }
   }
@@ -266,6 +296,7 @@ export class World {
     for (const obj of this.segments.values()) {
       this.scene.remove(obj);
       this.art.release(obj);
+      this.created.segmentsReleased++;
     }
     this.segments.clear();
   }
@@ -277,35 +308,27 @@ export class World {
     if (view && !view.knocked) view.knocked = { t: 0, dir };
   }
 
-  private takeObstacle(spawn: ObstacleSpawn): { obj: THREE.Object3D; key: string } {
-    const moving = spawn.k > 0;
-    const variant = spawn.seed % 4;
-    const key = `${spawn.kind}|${variant}|${moving ? 1 : 0}`;
-    const pooled = this.obstaclePool.get(key)?.pop();
-    if (pooled) return { obj: pooled, key };
-    const obj = this.art.createObstacle(spawn.kind, variant, moving);
+  /** Obstacles use their full seed (many liveries and colours), so they are not pooled. */
+  private takeObstacle(spawn: ObstacleSpawn): THREE.Object3D {
+    const obj = this.art.createObstacle(spawn.kind, spawn.seed, spawn.k > 0);
     obj.traverse((o) => {
       o.castShadow = true;
     });
-    return { obj, key };
+    this.created.obstacles++;
+    return obj;
   }
 
   private dropObstacle(view: ObstacleView): void {
     this.scene.remove(view.obj);
-    view.obj.rotation.set(0, 0, 0);
-    let pool = this.obstaclePool.get(view.key);
-    if (!pool) {
-      pool = [];
-      this.obstaclePool.set(view.key, pool);
-    }
-    if (pool.length < POOL_CAP) pool.push(view.obj);
-    else this.art.release(view.obj);
+    this.art.release(view.obj);
+    this.created.released++;
   }
 
   private takePickup(kind: PickupKind, letter: string | undefined): { mesh: PickupMesh; key: string } {
     const key = kind === "letra" ? `letra|${letter ?? ""}` : kind;
     const pooled = this.pickupPool.get(key)?.pop();
     if (pooled) return { mesh: pooled, key };
+    this.created.pickups++;
     return { mesh: this.art.createPickup(kind, letter), key };
   }
 
@@ -317,7 +340,10 @@ export class World {
       this.pickupPool.set(view.key, pool);
     }
     if (pool.length < (view.key === "bellota" ? BELLOTA_POOL_CAP : POOL_CAP)) pool.push(view.mesh);
-    else this.art.release(view.mesh.root);
+    else {
+      this.art.release(view.mesh.root);
+      this.created.pickupsReleased++;
+    }
   }
 
   /** Remove every obstacle and pickup mesh (new run, warp, menu). */
@@ -329,7 +355,8 @@ export class World {
   }
 
   /** Bring the meshes in line with the run at (interpolated) distance `p`. */
-  sync(run: Run, p: number, dt: number, time: number): void {
+  sync(run: Run, p: number, dt: number, time: number, camera: THREE.Vector3, endShot = false): void {
+    const pickupClearance = endShot ? PICKUP_CAMERA_CLEARANCE * 2 : PICKUP_CAMERA_CLEARANCE;
     this.frame++;
     const frame = this.frame;
     const list = run.gen.obstacles;
@@ -353,8 +380,8 @@ export class World {
       let view = this.obstacles.get(spawn.id);
       if (!view) {
         if (run.ignore.has(spawn.id) && c < p) continue;
-        const { obj, key } = this.takeObstacle(spawn);
-        view = { obj, spawn, key, knocked: null, seen: frame };
+        const obj = this.takeObstacle(spawn);
+        view = { obj, spawn, knocked: null, seen: frame };
         this.obstacles.set(spawn.id, view);
         this.scene.add(obj);
       }
@@ -370,9 +397,17 @@ export class World {
         obj.rotation.x = k.t * 2;
         obj.visible = k.t < 1.1;
       } else {
-        obj.visible = true;
-        obj.position.set(def.lanes === 3 ? 0 : laneX(spawn.lane), 0, -c);
+        const x = def.lanes === 3 ? 0 : laneX(spawn.lane);
+        obj.position.set(x, 0, -c);
         obj.rotation.set(0, spawn.flipped ? Math.PI : 0, 0);
+        // Keep the view readable: hide what is right at the lens, tall things behind the runner,
+        // and a scaffold once the runner is under it (the camera is about to pass through it).
+        const dMin = c - def.length / 2;
+        const dMax = c + def.length / 2;
+        const near = boxDistance(camera, x - def.width / 2, x + def.width / 2, def.yMin, def.yMax + 0.6, -dMax, -dMin) < CAMERA_CLEARANCE;
+        const behindTall = dMax < p - 1 && def.yMax > 1.2;
+        const overhead = spawn.kind === "andamio" && p > dMin + 0.8;
+        obj.visible = !(near || behindTall || overhead);
       }
     }
     for (const [id, view] of this.obstacles) {
@@ -418,8 +453,10 @@ export class World {
       }
       view.seen = frame;
       const pulled = run.magnet.get(spawn.id);
-      if (pulled) view.mesh.root.position.set(pulled.x, pulled.y, -pulled.d);
-      else view.mesh.root.position.set(laneX(spawn.lane), spawn.y, -spawn.d);
+      const root = view.mesh.root;
+      if (pulled) root.position.set(pulled.x, pulled.y, -pulled.d);
+      else root.position.set(laneX(spawn.lane), spawn.y, -spawn.d);
+      root.visible = root.position.distanceTo(camera) > pickupClearance;
       view.mesh.update(dt, time);
     }
     for (const [id, view] of this.pickups) {
@@ -430,11 +467,14 @@ export class World {
     }
   }
 
-  counts(): { segments: number; obstacles: number; pickups: number; pooledObstacles: number; pooledPickups: number } {
-    let po = 0;
-    for (const pool of this.obstaclePool.values()) po += pool.length;
+  counts(): Record<string, number> {
     let pp = 0;
     for (const pool of this.pickupPool.values()) pp += pool.length;
-    return { segments: this.segments.size, obstacles: this.obstacles.size, pickups: this.pickups.size, pooledObstacles: po, pooledPickups: pp };
+    return {
+      segments: this.segments.size, obstacles: this.obstacles.size, pickups: this.pickups.size, pooledPickups: pp,
+      createdSegments: this.created.segments, releasedSegments: this.created.segmentsReleased,
+      createdObstacles: this.created.obstacles, releasedObstacles: this.created.released,
+      createdPickups: this.created.pickups, releasedPickups: this.created.pickupsReleased,
+    };
   }
 }

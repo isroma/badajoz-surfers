@@ -234,6 +234,9 @@ const SPECS: Record<string, SignSpec> = {
   "c-elvas": plain("Avenida de Elvas", "#ffffff", "#163d7a", 640, 128, { border: "#163d7a" }),
   "c-puente": plain("Puente Real", "#ffffff", "#163d7a", 512, 128, { border: "#163d7a" }),
   "c-palmas": plain("Puente de Palmas", "#ffffff", "#163d7a", 640, 128, { border: "#163d7a" }),
+  "c-casco": plain("Casco Antiguo", "#ffffff", "#163d7a", 640, 128, { border: "#163d7a" }),
+  "c-alcazaba": plain("Alcazaba", "#ffffff", "#163d7a", 512, 128, { border: "#163d7a" }),
+  "c-ribera": plain("Paseo de la Ribera", "#ffffff", "#163d7a", 640, 128, { border: "#163d7a" }),
   ayuntamiento: plain("AYUNTAMIENTO", "#f4efe2", "#8a6a1f", 768, 128),
   // banners
   "b-feria": banner("FERIA DE SAN JUAN", "#d62828", "#fff4c2", ["#ffd23f", "#2a9d8f", "#ffffff", "#264653"]),
@@ -919,4 +922,30 @@ export function glowTexture(): THREE.Texture {
     }, false);
   }
   return glowTex;
+}
+
+/** Warm halo with a four-point sparkle, for the bellota coin (reads on dark and bright ground). */
+let sparkleTex: THREE.Texture | null = null;
+export function sparkleTexture(): THREE.Texture {
+  if (!sparkleTex) {
+    sparkleTex = canvasTex(128, 128, (ctx, w, h) => {
+      const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+      g.addColorStop(0, "rgba(255,250,210,0.95)");
+      g.addColorStop(0.3, "rgba(255,200,60,0.55)");
+      g.addColorStop(0.62, "rgba(230,120,10,0.22)");
+      g.addColorStop(1, "rgba(200,90,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = "rgba(255,255,235,0.95)";
+      for (const [dx, dy] of [[1, 0], [0, 1]] as const) {
+        ctx.beginPath();
+        ctx.moveTo(w / 2 - dx * w * 0.48, h / 2 - dy * h * 0.48);
+        ctx.lineTo(w / 2 + dy * 4, h / 2 + dx * 4);
+        ctx.lineTo(w / 2 + dx * w * 0.48, h / 2 + dy * h * 0.48);
+        ctx.lineTo(w / 2 - dy * 4, h / 2 - dx * 4);
+        ctx.fill();
+      }
+    }, false);
+  }
+  return sparkleTex;
 }

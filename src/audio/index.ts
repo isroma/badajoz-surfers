@@ -13,7 +13,8 @@ export interface AudioSettings {
 }
 
 /** Minimum gap between two plays of the same effect, in seconds. */
-const MIN_GAP: Partial<Record<SfxName, number>> = { lane: 0.04, hover: 0.06, bellota: 0.025, land: 0.06, nearMiss: 0.15 };
+// Bellota pings are capped at ~22 per second so a magnet streak can't pile up dozens of voices.
+const MIN_GAP: Partial<Record<SfxName, number>> = { lane: 0.04, hover: 0.06, bellota: 0.045, land: 0.06, nearMiss: 0.15, letter: 0.05, countdown: 0.2 };
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -24,6 +25,7 @@ export class AudioEngine {
   private settings: AudioSettings;
   private mode: MusicMode = "off";
   private powerup = false;
+  private zone = 0;
   private lastPlayed = new Map<SfxName, number>();
   private bellotaStreak = 0;
   private lastBellota = -1;
@@ -63,7 +65,15 @@ export class AudioEngine {
       comp.ratio.value = 3;
       comp.attack.value = 0.005;
       comp.release.value = 0.2;
-      comp.connect(ctx.destination);
+      // Safety limiter after the glue compressor: nothing can clip, however many voices overlap.
+      const limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = -2;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 20;
+      limiter.attack.value = 0.002;
+      limiter.release.value = 0.1;
+      comp.connect(limiter);
+      limiter.connect(ctx.destination);
       this.master = ctx.createGain();
       this.master.connect(comp);
       this.musicGain = ctx.createGain();
@@ -75,6 +85,7 @@ export class AudioEngine {
       this.applySettings(this.settings);
       this.music.setMode(this.mode);
       this.music.setPowerup(this.powerup);
+      this.music.setZone(this.zone);
       void ctx.resume().catch(() => undefined);
     } catch {
       this.ctx = null;
@@ -123,6 +134,12 @@ export class AudioEngine {
   setMusicMode(mode: MusicMode): void {
     this.mode = mode;
     this.music?.setMode(mode);
+  }
+
+  /** Musical variation for the zone (index into ZONES). */
+  setZone(index: number): void {
+    this.zone = index;
+    this.music?.setZone(index);
   }
 
   setSpeed(speed: number): void {

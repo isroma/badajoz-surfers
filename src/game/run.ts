@@ -57,6 +57,8 @@ export interface RunConfig {
   baseMultiplier(): number;
   emit(event: GameEvent): void;
   fx(fx: RunFx): void;
+  /** Open with the scripted tutorial. */
+  tutorial?: boolean;
 }
 
 export interface ActivePowerup {
@@ -76,13 +78,17 @@ export const COUNTDOWN_TIME = 1.5;
 export const ENDING_TIME = 1.25;
 const GENERATE_AHEAD = 280;
 
-const SCORE = {
+export const SCORE = {
   perMetre: 1,
-  bellota: 5,
-  nearMiss: 25,
+  bellota: 10,
+  nearMiss: 50,
   word: 1000,
-  zone: 100,
+  /** Per lap of the zone just completed. */
+  zone: 250,
 } as const;
+
+/** Simulation time scale while a tutorial prompt waits for its action (classic slow-mo). */
+export const TUTORIAL_SLOWMO = 0.6;
 
 const overlaps = (aMin: number, aMax: number, bMin: number, bMax: number): boolean => aMin < bMax && bMin < aMax;
 
@@ -117,6 +123,16 @@ export class Run {
   wordsCompleted = 0;
   zonesCompleted = 0;
   lettersCollected = 0;
+  /** Letters picked up in the whole run. */
+  lettersTotal = 0;
+
+  /** Simulation time scale (the engine runs fewer ticks per second below 1). */
+  timeScale = 1;
+  /** Tutorial progress. */
+  tutorialStep = 0;
+  tutorialActive = false;
+  tutorialPerformed = false;
+  tutorialOver: boolean;
 
   zoneSerial = 0;
   invincible = false;
@@ -139,7 +155,8 @@ export class Run {
   private readonly b: Aabb = { xMin: 0, xMax: 0, yMin: 0, yMax: 0, dMin: 0, dMax: 0 };
 
   constructor(private readonly cfg: RunConfig) {
-    this.gen = new TrackGenerator(cfg.seed);
+    this.gen = new TrackGenerator(cfg.seed, 0, { tutorial: cfg.tutorial === true });
+    this.tutorialOver = this.gen.tutorial.length === 0;
     this.gen.generateUntil(GENERATE_AHEAD);
     this.boxes = new BoxSet(this.gen.obstacles, this.ignore);
     this.boxes.prepare(0, 0);
@@ -153,11 +170,25 @@ export class Run {
     this.startCountdown(true);
   }
 
-  startCountdown(intro: boolean): void {
+  /** Start (intro) or resume countdown, 3-2-1-0. */
+  startCountdown(intro: boolean, resume = false): void {
     this.intro = intro;
+    this.resuming = resume;
     this.countdown = COUNTDOWN_TIME;
     this.lastCount = 3;
-    this.cfg.emit({ type: "countdown", value: 3 });
+    this.emitCount(3);
+  }
+
+  private resuming = false;
+
+  private emitCount(value: number): void {
+    if (this.resuming) this.cfg.emit({ type: "countdown", value, resume: true });
+    else this.cfg.emit({ type: "countdown", value });
+  }
+
+  /** In the scripted tutorial stretch (mistakes are forgiven). */
+  get inTutorial(): boolean {
+    return !this.tutorialOver;
   }
 
   get distance(): number {
@@ -205,14 +236,14 @@ export class Run {
       const shown = Math.ceil(this.countdown / (COUNTDOWN_TIME / 3));
       if (this.countdown <= 0) {
         this.countdown = 0;
-        this.cfg.emit({ type: "countdown", value: 0 });
+        this.emitCount(0);
         if (this.intro) this.chaser.go();
         this.intro = false;
         this.phase = this.phase === "countdown" ? "running" : this.phase;
         this.actions.length = 0;
       } else if (shown !== this.lastCount && shown > 0) {
         this.lastCount = shown;
-        this.cfg.emit({ type: "countdown", value: shown });
+        this.emitCount(shown);
       }
       if (this.phase === "countdown") this.chaser.update(dt);
       return;
@@ -260,6 +291,7 @@ export class Run {
       cfg.emit({ type: "roll" });
     }
     if (ev.laneChanged) cfg.emit({ type: "lane" });
+    if (!this.tutorialOver) this.updateTutorial(dt);
 
     const dp = s.p - s.pp;
     if (s.grounded && s.supportId >= 0) this.roofMetres += dp;
@@ -272,7 +304,14 @@ export class Run {
         const track = this.near.get(spawn.id);
         if (track) track.spoiled = true;
         if (this.invulnerable > 0) this.ignore.add(spawn.id);
-        else if (contact.type === "front") {
+        else if (!this.tutorialOver) {
+          // Tutorial: stumble straight through, no penalty.
+          this.ignore.add(spawn.id);
+          this.invulnerable = 0.8;
+          this.stumbleAnim = 0.3;
+          this.slow = Math.min(this.slow, 0.85);
+          cfg.fx({ type: "shake", amount: 0.25 });
+        } else if (contact.type === "front") {
           if (this.active("patinete")) this.shieldBreak(spawn.id, spawn.lane);
           else {
             this.crash(spawn.kind);
@@ -307,7 +346,7 @@ export class Run {
     if (span.serial !== this.zoneSerial) {
       this.zoneSerial = span.serial;
       this.zonesCompleted++;
-      this.score += SCORE.zone * this.multiplier;
+      this.score += SCORE.zone * lapAt(s.pp) * this.multiplier;
       cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
     }
 
@@ -315,6 +354,45 @@ export class Run {
 
     this.gen.generateUntil(s.p + GENERATE_AHEAD);
     if (this.ticks % 120 === 0) this.gen.prune(s.p);
+  }
+
+  /** Scripted prompts: hint ~1.1 s before each obstacle, slow-mo until the action is done. */
+  private updateTutorial(dt: number): void {
+    const s = this.player;
+    const ev = this.ev;
+    const steps = this.gen.tutorial;
+    const step = steps[this.tutorialStep];
+    if (step) {
+      if (!this.tutorialActive && step.front - (s.p + 0.2) <= speedAt(s.p) * 1.1) {
+        this.tutorialActive = true;
+        this.tutorialPerformed = false;
+        this.cfg.emit({ type: "hint", action: step.action });
+      }
+      if (this.tutorialActive && !this.tutorialPerformed) {
+        const done =
+          step.action === "jump" ? ev.jumped || !s.grounded
+          : step.action === "roll" ? s.roll > 0
+          : s.lane !== step.lane;
+        if (done) {
+          this.tutorialPerformed = true;
+          this.cfg.emit({ type: "hint", action: "done" });
+        }
+      }
+      if (this.tutorialActive && s.p - 0.2 > step.end) {
+        if (!this.tutorialPerformed) this.cfg.emit({ type: "hint", action: "done" });
+        this.tutorialActive = false;
+        this.tutorialPerformed = false;
+        this.tutorialStep++;
+      }
+    } else if (s.p >= this.gen.tutorialEnd) {
+      this.tutorialOver = true;
+      this.cfg.emit({ type: "hint", action: "complete" });
+    }
+    const target = this.tutorialActive && !this.tutorialPerformed ? TUTORIAL_SLOWMO : 1;
+    // Ease in quickly, out a little slower: smooth, not a hard cut.
+    const rate = target < this.timeScale ? 5 : 2.5;
+    this.timeScale += (target - this.timeScale) * Math.min(1, dt * rate);
+    if (this.tutorialOver) this.timeScale = 1;
   }
 
   private stumble(): boolean {
@@ -500,6 +578,7 @@ export class Run {
         for (const [other, i] of this.letterIndex) if (i > index) this.letterIndex.set(other, i - 1);
         if (index < 0) break;
         this.lettersCollected++;
+        this.lettersTotal++;
         cfg.emit({ type: "pickup", kind: "letra", letterIndex: index });
         if (this.lettersCollected >= WORD.length) {
           this.lettersCollected = 0;
@@ -567,6 +646,7 @@ export class Run {
       roofMetres: Math.round(this.roofMetres),
       powerups: this.powerupsTaken,
       wordsCompleted: this.wordsCompleted,
+      letters: this.lettersTotal,
     };
     if (this.crashedOn) summary.obstacle = this.crashedOn;
     return summary;

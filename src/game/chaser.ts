@@ -105,3 +105,83 @@ export class Chaser {
     return Math.min(1, Math.max(0, 1 - (this.gap - CHASER_HEELS) / (CHASER_FAR - CHASER_HEELS)));
   }
 }
+
+export interface PathSample {
+  x: number;
+  y: number;
+  rolling: boolean;
+  airborne: boolean;
+}
+
+/**
+ * The runner's recent path (by distance), so the waiter can follow it a few metres behind:
+ * same lane changes, jumps over the same barriers, onto the same roofs. Pure ring buffer.
+ */
+export class PathRecorder {
+  private readonly ps: Float64Array;
+  private readonly xs: Float32Array;
+  private readonly ys: Float32Array;
+  private readonly flags: Uint8Array;
+  private head = 0;
+  private count = 0;
+
+  constructor(private readonly capacity = 2048) {
+    this.ps = new Float64Array(capacity);
+    this.xs = new Float32Array(capacity);
+    this.ys = new Float32Array(capacity);
+    this.flags = new Uint8Array(capacity);
+  }
+
+  clear(): void {
+    this.head = 0;
+    this.count = 0;
+  }
+
+  private at(i: number): number {
+    // i-th oldest sample's slot.
+    return (this.head - this.count + i + this.capacity * 2) % this.capacity;
+  }
+
+  record(p: number, x: number, y: number, rolling: boolean, airborne: boolean): void {
+    if (this.count > 0) {
+      const last = this.ps[this.at(this.count - 1)] ?? 0;
+      if (p < last) this.clear(); // Went backwards (warp/new run): start over.
+      else if (p - last < 0.05) return;
+    }
+    const slot = this.head;
+    this.ps[slot] = p;
+    this.xs[slot] = x;
+    this.ys[slot] = y;
+    this.flags[slot] = (rolling ? 1 : 0) | (airborne ? 2 : 0);
+    this.head = (this.head + 1) % this.capacity;
+    this.count = Math.min(this.capacity, this.count + 1);
+  }
+
+  /** Where the runner was when at distance `p`. False if `p` is older than the history. */
+  sample(p: number, out: PathSample): boolean {
+    if (this.count === 0) return false;
+    const first = this.ps[this.at(0)] ?? 0;
+    if (p < first) return false;
+    let lo = 0;
+    let hi = this.count - 1;
+    if (p >= (this.ps[this.at(hi)] ?? 0)) lo = hi;
+    else {
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if ((this.ps[this.at(mid)] ?? 0) <= p) lo = mid;
+        else hi = mid;
+      }
+    }
+    const a = this.at(lo);
+    const b = this.at(Math.min(lo + 1, this.count - 1));
+    const pa = this.ps[a] ?? 0;
+    const pb = this.ps[b] ?? 0;
+    const t = pb > pa ? Math.min(1, Math.max(0, (p - pa) / (pb - pa))) : 0;
+    out.x = (this.xs[a] ?? 0) + ((this.xs[b] ?? 0) - (this.xs[a] ?? 0)) * t;
+    out.y = (this.ys[a] ?? 0) + ((this.ys[b] ?? 0) - (this.ys[a] ?? 0)) * t;
+    const f = this.flags[a] ?? 0;
+    out.rolling = (f & 1) !== 0;
+    out.airborne = (f & 2) !== 0;
+    return true;
+  }
+}

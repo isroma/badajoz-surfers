@@ -74,7 +74,7 @@ describe("parseSave", () => {
     const s = parseSave({ bellotas: 321, runsPlayed: 4 });
     expect(s.wallet).toBe(321);
     expect(s.seenHowTo).toBe(true);
-    expect(s.version).toBe(1);
+    expect(s.version).toBe(2);
   });
 });
 
@@ -88,13 +88,17 @@ describe("MetaStore", () => {
     expect(b.save.wallet).toBe(800);
     expect(b.save.upgrades.iman).toBe(1);
     expect(b.gameOptions.powerupDuration("iman")).toBe(12);
-    expect(JSON.parse(mem.getItem(SAVE_KEY) ?? "{}").version).toBe(1);
+    expect(JSON.parse(mem.getItem(SAVE_KEY) ?? "{}").version).toBe(2);
   });
 
-  it("migrates from the legacy key", () => {
+  it("migrates from the legacy keys", () => {
     const mem = new MemoryStorage();
     mem.setItem("simpa.save", JSON.stringify({ bellotas: 50 }));
     expect(new MetaStore(mem).save.wallet).toBe(50);
+    mem.setItem("simpa.save.v1", JSON.stringify({ version: 1, wallet: 70, runsPlayed: 2 }));
+    const m = new MetaStore(mem);
+    expect(m.save.wallet).toBe(70);
+    expect(m.save.tutorialDone).toBe(true);
   });
 
   it("never throws without storage or with broken storage", () => {
@@ -119,12 +123,14 @@ describe("MetaStore", () => {
     m.beginRun();
     const r = m.finishRun({ ...emptyRunStats(), runs: 1, bellotas: 77, score: 900, distance: 420 });
     expect(r.bellotasEarned).toBe(77);
-    expect(r.wallet).toBe(77);
+    // 77 bellotas plus the "Primer simpa" achievement.
+    expect(r.wallet).toBe(77 + r.bonus);
+    expect(r.achievements.map((a) => a.id)).toContain("primer-simpa");
     expect(r.newBestScore).toBe(true);
     expect(m.save.bestDistance).toBe(420);
     expect(m.save.runsPlayed).toBe(1);
     const r2 = m.finishRun({ ...emptyRunStats(), runs: 1, bellotas: 3, score: 100 });
     expect(r2.newBestScore).toBe(false);
-    expect(m.save.wallet).toBe(80);
+    expect(m.save.wallet).toBe(80 + r.bonus + r2.bonus);
   });
 });

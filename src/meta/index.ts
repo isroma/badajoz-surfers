@@ -4,7 +4,22 @@
  */
 import type { GameOptions, PowerupKind } from "../contracts";
 import { baseMultiplier, powerupDuration, upgradeCost } from "./economy";
-import { commitRun, describeMission, emptyRunStats, updateLive, type MissionView, type RunStats } from "./missions";
+import { formatInt } from "./format";
+import { commitRun, describeMission, emptyRunStats, getTemplate, updateLive, type MissionView, type RunStats } from "./missions";
+import {
+  ACHIEVEMENTS,
+  addRecord,
+  addRunToLifetime,
+  dailyChallenge,
+  dailyCheck,
+  dailyCommit,
+  dailyFor,
+  dailyLive,
+  dayKey,
+  newAchievements,
+  type AchievementDef,
+  type DailyChallenge,
+} from "./progress";
 import { LEGACY_KEYS, SAVE_KEY, defaultSave, parseSaveJson, type SaveData, type Settings } from "./save";
 
 export interface KeyValueStorage {
@@ -35,6 +50,28 @@ export interface RunResult {
   completed: MissionView[];
   setCompleted: boolean;
   multiplier: number;
+  /** Achievements unlocked during or at the end of this run. */
+  achievements: AchievementDef[];
+  /** The daily challenge, when this run completed it. */
+  daily: DailyChallenge | null;
+  /** Bellotas from achievements and the daily challenge (already in the wallet). */
+  bonus: number;
+  /** Position in the top-5 records (0 = best), or -1. */
+  recordRank: number;
+}
+
+/** Things completed while a run is in progress, for toasts. */
+export interface LiveUnlocks {
+  missions: MissionView[];
+  achievements: AchievementDef[];
+  daily: DailyChallenge | null;
+}
+
+export interface DailyView extends DailyChallenge {
+  progress: number;
+  done: boolean;
+  label: string;
+  ratio: number;
 }
 
 export class MetaStore {
@@ -43,9 +80,14 @@ export class MetaStore {
   private readonly listeners = new Set<() => void>();
   /** Missions completed during the current run, kept for the game-over receipt. */
   private runCompleted: MissionView[] = [];
+  private runAchievements: AchievementDef[] = [];
+  private runDaily: DailyChallenge | null = null;
+  private runBonus = 0;
+  private readonly now: () => Date;
 
-  constructor(storage: KeyValueStorage | null = browserStorage()) {
+  constructor(storage: KeyValueStorage | null = browserStorage(), now: () => Date = () => new Date()) {
     this.storage = storage;
+    this.now = now;
     this.data = this.load();
   }
 
@@ -93,7 +135,45 @@ export class MetaStore {
   readonly gameOptions: GameOptions = {
     powerupDuration: (kind) => powerupDuration(kind, this.data.upgrades[kind]),
     baseMultiplier: () => this.multiplier,
+    tutorial: () => !this.data.tutorialDone,
   };
+
+  completeTutorial(): void {
+    if (this.data.tutorialDone) return;
+    this.data = { ...this.data, tutorialDone: true, seenHowTo: true };
+    this.persist();
+  }
+
+  get today(): string {
+    return dayKey(this.now());
+  }
+
+  dailyView(run: RunStats = emptyRunStats()): DailyView {
+    const date = this.today;
+    const c = dailyChallenge(date);
+    const state = dailyFor(this.data.daily, date);
+    const progress = Math.floor(dailyLive(state, run, date));
+    const done = state.done || progress >= c.target;
+    const tpl = getTemplate(c.templateId);
+    const label = done ? "¡Hecho!" : tpl?.label ? tpl.label(progress, c.target) : `${formatInt(progress)} / ${formatInt(c.target)}`;
+    return { ...c, progress, done, label, ratio: c.target > 0 ? Math.min(1, progress / c.target) : 1 };
+  }
+
+  achievementsUnlocked(): ReadonlySet<string> {
+    return new Set(this.data.achievements);
+  }
+
+  private unlock(defs: AchievementDef[]): void {
+    if (defs.length === 0) return;
+    const reward = defs.reduce((n, a) => n + a.reward, 0);
+    this.runAchievements.push(...defs);
+    this.runBonus += reward;
+    this.data = {
+      ...this.data,
+      wallet: this.data.wallet + reward,
+      achievements: [...this.data.achievements, ...defs.map((a) => a.id)],
+    };
+  }
 
   updateSettings(patch: Partial<Settings>): void {
     this.data = { ...this.data, settings: { ...this.data.settings, ...patch } };
@@ -127,17 +207,44 @@ export class MetaStore {
 
   beginRun(): void {
     this.runCompleted = [];
+    this.runAchievements = [];
+    this.runDaily = null;
+    this.runBonus = 0;
   }
 
-  /** Check the run in progress; returns missions that just got completed (for the toast). */
-  updateRun(run: RunStats): MissionView[] {
+  /** Check the run in progress; returns what just got completed (for toasts). */
+  updateRun(run: RunStats): LiveUnlocks {
+    const out: LiveUnlocks = { missions: [], achievements: [], daily: null };
+    let changed = false;
     const { state, newlyDone } = updateLive(this.data.missions, run);
-    if (newlyDone.length === 0) return [];
-    const views = this.missionViews(run).filter((v) => newlyDone.includes(v.id));
-    this.runCompleted.push(...views);
-    this.data = { ...this.data, missions: state };
-    this.persist();
-    return views;
+    if (newlyDone.length > 0) {
+      out.missions = this.missionViews(run).filter((v) => newlyDone.includes(v.id));
+      this.runCompleted.push(...out.missions);
+      this.data = { ...this.data, missions: state };
+      changed = true;
+    }
+    const date = this.today;
+    const d = dailyCheck(this.data.daily, run, date);
+    if (d.completed) {
+      out.daily = dailyChallenge(date);
+      this.awardDaily(out.daily);
+      this.data = { ...this.data, daily: d.state };
+      changed = true;
+    }
+    const ach = newAchievements(this.data.achievements, addRunToLifetime(this.data.lifetime, run));
+    if (ach.length > 0) {
+      this.unlock(ach);
+      out.achievements = ach;
+      changed = true;
+    }
+    if (changed) this.persist();
+    return out;
+  }
+
+  private awardDaily(c: DailyChallenge): void {
+    this.runDaily = c;
+    this.runBonus += c.reward;
+    this.data = { ...this.data, wallet: this.data.wallet + c.reward };
   }
 
   /** Commit a finished run. Call exactly once per run. */
@@ -159,18 +266,29 @@ export class MetaStore {
       missions: state,
       seenHowTo: true,
     };
+    const date = this.today;
+    const d = dailyCommit(this.data.daily, run, date);
+    if (d.completed) this.awardDaily(dailyChallenge(date));
+    const lifetime = addRunToLifetime(this.data.lifetime, run);
+    const rec = addRecord(this.data.records, { date, score: Math.floor(run.score), distance: Math.floor(run.distance), zones: run.zones });
+    this.data = { ...this.data, daily: d.state, lifetime, records: rec.records };
+    this.unlock(newAchievements(this.data.achievements, lifetime));
     this.persist();
-    const completed = this.runCompleted;
-    this.runCompleted = [];
-    return {
+    const result: RunResult = {
       bellotasEarned: earned,
       wallet: this.data.wallet,
       newBestScore: newBestScore && run.score > 0,
       newBestDistance,
-      completed,
+      completed: this.runCompleted,
       setCompleted,
       multiplier: this.multiplier,
+      achievements: this.runAchievements,
+      daily: this.runDaily,
+      bonus: this.runBonus,
+      recordRank: rec.rank,
     };
+    this.beginRun();
+    return result;
   }
 
   addBellotas(n: number): void {
@@ -192,4 +310,6 @@ export class MetaStore {
 }
 
 export type { MissionView, RunStats } from "./missions";
+export type { AchievementDef, DailyChallenge, RunRecord } from "./progress";
+export { ACHIEVEMENTS };
 export { emptyRunStats } from "./missions";

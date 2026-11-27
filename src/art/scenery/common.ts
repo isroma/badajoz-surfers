@@ -157,7 +157,7 @@ export function planter(s: Seg, side: Side, x: number, z: number, color = 0xb565
 }
 
 /** Simple standing figure (pedestrian) for life on pavements / terraces. */
-export function person(s: Seg, x: number, z: number, ry: number, seated = false): void {
+export function person(s: Seg, x: number, z: number, ry: number, seated = false, waving = false): void {
   const b = s.b;
   const r = s.r;
   const top = r.pick([0xd62828, 0x2a9d8f, 0xf4a261, 0x264653, 0xe9c46a, 0xffffff, 0x6a4c93, 0x3a86ff]);
@@ -174,7 +174,10 @@ export function person(s: Seg, x: number, z: number, ry: number, seated = false)
     b.boxB(0.09, 0, 0, 0.13, 0.85, 0.15, legs, SOLID);
     b.add(T.capsule(0.9, 2, 6), xf(0, 1.15, 0, 0.21, 0.26, 0.15), top, SOLID);
     b.boxB(-0.27, 0.75, 0, 0.09, 0.6, 0.1, top, SOLID);
-    b.boxB(0.27, 0.75, 0, 0.09, 0.6, 0.1, top, SOLID);
+    if (waving) {
+      b.add(T.box, xf(0.36, 1.62, 0, 0.09, 0.62, 0.1, 0, 0, -0.35), top, SOLID);
+      b.sphere(0.47, 1.95, 0, 0.06, 0.07, 0.05, skin, SOLID, 5, 3);
+    } else b.boxB(0.27, 0.75, 0, 0.09, 0.6, 0.1, top, SOLID);
     b.sphere(0, 1.62, 0, 0.14, 0.16, 0.14, skin, SOLID, 6, 5);
     b.add(T.dome(6, 3), xf(0, 1.66, 0.01, 0.15, 0.12, 0.15), r.pick([0x2b2420, 0x6b4423, 0xd8c3a5, 0x111111]), SOLID);
   }
@@ -377,7 +380,17 @@ export function building(s: Seg, o: BuildingOpts): void {
       const za = o.z0 - i * sw;
       const zm = za - sw / 2;
       // glazed shop front with a door
-      b.span(xf0 - sd * 0.06, xf0 + sd * 0.02, 0.5, gh - 0.6, za - 0.4, za - sw + 0.4, 0x30404f, GLASS);
+      const old = o.style === "viejo" || o.style === "noble";
+      const glazeTop = gh - 0.6;
+      b.span(xf0 - sd * 0.06, xf0 + sd * 0.02, 0.5, glazeTop, za - 0.4, za - sw + 0.4, old ? 0x7a6a58 : 0x5f6a72, GLASS);
+      // half-lowered roller shutter (persiana metálica) or a wooden shop front
+      const shutter = old ? 0x4f6b4a : 0xb7babd;
+      const sh = (glazeTop - 0.5) * (old ? 0.22 : 0.38);
+      b.span(xf0 - sd * 0.09, xf0, glazeTop - sh, glazeTop, za - 0.35, za - sw + 0.35, shutter, mat);
+      for (let q = 1; q < 4; q++) b.span(xf0 - sd * 0.1, xf0 - sd * 0.08, glazeTop - (sh * q) / 4 - 0.02, glazeTop - (sh * q) / 4, za - 0.35, za - sw + 0.35, darken(shutter, 0.8), mat);
+      // window mullions and a stall-riser
+      for (const t of [0.25, 0.75]) b.span(xf0 - sd * 0.1, xf0, 0.5, glazeTop, za - sw * t + 0.05, za - sw * t - 0.05, old ? 0x3e2a1c : 0x8a8f96, mat);
+      b.span(xf0 - sd * 0.1, xf0, 0.15, 0.55, za - 0.4, za - sw + 0.4, old ? 0x3e2a1c : 0x8a8f96, mat);
       b.span(xf0 - sd * 0.08, xf0, 0.15, 2.4, zm - 0.5, zm + 0.5, 0x5a3a24, mat);
       if (s.night) b.span(xf0 - sd * 0.065, xf0 - sd * 0.05, 0.6, gh - 0.8, za - 0.6, zm + 0.7, 0xffd48a, GLOW);
       if (name) b.sign(name, xf0 - sd * 0.14, gh - 0.75, zm, 0.6, ry);
@@ -456,4 +469,100 @@ export function bunting(s: Seg, z: number, half: number, minY = 4.6, colors = [0
   }
   b.beam([-half, topY, z], [0, topY - 0.7, z], 0.02, 0x444444, FAR);
   b.beam([0, topY - 0.7, z], [half, topY, z], 0.02, 0x444444, FAR);
+}
+
+// ---------------------------------------------------------------------------
+// Zone handover: every zone starts with the same intersection
+// ---------------------------------------------------------------------------
+
+/** Length of the junction strip at the start of each zone's first segment. */
+export const JUNCTION = 10;
+
+/**
+ * A crossroads at z 0..-JUNCTION: corner pavements, a cross street glimpsed on both sides,
+ * a zebra crossing on the main road, pedestrian traffic lights and the zone's street sign.
+ * The zone's own scenery is clipped away from this strip (see Builder.clip).
+ */
+export function junction(s: Seg, plaque: string, surface: SurfaceName = "paving", paveTint = 0xe6e0d4): void {
+  const b = s.b;
+  const r = s.r;
+  const zA = -1.6;
+  const zB = -8.4;
+  for (const side of [-1, 1] as Side[]) {
+    // corner pavement along the main road
+    pavement(s, side, RW + 0.25, 7, surface, paveTint, 0.15, 0, -JUNCTION);
+    // cross street: asphalt, pavements either side, centre dashes
+    groundQuad(s, side * 7, side * 95, zA, zB, 0.03, "asphalt", 0x6b7078, 5);
+    s.b.span(side * 7, side * 95, -0.4, 0.02, zA, zB, 0x55585e, FAR);
+    for (const [z0, z1] of [[0, zA], [zB, -JUNCTION]] as const) {
+      groundQuad(s, side * 7, side * 95, z0, z1, 0.15, surface, paveTint, 2);
+      s.b.span(side * 7, side * 95, -0.4, 0.14, z0, z1, 0x9a968e, FAR);
+    }
+    for (let x = 9; x < 90; x += 5) b.quad(xf(side * x, 0.045, (zA + zB) / 2, 2.5, 0.14, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
+    // zebra across the cross street mouth
+    for (let k = 0; k < 6; k++) b.quad(xf(side * 8.2, 0.05, zA - 0.5 - k * 1.1, 1.8, 0.55, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
+    flat(s, side, 95, 170, 0.1, 0xcfc4ae, 0, -JUNCTION);
+    // the cross street ends at a facade far away; a few trees line it
+    b.span(side * 100, side * 118, 0, r.range(12, 22), 2, -12, r.pick([0xece3d2, 0xe2c9a3, 0xf2efe8]), FAR);
+    for (const x of [16, 34, 52]) {
+      for (const z of [-0.8, -9.2]) {
+        b.cyl(side * (x + r.range(-2, 2)), 0.15, z, 0.14, 2.6, 0x7a6450, 5, FAR);
+        b.blob(side * x, 3.6, z, 1.6, 1.3, 1.6, r.pick([0x5f9e3a, 0x4f8a33, 0x6fae44]), FAR, r.range(0, 3));
+      }
+    }
+    // pedestrian lights at the corners, facing the oncoming runner and back
+    for (const [z, ry] of [[-9.4, 0], [-0.6, Math.PI]] as const) {
+      const x = side * 4.75;
+      b.cyl(x, 0.15, z, 0.07, 3.1, 0x2a2d30, 6, SOLID);
+      b.add(T.box, xf(x, 2.75, z, 0.32, 0.75, 0.22, 0, ry, 0), 0x2a2d30, SOLID);
+      const face = ry === 0 ? 0.12 : -0.12;
+      b.box(x, 2.95, z + face, 0.18, 0.18, 0.02, 0x3a1010, SOLID);
+      b.box(x, 2.6, z + face, 0.18, 0.18, 0.02, 0x33ff77, GLOW);
+    }
+    // a pedestrian waiting at the kerb
+    if (r.chance(0.7)) person(s, side * r.range(5.2, 6.5), -r.range(1, 9), side > 0 ? -Math.PI / 2 : Math.PI / 2, false, r.chance(0.3));
+  }
+  // zebra crossing on the main road
+  for (let k = 0; k < 8; k++) b.quad(xf(-3.6 + k * 1.03, 0.017, -5, 0.55, 3.4, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
+  b.quad(xf(0, 0.017, -7.1, RW * 2 - 0.4, 0.3, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
+  // street name sign for the zone, readable when approaching (kept outside the road)
+  b.cyl(4.85, 0.15, -9.8, 0.06, 3.3, 0x555555, 6, SOLID);
+  const w = 0.5 * 5;
+  b.sign(plaque, 4.85 + w / 2 - 0.1, 3.05, -9.75, 0.5, 0, w);
+  b.sign(plaque, 4.85 + w / 2 - 0.1, 3.05, -9.85, 0.5, Math.PI, w);
+}
+
+/** White stork on its big twig nest (an Extremadura signature on towers and chimneys). */
+export function storkNest(b: Builder, x: number, y: number, z: number, ry = 0, two = false): void {
+  b.cyl(x, y, z, 0.95, 0.45, 0x6b5136, 7, SOLID, 1.1);
+  b.cyl(x, y + 0.4, z, 0.75, 0.08, 0x8a6a45, 7, SOLID);
+  const bird = (dx: number, dz: number, a: number, standing: boolean): void => {
+    b.at(x + dx, y + 0.45, z + dz, ry + a);
+    if (standing) {
+      b.beam([-0.06, 0, 0], [-0.06, 0.45, 0], 0.03, 0xd8432c, SOLID);
+      b.beam([0.06, 0, 0], [0.06, 0.45, 0], 0.03, 0xd8432c, SOLID);
+    }
+    const h = standing ? 0.45 : 0.05;
+    b.sphere(0, h + 0.22, 0, 0.2, 0.2, 0.36, 0xf6f6f2, SOLID, 7, 5);
+    b.add(T.box, xf(0, h + 0.24, 0.12, 0.42, 0.12, 0.34), 0x1a1a1a, SOLID); // black flight feathers
+    b.beam([0, h + 0.3, -0.25], [0, h + 0.68, -0.34], 0.07, 0xf6f6f2, SOLID);
+    b.sphere(0, h + 0.7, -0.36, 0.08, 0.08, 0.1, 0xf6f6f2, SOLID, 5, 4);
+    b.beam([0, h + 0.68, -0.42], [0, h + 0.62, -0.68], 0.035, 0xe8532c, SOLID);
+    b.pop();
+  };
+  bird(0.1, 0.05, 0.3, true);
+  if (two) bird(-0.3, -0.2, 2.2, false);
+}
+
+/** A small flock of pigeons pecking on a plaza. */
+export function pigeons(s: Seg, x: number, z: number, n = 6, y = 0.15): void {
+  for (let k = 0; k < n; k++) {
+    const px = x + s.r.range(-1.6, 1.6);
+    const pz = z + s.r.range(-1.6, 1.6);
+    const a = s.r.range(0, Math.PI * 2);
+    s.b.at(px, y, pz, a);
+    s.b.sphere(0, 0.1, 0, 0.08, 0.08, 0.13, s.r.pick([0x8a8f99, 0x9aa0a8, 0x6f747d]), SOLID, 5, 4);
+    s.b.sphere(0, 0.2, -0.1, 0.05, 0.05, 0.05, 0x5c626b, SOLID, 4, 3);
+    s.b.pop();
+  }
 }

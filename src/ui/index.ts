@@ -6,19 +6,23 @@
 import "./styles.css";
 import { POWERUPS, ZONES, type GameApi, type GameEvent, type GameState, type HudSnapshot, type RunSummary, type Shell } from "../contracts";
 import { AudioEngine } from "../audio";
-import { MetaStore, emptyRunStats, type MissionView, type RunResult, type RunStats } from "../meta";
+import { MetaStore, emptyRunStats, type LiveUnlocks, type RunResult, type RunStats } from "../meta";
+import { formatInt } from "../meta/format";
 import { button, h, setUiSound } from "./dom";
 import { Fx } from "./fx";
 import { Hud } from "./hud";
-import { GLYPH_CHECK, GLYPH_FLAG, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
+import { GLYPH_CHECK, GLYPH_FLAG, GLYPH_MEDAL, ICON_BELLOTA, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
 import {
+  achievementsScreen,
   gameoverScreen,
+  recordsScreen,
   howtoScreen,
   menuScreen,
   missionsScreen,
   pauseScreen,
   shopScreen,
   syncBindings,
+  type MapPosition,
   type PanelId,
   type ScreenActions,
   type ScreenCtx,
@@ -55,7 +59,6 @@ export function createShell(root: HTMLElement): Shell {
   let unsubscribe: (() => void) | null = null;
   let state: GameState = "menu";
   let panel: OpenPanel | null = null;
-  let howtoAutoShown = false;
 
   // ---------------------------------------------------------------- run tracking
   const run = {
@@ -66,6 +69,8 @@ export function createShell(root: HTMLElement): Shell {
     result: null as { summary: RunSummary; result: RunResult } | null,
     lastNearMiss: 0,
     gameoverTimer: 0,
+    /** Achievement ids (and "daily") already toasted in this run. */
+    toasted: new Set<string>(),
   };
   let lastHud: HudSnapshot | null = null;
 
@@ -76,6 +81,7 @@ export function createShell(root: HTMLElement): Shell {
     run.stats = emptyRunStats();
     run.result = null;
     run.lastCheck = 0;
+    run.toasted.clear();
     lastHud = null;
     store.beginRun();
     hud.reset();
@@ -89,10 +95,10 @@ export function createShell(root: HTMLElement): Shell {
     jumps: Math.max(s.jumps, run.stats.jumps),
     rolls: Math.max(s.rolls, run.stats.rolls),
     nearMisses: Math.max(s.nearMisses, run.stats.nearMisses),
-    roofMetres: s.roofMetres,
+    roofMetres: Math.max(s.roofMetres, run.stats.roofMetres),
     powerups: Math.max(s.powerups, run.stats.powerups),
     words: Math.max(s.wordsCompleted, run.stats.words),
-    letters: run.stats.letters,
+    letters: Math.max(s.letters ?? 0, run.stats.letters),
     zones: Math.max(s.zonesCompleted, run.stats.zones),
     runs: 1,
   });
@@ -106,6 +112,7 @@ export function createShell(root: HTMLElement): Shell {
         run.stats.bellotas = snap.bellotas;
         run.stats.distance = snap.distance;
         run.stats.score = snap.score;
+        run.stats.roofMetres = snap.roofMetres ?? run.stats.roofMetres;
       }
     } catch {
       // keep the last values seen by the frame loop
@@ -122,9 +129,10 @@ export function createShell(root: HTMLElement): Shell {
     jumps: run.stats.jumps,
     rolls: run.stats.rolls,
     nearMisses: run.stats.nearMisses,
-    roofMetres: 0,
+    roofMetres: run.stats.roofMetres,
     powerups: run.stats.powerups,
     wordsCompleted: run.stats.words,
+    letters: run.stats.letters,
   });
 
   /** Commit the run to the save. Runs exactly once per run whatever the event order. */
@@ -136,32 +144,44 @@ export function createShell(root: HTMLElement): Shell {
     window.clearTimeout(run.gameoverTimer);
     const result = store.finishRun(statsFromSummary(summary));
     run.result = { summary, result };
+    // Achievements unlocked by the final tally (e.g. "Primer simpa") weren't toasted during the run.
+    const late = result.achievements.filter((a) => !run.toasted.has(a.id));
+    if (late.length || (result.daily && !run.toasted.has("daily"))) {
+      unlockToasts({ missions: [], achievements: late, daily: run.toasted.has("daily") ? null : result.daily });
+    }
     if (state === "gameover") renderBase();
   };
 
-  const missionToast = (views: MissionView[]): void => {
-    for (const v of views) {
+  const unlockToasts = (u: LiveUnlocks): void => {
+    for (const a of u.achievements) run.toasted.add(a.id);
+    if (u.daily) run.toasted.add("daily");
+    for (const v of u.missions) {
       fx.toast({ title: "¡Misión cumplida!", text: v.text, icon: GLYPH_CHECK, glyph: true, color: "#5cc25b", variant: "mission", duration: 3200 });
-      audio.play("mission");
     }
+    if (u.daily) {
+      fx.toast({ title: "¡Reto del día superado!", text: `+${formatInt(u.daily.reward)} bellotas`, icon: ICON_BELLOTA, color: "#ffc53d", variant: "gold", duration: 3400 });
+    }
+    for (const a of u.achievements) {
+      fx.toast({ title: `Logro: ${a.name}`, text: `${a.description} · +${formatInt(a.reward)}`, icon: GLYPH_MEDAL, glyph: true, color: "#ffc53d", variant: "gold", duration: 3400 });
+    }
+    if (u.missions.length || u.daily || u.achievements.length) audio.play("mission");
   };
 
   const checkMissions = (): void => {
     if (!run.active) return;
-    missionToast(store.updateRun(run.stats));
+    // While running, `runs` is 0: "Juega N carreras" only counts finished runs.
+    unlockToasts(store.updateRun({ ...run.stats, runs: 0 }));
   };
 
   // ---------------------------------------------------------------- actions
   const actions: ScreenActions = {
-    play: () => {
-      if (!store.save.seenHowTo) openPanel("howto");
-      else game?.start();
-    },
+    // On first launch this starts the tutorial run (GameOptions.tutorial()); no blocking panel.
+    play: () => startRun(),
     openPanel: (id) => openPanel(id),
     closePanel: () => closePanel(),
     resume: () => game?.resume(),
     toMenu: () => game?.toMenu(),
-    restart: () => game?.start(),
+    restart: () => startRun(),
     buy: (kind) => {
       if (store.buyUpgrade(kind)) {
         audio.play("purchase");
@@ -177,30 +197,61 @@ export function createShell(root: HTMLElement): Shell {
   const ctx: ScreenCtx = { store, actions };
 
   // ---------------------------------------------------------------- screens
+  const mapPos = (snap: HudSnapshot): MapPosition => ({
+    zoneIndex: Math.max(0, ZONES.findIndex((z) => z.id === snap.zone.id)),
+    progress: snap.zoneProgress,
+    lap: snap.lap,
+  });
+  const currentPos = (): MapPosition | null => {
+    try {
+      const snap = game?.getHud();
+      if (snap) lastHud = snap;
+    } catch {
+      // use the last snapshot
+    }
+    return lastHud ? mapPos(lastHud) : null;
+  };
+  /** Where the run ended: from the summary, refined with the last HUD of the same zone. */
+  const endPos = (s: RunSummary): MapPosition => {
+    const zoneIndex = s.zonesCompleted % ZONES.length;
+    const sameZone = lastHud && ZONES[zoneIndex]?.id === lastHud.zone.id;
+    return { zoneIndex, progress: sameZone && lastHud ? lastHud.zoneProgress : 0, lap: s.lap };
+  };
   const renderBase = (): void => {
     let el: HTMLElement | null = null;
     if (state === "menu") el = menuScreen(ctx);
-    else if (state === "paused") el = pauseScreen(ctx);
-    else if (state === "gameover" && run.result) el = gameoverScreen(ctx, run.result.summary, run.result.result);
+    else if (state === "paused") el = pauseScreen(ctx, currentPos());
+    else if (state === "gameover" && run.result) el = gameoverScreen(ctx, run.result.summary, run.result.result, endPos(run.result.summary));
     baseLayer.replaceChildren(...(el ? [el] : []));
   };
 
-  function openPanel(id: PanelId, firstTime = false): void {
+  /** Start a run from the menu or game over. The engine ignores it in any other state. */
+  function startRun(): void {
+    if (state !== "menu" && state !== "gameover") return;
+    closePanel(false);
+    try {
+      game?.start();
+    } catch (err) {
+      // Never leave the player stuck on a closed panel without telling anyone.
+      console.error("[shell] game.start() failed", err);
+    }
+  }
+
+  function openPanel(id: PanelId): void {
     if (state === "playing" || state === "paused") return;
-    const first = id === "howto" && (firstTime || !store.save.seenHowTo);
     closePanel(false);
     if (id === "shop") {
       const s = shopScreen(ctx);
       panel = { id, el: s.el, update: s.update };
     } else if (id === "missions") {
       panel = { id, el: missionsScreen(ctx) };
+    } else if (id === "achievements") {
+      panel = { id, el: achievementsScreen(ctx) };
+    } else if (id === "records") {
+      panel = { id, el: recordsScreen(ctx) };
     } else {
-      const done = (): void => {
-        store.markHowToSeen();
-        closePanel();
-        if (first && (state === "menu" || state === "gameover")) game?.start();
-      };
-      panel = { id, el: howtoScreen(first, done), done };
+      const done = (): void => closePanel();
+      panel = { id, el: howtoScreen(done), done };
     }
     panelLayer.replaceChildren(panel.el);
   }
@@ -244,6 +295,7 @@ export function createShell(root: HTMLElement): Shell {
   const applyState = (next: GameState): void => {
     const prev = state;
     state = next;
+    root.dataset["state"] = next;
     if (next !== "gameover") window.clearTimeout(run.gameoverTimer);
     hud.show(next === "playing" || next === "paused");
     pauseBtn.hidden = next !== "playing";
@@ -252,11 +304,8 @@ export function createShell(root: HTMLElement): Shell {
       case "menu":
         if (run.active) endRun(liveSummary());
         fx.clear();
+        audio.setZone(0);
         audio.setMusicMode("menu");
-        if (!store.save.seenHowTo && !howtoAutoShown) {
-          howtoAutoShown = true;
-          openPanel("howto", true);
-        }
         break;
       case "playing":
         if (prev !== "paused") beginRun();
@@ -285,9 +334,24 @@ export function createShell(root: HTMLElement): Shell {
         if (e.state !== state) applyState(e.state);
         break;
       case "countdown":
-        beginRun();
+        // A countdown after a pause belongs to the same run.
+        if (!e.resume) beginRun();
         fx.countdown(e.value);
         audio.play(e.value > 0 ? "countdown" : "go");
+        break;
+      case "hint":
+        if (e.action === "done") {
+          fx.hideHint(true);
+          audio.play("hintDone");
+        } else if (e.action === "complete") {
+          fx.hideHint(false);
+          store.completeTutorial();
+          fx.toast({ title: "¡Ya sabes lo básico!", text: "Ahora, a correr.", icon: GLYPH_CHECK, glyph: true, color: "#5cc25b", variant: "mission", duration: 3200, key: "tutorial" });
+          audio.play("mission");
+        } else {
+          fx.showHint(e.action);
+          audio.play("hint");
+        }
         break;
       case "jump":
         run.stats.jumps++;
@@ -364,6 +428,7 @@ export function createShell(root: HTMLElement): Shell {
       case "zone": {
         if (e.first) beginRun();
         else run.stats.zones++;
+        audio.setZone(Math.max(0, ZONES.findIndex((z) => z.id === e.zone.id)));
         audio.play("zone");
         const lapStart = e.lap > 1 && e.zone.id === ZONES[0]?.id;
         fx.zoneBanner(
@@ -398,6 +463,7 @@ export function createShell(root: HTMLElement): Shell {
     }
     lastHud = snap;
     hud.render(snap);
+    if (run.active && Number.isFinite(snap.roofMetres)) run.stats.roofMetres = snap.roofMetres;
     if (state !== "playing") return;
     audio.setSpeed(snap.speed);
     audio.setPowerup(snap.powerups.length > 0);
@@ -439,7 +505,6 @@ export function createShell(root: HTMLElement): Shell {
   window.__shell = {
     resetSave: () => {
       store.reset();
-      howtoAutoShown = false;
       closePanel(false);
       renderBase();
     },

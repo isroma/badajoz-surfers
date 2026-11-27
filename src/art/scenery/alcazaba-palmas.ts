@@ -11,7 +11,7 @@
 import { alcazabaHill, alcazabaWall, espantaperros, puertaPalmas } from "../landmarks/alcazaba";
 import { FAR, SOLID } from "../materials";
 import {
-  L, RW, building, cypress, flat, groundQuad, lampClassic, palm, pavement, person, pine, road, shrub, type Seg, type Side,
+  L, RW, building, cypress, flat, pigeons, storkNest, groundQuad, lampClassic, palm, pavement, person, pine, road, shrub, type Seg, type Side,
 } from "./common";
 import { river } from "./puente-real";
 
@@ -56,6 +56,7 @@ function alcazabaSide(s: Seg): void {
   const towerZ = i % 2 === 0 ? -12 : -30;
   alcazabaWall(b, 1, 18, 0, -L, 8, 10, i === 3 ? undefined : towerZ);
   if (i === 3) espantaperros(b, 14.5, -20, 6.5);
+  else if (i % 2 === 1) storkNest(b, 17.2, 22.05, towerZ, 0.4, i === 1);
   // the inner keep area beyond the wall: higher ground, a couple of palace roofs
   b.span(20.4, 160, -0.5, 14, 0, -L, 0xb39c60, FAR);
   if (i % 2 === 1) b.span(30, 44, 14, 21, -8, -26, 0xe9dcc4, FAR);
@@ -101,6 +102,8 @@ function gateSegment(s: Seg): void {
     flat(s, side, 40, 160, 0.1, 0x93b05a);
   }
   puertaPalmas(b, -20);
+  storkNest(b, -9.3, 16.75, -20, 1.2, true);
+  pigeons(s, -8, -8, 6, 0.12);
   b.sign("c-palmas", -13.0, 3.0, -16.4, 0.45, 0);
 }
 
@@ -125,8 +128,16 @@ function bridge(s: Seg): void {
           [7.4, -2.5, pz + 2.2], [8.8, -2.5, pz], [8.8, -2.5, pz], [7.4, -2.5, pz - 2.2]]
         : [[-9.6, WATER_Y - 1, pz], [-7.4, WATER_Y - 1, pz + 2.2], [-7.4, WATER_Y - 1, pz - 2.2], [-9.6, WATER_Y - 1, pz],
           [-8.8, -2.5, pz], [-7.4, -2.5, pz + 2.2], [-7.4, -2.5, pz - 2.2], [-8.8, -2.5, pz]], BRIDGE_STONE, FAR);
-      // old lamp on the parapet above each pier
-      lampClassic(s, side, 5.95, pz, 3.6, 1.15);
+      // the cutwater rises to the deck as a triangular refuge bay beside the parapet
+      const ax = side * 6.2;
+      const tx = side * 8.6;
+      b.hexa(side > 0
+        ? [[6.2, -2.5, pz + 2.4], [8.6, -2.5, pz], [8.6, -2.5, pz], [6.2, -2.5, pz - 2.4], [6.2, 1.15, pz + 2.4], [8.6, 1.15, pz], [8.6, 1.15, pz], [6.2, 1.15, pz - 2.4]]
+        : [[-8.6, -2.5, pz], [-6.2, -2.5, pz + 2.4], [-6.2, -2.5, pz - 2.4], [-8.6, -2.5, pz], [-8.6, 1.15, pz], [-6.2, 1.15, pz + 2.4], [-6.2, 1.15, pz - 2.4], [-8.6, 1.15, pz]], 0xd6c39c, SOLID);
+      b.beam([ax, 1.2, pz + 2.4], [tx, 1.2, pz], 0.25, 0xe2d2ad, SOLID);
+      b.beam([tx, 1.2, pz], [ax, 1.2, pz - 2.4], 0.25, 0xe2d2ad, SOLID);
+      // tall old lamp on the pier top
+      lampClassic(s, side, 7.0, pz, 5.4, 1.15);
     }
     // spandrel wall: solid at the top, open arches (dark) below between piers
     b.span(side * 5.7, side * 6.2, -3.2, -0.2, 0, -L, BRIDGE_STONE, FAR);
@@ -148,6 +159,26 @@ function bridge(s: Seg): void {
   // deck underside
   b.span(-6.2, 6.2, -3.4, -0.6, 0, -L, 0xa8957a, FAR);
   river(s, WATER_Y, 120, "none");
+  // the neighbouring bridge downstream: a long row of arches seen side-on across the water
+  {
+    const bx = -150;
+    const top = 3;
+    b.span(bx - 4, bx + 4, top - 1.6, top, 0, -L, 0xcbb894, FAR);
+    b.span(bx + 4, bx + 4.3, top, top + 1.0, 0, -L, 0xd6c49e, FAR);
+    for (const pz of [-10, -30]) {
+      b.span(bx - 3.5, bx + 3.5, WATER_Y - 1, top - 1.6, pz + 1.6, pz - 1.6, 0xbfa982, FAR);
+      for (let k = 0; k < 10; k++) {
+        // spandrel slices above each half-arch (semicircle radius 8.4 between piers)
+        const a0 = (k / 10) * Math.PI;
+        const a1 = ((k + 1) / 10) * Math.PI;
+        const z0 = pz - 1.6 - 8.4 + Math.cos(a0) * -8.4 + 16.8 - 8.4;
+        const z1 = pz - 1.6 - 8.4 + Math.cos(a1) * -8.4 + 16.8 - 8.4;
+        const yLo = WATER_Y + 2 + Math.min(Math.sin(a0), Math.sin(a1)) * 7.5;
+        b.span(bx + 3, bx + 3.5, yLo, top - 1.6, Math.max(z0, z1), Math.min(z0, z1), 0xc9b48e, FAR);
+      }
+    }
+    for (const z of [-5, -25]) b.cyl(bx + 3.6, top + 1, z, 0.08, 3.2, 0x2a2d30, 5, FAR);
+  }
   // riverside parks and the Alcazaba hill back across the river
   for (let k = 0; k < 3; k++) pine(s, -r.range(125, 160), -r.range(2, 38), 1.3, WATER_Y + 2.5, FAR);
   if (s.index === 13 || s.index === 16) alcazabaHill(b, 175, -10, 120);

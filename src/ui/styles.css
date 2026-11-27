@@ -1156,11 +1156,9 @@ kbd,
 .zone-name {
   font-family: var(--display);
   font-weight: 900;
-  font-size: 1.15rem;
+  font-size: 1.12rem;
+  line-height: 1.1;
   color: var(--cream);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .zone-meta {
   display: flex;
@@ -1365,7 +1363,7 @@ kbd,
   inset: 0;
   opacity: 0;
   box-shadow: inset 0 0 9rem 2.5rem rgba(210, 25, 10, 0.75), inset 0 0 3rem 0.5rem rgba(120, 0, 0, 0.6);
-  transition: opacity 0.25s linear;
+  transition: opacity 0.45s ease-out;
 }
 .vignette.hot {
   animation: heartbeat 0.7s ease-in-out infinite;
@@ -1380,9 +1378,6 @@ kbd,
   }
 }
 .chaser {
-  position: absolute;
-  left: 1.4rem;
-  bottom: 1.2rem;
   display: flex;
   align-items: center;
   gap: 0.7rem;
@@ -1391,6 +1386,7 @@ kbd,
   opacity: 0;
   transform: translateY(1rem);
   transition: opacity 0.3s ease, transform 0.3s ease;
+  align-self: flex-start;
 }
 .chaser.show {
   opacity: 1;
@@ -1545,7 +1541,8 @@ kbd,
   gap: 0.5rem;
   pointer-events: none;
   z-index: 25;
-  width: 36rem;
+  /* Never wider than the gap between the power-up column and the score column. */
+  width: min(32rem, calc(100vw - 2 * 19.5rem));
 }
 .toast {
   display: flex;
@@ -1676,4 +1673,646 @@ kbd,
   .chaser.hot .icon {
     animation: none;
   }
+}
+
+/* ------------------------------------------------------------------ Round 2 */
+
+/* HUD bottom-left: route map above the chaser */
+.hud-bl {
+  position: absolute;
+  left: 1.4rem;
+  bottom: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+.map-card {
+  padding: 0.35rem;
+  border-radius: 0.9rem;
+}
+.hud-map {
+  width: 9.6rem;
+}
+
+.minimap {
+  overflow: hidden;
+  border-radius: 0.6rem;
+}
+.minimap svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.mm-river-bank {
+  fill: none;
+  stroke: rgba(80, 160, 230, 0.25);
+  stroke-width: 15;
+  stroke-linecap: round;
+}
+.mm-river {
+  fill: none;
+  stroke: #3f8fd6;
+  stroke-width: 8;
+  stroke-linecap: round;
+}
+.mm-river-name {
+  font-family: var(--body);
+  font-weight: 800;
+  font-style: italic;
+  font-size: 8px;
+  fill: #8cc4f2;
+  display: none;
+}
+.big-map .mm-river-name {
+  display: block;
+}
+.mm-route-bg {
+  fill: none;
+  stroke: rgba(8, 12, 28, 0.85);
+  stroke-width: 7.5;
+  stroke-linejoin: round;
+}
+.mm-route {
+  fill: none;
+  stroke: rgba(255, 244, 220, 0.3);
+  stroke-width: 3.6;
+  stroke-linejoin: round;
+}
+.mm-done {
+  fill: none;
+  stroke: var(--sun);
+  stroke-width: 3.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.mm-tick {
+  fill: var(--night);
+  stroke: rgba(255, 244, 220, 0.7);
+  stroke-width: 1.2;
+}
+.mm-ink {
+  stroke: var(--cream);
+  stroke-linejoin: round;
+}
+.mm-fill {
+  fill: var(--terra);
+}
+.mm-runner {
+  fill: #fff;
+  stroke: var(--terra);
+  stroke-width: 2.2;
+}
+.mm-pulse {
+  fill: rgba(255, 197, 61, 0.55);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mm-pulse 1.1s ease-out infinite;
+}
+@keyframes mm-pulse {
+  from {
+    transform: scale(0.6);
+    opacity: 1;
+  }
+  to {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+.mm-label {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 8.5px;
+  fill: var(--cream-dim);
+  paint-order: stroke;
+  stroke: rgba(8, 12, 28, 0.9);
+  stroke-width: 2.6px;
+  stroke-linejoin: round;
+}
+.mm-label.here {
+  fill: var(--sun);
+}
+/* Printed version on the receipt */
+.minimap.ink .mm-river-bank {
+  stroke: none;
+}
+.minimap.ink .mm-river {
+  stroke: #b9cfe0;
+  stroke-width: 7;
+}
+.minimap.ink .mm-route-bg {
+  stroke: none;
+}
+.minimap.ink .mm-route {
+  stroke: #b8ab98;
+  stroke-width: 2.4;
+  stroke-dasharray: 3 3;
+}
+.minimap.ink .mm-done {
+  stroke: #2b2420;
+  stroke-width: 3;
+}
+.minimap.ink .mm-tick {
+  fill: #fbf6e9;
+  stroke: #2b2420;
+}
+.minimap.ink .mm-ink {
+  stroke: #6b5f55;
+}
+.minimap.ink .mm-fill {
+  fill: #fbf6e9;
+}
+.minimap.ink .mm-runner {
+  fill: var(--terra);
+  stroke: #2b2420;
+}
+.minimap.ink .mm-pulse {
+  display: none;
+}
+
+/* Roof streak pill under the score */
+.roof-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999rem;
+  background: linear-gradient(90deg, rgba(47, 181, 166, 0.95), rgba(25, 110, 120, 0.95));
+  border: 0.14rem solid var(--ink);
+  box-shadow: 0 0.2rem 0 var(--ink);
+  font-weight: 800;
+  font-size: 0.9rem;
+  color: var(--cream);
+  opacity: 0;
+  transform: translateX(1rem) scale(0.9);
+  transition: opacity 0.2s ease, transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.4);
+}
+.roof-pill.show {
+  opacity: 1;
+  transform: none;
+}
+.roof-pill b {
+  font-family: var(--display);
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+.roof-pill .dot {
+  opacity: 0.6;
+}
+
+/* Tutorial prompt */
+.tut {
+  position: absolute;
+  left: 50%;
+  bottom: 7%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0.9rem 1.8rem 0.9rem 1.2rem;
+  border-radius: 1.4rem;
+  background: rgba(14, 22, 46, 0.9);
+  border: 0.2rem solid var(--sun);
+  box-shadow: 0 0.4rem 0 var(--ink), 0 0 0 0.4rem rgba(255, 197, 61, 0.25), 0 1rem 2.5rem rgba(0, 0, 0, 0.4);
+  z-index: 22;
+  pointer-events: none;
+  white-space: nowrap;
+  animation: tut-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.4) both, tut-glow 1.2s ease-in-out 0.35s infinite;
+}
+@keyframes tut-in {
+  from {
+    transform: translateX(-50%) translateY(2rem) scale(0.7);
+    opacity: 0;
+  }
+}
+@keyframes tut-glow {
+  50% {
+    box-shadow: 0 0.4rem 0 var(--ink), 0 0 0 0.8rem rgba(255, 197, 61, 0.12), 0 1rem 2.5rem rgba(0, 0, 0, 0.4);
+  }
+}
+.tut-arrow {
+  width: 3.4rem;
+  height: 3.4rem;
+  animation: tut-nudge 0.8s ease-in-out infinite;
+}
+.tut-arrow .icon {
+  width: 100%;
+  height: 100%;
+  transform: rotate(var(--rot, 0deg));
+}
+.tut-left .tut-arrow {
+  --dx: -0.5rem;
+  --dy: 0;
+}
+.tut-right .tut-arrow {
+  --dx: 0.5rem;
+  --dy: 0;
+}
+.tut-jump .tut-arrow {
+  --dx: 0;
+  --dy: -0.5rem;
+}
+.tut-roll .tut-arrow {
+  --dx: 0;
+  --dy: 0.5rem;
+}
+@keyframes tut-nudge {
+  50% {
+    transform: translate(var(--dx), var(--dy));
+  }
+}
+.hint-keys {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 1.9rem;
+}
+.hint-keys kbd {
+  animation: key-press 0.9s ease-in-out infinite;
+}
+.hint-keys kbd.wide {
+  padding: 0 0.6em;
+}
+@keyframes key-press {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    box-shadow: 0 0.18em 0 var(--ink);
+  }
+  75% {
+    transform: translateY(0.14em);
+    box-shadow: 0 0.04em 0 var(--ink);
+    background: var(--sun);
+  }
+}
+.hint-or {
+  color: var(--muted);
+  font-weight: 900;
+  font-size: 1.2rem;
+}
+.tut-label {
+  font-size: 2.2rem;
+  color: var(--cream);
+}
+.tut.good {
+  border-color: var(--green);
+  animation: tut-good 0.65s cubic-bezier(0.2, 0.9, 0.3, 1.5) both;
+}
+.tut.good .tut-label {
+  color: #8ff08d;
+  font-size: 2.6rem;
+}
+@keyframes tut-good {
+  0% {
+    transform: translateX(-50%) scale(0.8);
+  }
+  30% {
+    transform: translateX(-50%) scale(1.15);
+  }
+  70% {
+    transform: translateX(-50%) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(-50%) translateY(-1.5rem) scale(1);
+    opacity: 0;
+  }
+}
+
+/* Menu additions */
+.menu-actions {
+  max-width: 31rem;
+}
+.menu-actions .btn {
+  font-size: 0.98rem;
+}
+.stat.wide {
+  grid-column: 1 / -1;
+}
+.stat-value.small {
+  font-size: 1.1rem;
+  white-space: normal;
+  line-height: 1.2;
+}
+.stat-card {
+  gap: 0.7rem 1rem;
+  padding: 0.85rem 1.1rem;
+}
+.stat-value {
+  font-size: 1.35rem;
+}
+.daily {
+  width: 100%;
+  padding: 0.8rem 1.1rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, rgba(160, 100, 0, 0.55), rgba(14, 22, 46, 0.86) 60%);
+  border-color: rgba(255, 197, 61, 0.35);
+}
+.daily .mini-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.daily .mini-title .icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+.daily.done .bar > i {
+  background: linear-gradient(90deg, var(--green-dark), var(--green));
+}
+.pill.reward {
+  font-size: 0.9rem;
+  padding: 0.15rem 0.6rem 0.15rem 0.3rem;
+}
+.pill.reward .icon {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+.missions-mini {
+  padding: 0.85rem 1.1rem 0.95rem;
+  gap: 0.6rem;
+}
+.menu-right {
+  gap: 0.75rem;
+}
+
+/* Achievements */
+.achievements {
+  width: min(64rem, 94vw);
+}
+.ach-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  overflow: auto;
+}
+.ach {
+  display: grid;
+  grid-template-columns: 2.3rem 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.8rem;
+  background: rgba(255, 244, 220, 0.05);
+  border: 0.12rem solid rgba(255, 244, 220, 0.08);
+}
+.ach-icon {
+  width: 2.3rem;
+  height: 2.3rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 244, 220, 0.1);
+  color: var(--muted);
+}
+.ach-icon .icon {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+.ach.on {
+  background: linear-gradient(135deg, rgba(255, 197, 61, 0.2), rgba(255, 244, 220, 0.04));
+  border-color: rgba(255, 197, 61, 0.45);
+}
+.ach.on .ach-icon {
+  background: var(--sun);
+  color: var(--terra-dark);
+  border: 0.13rem solid var(--ink);
+}
+.ach-name {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 0.95rem;
+  line-height: 1.15;
+}
+.ach:not(.on) .ach-name {
+  color: var(--cream-dim);
+}
+.ach-desc {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  line-height: 1.25;
+}
+.ach-reward {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 0.85rem;
+  color: var(--cream-dim);
+}
+.ach-reward .icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+.ach.on .ach-reward {
+  color: var(--green);
+}
+
+/* Records */
+.records {
+  width: min(52rem, 92vw);
+}
+.rec-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.rec-row {
+  display: grid;
+  grid-template-columns: 2.4rem 1.2fr 1fr 1.6fr 1fr;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.55rem 0.9rem;
+  border-radius: 0.7rem;
+  background: rgba(255, 244, 220, 0.05);
+  font-weight: 700;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+.rec-head {
+  background: none;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.rec-row.first {
+  background: linear-gradient(90deg, rgba(255, 197, 61, 0.25), rgba(255, 244, 220, 0.04));
+  border: 0.12rem solid rgba(255, 197, 61, 0.4);
+}
+.rec-rank {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 1.2rem;
+  color: var(--sun);
+}
+.rec-score {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 1.15rem;
+}
+.rec-zone,
+.rec-date {
+  color: var(--cream-dim);
+  font-size: 0.9rem;
+}
+.rec-empty {
+  padding: 1.4rem;
+  text-align: center;
+  color: var(--cream-dim);
+  font-weight: 700;
+}
+.life-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.9rem;
+  background: rgba(255, 244, 220, 0.05);
+}
+.life-grid .stat-value {
+  font-size: 1.2rem;
+}
+
+/* Pause with the route map */
+.pause {
+  width: min(54rem, 94vw);
+  flex-direction: row;
+  align-items: stretch;
+  text-align: left;
+  gap: 1.6rem;
+}
+.pause-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1rem;
+  flex: 1;
+}
+.route-card {
+  width: 24rem;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  background: rgba(255, 244, 220, 0.05);
+  border: 0.12rem solid rgba(255, 244, 220, 0.08);
+}
+.route-card .mini-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.route-card .mini-title .icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+.big-map {
+  width: 100%;
+}
+.lap-pill {
+  font-size: 0.9rem;
+  padding: 0.2rem 0.7rem;
+  color: var(--sun);
+}
+.route-where {
+  text-align: center;
+  font-weight: 700;
+  color: var(--cream-dim);
+}
+.route-where b {
+  color: var(--cream);
+}
+
+/* Receipt: where you got to, printed map, inline stamp */
+.receipt {
+  width: 20rem;
+}
+.r-bar {
+  text-align: left;
+}
+.stamp-row {
+  display: flex;
+  justify-content: center;
+  padding: 0.35rem 0 0.25rem;
+}
+.stamp {
+  position: static;
+  font-size: 1.1rem;
+  padding: 0.15rem 0.7rem;
+  transform: rotate(-4deg);
+}
+@keyframes stamp {
+  from {
+    transform: rotate(-4deg) scale(2.4);
+    opacity: 0;
+  }
+}
+.r-where {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+}
+.r-where-text {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  flex: 1;
+  min-width: 0;
+}
+.r-where-text b {
+  font-size: 1rem;
+  font-weight: 900;
+}
+.receipt-map {
+  width: 8.6rem;
+  flex: none;
+}
+.r-foot {
+  margin-top: 0.3rem;
+}
+
+.bonus-line {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 800;
+  font-size: 0.9rem;
+  color: var(--cream-dim);
+}
+.bonus-line .icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--sun);
+}
+.bonus-line b {
+  color: var(--sun);
+  font-family: var(--display);
+  margin-left: auto;
+}
+.earned {
+  flex-wrap: wrap;
+}
+
+/* Transient in-run overlays stay out of the way of the pause and game-over screens. */
+#ui[data-state="paused"] .tut,
+#ui[data-state="paused"] .toasts,
+#ui[data-state="paused"] .banner,
+#ui[data-state="gameover"] .tut {
+  visibility: hidden;
 }

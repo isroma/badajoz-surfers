@@ -16,6 +16,9 @@ export interface CameraInput {
   intro: number;
   /** Extra FOV (patinete). */
   fovKick: number;
+  /** End shot: which side to orbit to (+1 right, -1 left) and the waiter's z. */
+  endSide: number;
+  waiterZ: number;
 }
 
 const BACK = 6.5;
@@ -80,12 +83,13 @@ export class ChaseCamera {
     const look = this.look;
     switch (i.mode) {
       case "menu": {
-        // Slow hover in front of the runner, swaying from side to side.
-        const a = Math.sin(this.time * 0.18) * 0.9;
-        const r = 6.2 + Math.sin(this.time * 0.11) * 0.6;
-        pos.set(i.x + Math.sin(a) * r, 1.9 + Math.sin(this.time * 0.23) * 0.35, i.z - Math.cos(a) * r);
-        look.set(i.x, 1.15, i.z + 1.5);
-        targetFov = 55;
+        // Hero shot on the bridge deck: behind-left of the runner, looking up the road at the
+        // pylon and its cable fans; the runner sits right of centre (the menu UI is on the left).
+        const sway = Math.sin(this.time * 0.16);
+        const bob = Math.sin(this.time * 0.23);
+        pos.set(i.x - 1.6 + sway * 0.5, 1.45 + bob * 0.18, i.z + 7 + Math.sin(this.time * 0.11) * 0.5);
+        look.set(i.x - 3.4 + sway * 0.7, 5.2 + bob * 0.3, i.z - 40);
+        targetFov = 58;
         break;
       }
       case "intro": {
@@ -103,7 +107,9 @@ export class ChaseCamera {
         const rC = Math.hypot(cdx, cdz);
         const a = aS + (aC - aS) * t;
         const r = rS + (rC - rS) * t;
-        pos.set(i.x + Math.sin(a) * r, sy + (this.tmpA.y - sy) * t, i.z + Math.cos(a) * r);
+        // Stay over the road: nothing solid stands there below 4 m (lamp posts and trees line the kerbs).
+        const ax = Math.max(-3.6, Math.min(3.6, i.x + Math.sin(a) * r));
+        pos.set(ax, sy + (this.tmpA.y - sy) * t, i.z + Math.cos(a) * r);
         look.set(i.x, 1.2, i.z + 1.5).lerp(this.tmpB, t);
         targetFov = 55 + (targetFov - 55) * t;
         break;
@@ -114,10 +120,12 @@ export class ChaseCamera {
       case "end": {
         if (modeChanged) this.endAngle = 0;
         this.endAngle = Math.min(1, this.endAngle + dt * 0.6);
-        const a = smooth(this.endAngle) * 1.1;
-        const r = 6.5 - smooth(this.endAngle) * 1.5;
-        pos.set(i.x + Math.sin(a) * r, i.groundY + 3.2 - smooth(this.endAngle) * 1.0, i.z + Math.cos(a) * r);
-        look.set(i.x, i.groundY + 0.8, i.z);
+        // Swing round to the side with free space, framing the runner and the waiter together.
+        const a = smooth(this.endAngle) * 1.15 * (i.endSide < 0 ? -1 : 1);
+        const midZ = (i.z + i.waiterZ) / 2;
+        const r = 6.8 - smooth(this.endAngle) * 1.2;
+        pos.set(i.x + Math.sin(a) * r, i.groundY + 3.0 - smooth(this.endAngle) * 0.9, midZ + Math.cos(a) * r);
+        look.set(i.x, i.groundY + 0.9, midZ);
         targetFov = 55;
         break;
       }

@@ -18,6 +18,7 @@ import {
 import { art } from "../art";
 import { Bot } from "./bot";
 import { ChaseCamera, type CameraMode } from "./camera";
+import { PathRecorder, type PathSample } from "./chaser";
 import { Effects } from "./effects";
 import { Input, type Command } from "./input";
 import { Loop } from "./loop";
@@ -66,6 +67,18 @@ class Game implements GameApi {
   private fovKick = 0;
   private groundY = 0;
   private readonly focus = new THREE.Vector3();
+  /** Where the idle runner stands in the menu (on the bridge deck, before the pylon). */
+  private static readonly MENU_DISTANCE = 150;
+  private readonly path = new PathRecorder();
+  private readonly pathSample: PathSample = { x: 0, y: 0, rolling: false, airborne: false };
+  /** Fractional ticks owed when the simulation runs slowed (tutorial slow-mo). */
+  private slowAcc = 0;
+  private endSide = 1;
+  private wasEnd = false;
+  private waiterZ = 0;
+  /** Full-screen fade through the fog colour (run start from the menu). */
+  private fade = 0;
+  private readonly fadeMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   private readonly hud: HudSnapshot;
   private readonly hudPowerups: { kind: PowerupKind; remaining: number; duration: number }[] = [];
 
@@ -89,10 +102,19 @@ class Game implements GameApi {
     this.cam = new ChaseCamera(window.innerWidth / Math.max(1, window.innerHeight));
     this.world.scene.add(this.cam.camera);
     this.effects = new Effects(this.world.scene, this.cam.camera);
+    this.fadeMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(4, 4),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false }),
+    );
+    this.fadeMesh.position.z = -0.2;
+    this.fadeMesh.renderOrder = 1000;
+    this.fadeMesh.frustumCulled = false;
+    this.fadeMesh.visible = false;
+    this.cam.camera.add(this.fadeMesh);
 
     this.hud = {
       score: 0, bellotas: 0, distance: 0, multiplier: 1, speed: 0, zone: ZONES[0] ?? zoneAt(0).zone, zoneProgress: 0, lap: 1,
-      powerups: this.hudPowerups, letters: WORD.split("").map(() => false), chaser: 0,
+      powerups: this.hudPowerups, letters: WORD.split("").map(() => false), chaser: 0, roofMetres: 0,
     };
 
     window.addEventListener("resize", this.onResize);
@@ -126,6 +148,7 @@ class Game implements GameApi {
       this.hudPowerups.length = 0;
       hud.letters.fill(false);
       hud.chaser = 0;
+      hud.roofMetres = 0;
       return hud;
     }
     const p = run.player.p;
@@ -152,7 +175,8 @@ class Game implements GameApi {
     }
     this.hudPowerups.length = n;
     for (let i = 0; i < hud.letters.length; i++) hud.letters[i] = i < run.lettersCollected;
-    hud.chaser = run.chaser.value;
+    hud.chaser = run.countdown > 0 ? 0 : run.chaser.value;
+    hud.roofMetres = Math.round(run.roofMetres);
     return hud;
   }
 
@@ -169,7 +193,7 @@ class Game implements GameApi {
   resume(): void {
     if (this.state !== "paused" || !this.run) return;
     this.setState("playing");
-    this.run.startCountdown(this.run.intro);
+    this.run.startCountdown(this.run.intro, true);
   }
 
   toMenu(): void {
@@ -193,7 +217,7 @@ class Game implements GameApi {
   private enterMenuScene(): void {
     this.world.clearDynamic();
     this.effects.clear();
-    this.world.updateSegments(0, 99, 3);
+    this.world.updateSegments(Game.MENU_DISTANCE, 99, 4);
     this.world.setZone("puente-real", true);
     this.world.runner.setRiding?.(false);
     this.world.runner.root.visible = true;
@@ -209,17 +233,23 @@ class Game implements GameApi {
       baseMultiplier: () => this.options.baseMultiplier(),
       emit: (e) => this.onRunEvent(e),
       fx: (f) => this.onFx(f),
+      tutorial: this.options.tutorial(),
     });
     run.invincible = this.invincible;
     run.speedOverride = this.speedOverride;
     this.run = run;
     this.world.clearDynamic();
     this.effects.clear();
-    this.world.updateSegments(0, 99, 3);
+    this.world.updateSegments(0, 99, 4);
     this.world.setZone("puente-real", true);
     this.world.runner.setRiding?.(false);
     this.world.runner.root.visible = true;
     this.world.waiter.root.visible = true;
+    // Cut back to the start of the bridge through the fog colour.
+    this.fade = 1;
+    this.path.clear();
+    this.slowAcc = 0;
+    this.wasEnd = false;
     this.waiterX = 0;
     this.groundY = 0;
     this.cam.snap();
@@ -262,6 +292,7 @@ class Game implements GameApi {
         this.cam.shake(f.amount);
         break;
       case "reset":
+        this.path.clear();
         this.world.clearDynamic();
         this.world.clearSegments();
         if (this.run) this.world.updateSegments(this.run.player.p, 99);
@@ -301,8 +332,15 @@ class Game implements GameApi {
     this.time += dt;
     const run = this.run;
     if (!run || this.state === "paused" || this.state === "menu") return;
-    if (this.botOn) this.bot.update(run);
-    run.tick(dt);
+    // Slow-mo runs fewer fixed ticks per second (same deterministic step).
+    this.slowAcc += run.timeScale;
+    while (this.slowAcc >= 1) {
+      this.slowAcc -= 1;
+      if (this.botOn) this.bot.update(run);
+      run.tick(dt);
+      const s = run.player;
+      if (run.phase === "running") this.path.record(s.p, s.x, s.y, s.roll > 0, !s.grounded);
+    }
   }
 
   private runnerAnim(run: Run): ActorAnim {
@@ -317,9 +355,11 @@ class Game implements GameApi {
   }
 
   private waiterAnim(run: Run): ActorAnim {
-    if (run.phase === "countdown" && run.intro) return "idle";
+    if (run.phase === "countdown" && run.intro) return "celebrate";
     if (run.phase === "ending" || run.phase === "over") return run.endTime > 0.5 || run.phase === "over" ? "celebrate" : "run";
     if (this.state === "paused" || run.countdown > 0) return "idle";
+    if (this.pathSample.rolling) return "roll";
+    if (this.pathSample.airborne) return "jump";
     return "run";
   }
 
@@ -328,7 +368,7 @@ class Game implements GameApi {
     const runner = world.runner;
     const run = this.run;
     const frozen = this.state === "paused";
-    const animDt = frozen ? 0 : dt;
+    const animDt = frozen ? 0 : dt * (run?.timeScale ?? 1);
     let mode: CameraMode = "menu";
     let px = 0;
     let py = 0;
@@ -336,8 +376,9 @@ class Game implements GameApi {
     let speed = 0;
 
     if (!run) {
-      runner.root.position.set(0, 0, 0);
-      runner.root.rotation.set(0, 0, 0);
+      p = Game.MENU_DISTANCE;
+      runner.root.position.set(0, 0, -p);
+      runner.root.rotation.set(0, 0.35, 0);
       runner.update(dt, "idle", 0);
     } else {
       const s = run.player;
@@ -346,8 +387,8 @@ class Game implements GameApi {
       px = s.px + (s.x - s.px) * a;
       py = s.py + (s.y - s.py) * a;
       speed = s.speed;
-      world.updateSegments(p, 2, run.phase === "countdown" || p < 30 ? 3 : 1);
-      world.sync(run, p, animDt, this.time);
+      world.updateSegments(p, 2, run.phase === "countdown" || p < 30 ? 4 : 1);
+      world.sync(run, p, animDt, this.time, this.cam.camera.position, run.phase === "ending" || run.phase === "over");
 
       // Lean into lane changes.
       const vx = (s.x - s.px) / TICK;
@@ -357,20 +398,32 @@ class Game implements GameApi {
       runner.update(animDt, this.runnerAnim(run), speed);
       runner.root.visible = run.invulnerable > 0 ? Math.floor(this.time * 14) % 2 === 0 : true;
 
-      // The waiter.
+      // The waiter follows the runner's own path a few metres behind (lane changes, jumps, roofs).
       const waiter = world.waiter;
       const gap = run.chaser.gap;
       const wp = p - gap;
-      this.waiterX += (px - this.waiterX) * Math.min(1, dt * (run.phase === "running" ? 3 : 6));
-      const wSurface = run.boxes.surface(this.waiterX, wp, 0.4).height;
-      waiter.root.position.set(this.waiterX, wSurface, -wp);
+      const sample = this.pathSample;
+      let wy = 0;
+      if (this.path.sample(wp, sample)) {
+        this.waiterX = sample.x;
+        wy = sample.y;
+      } else {
+        sample.rolling = false;
+        sample.airborne = false;
+        this.waiterX += (px - this.waiterX) * Math.min(1, dt * 3);
+      }
+      waiter.root.position.set(this.waiterX, wy, -wp);
       waiter.root.rotation.set(0, 0, 0);
+      this.waiterZ = -wp;
       waiter.update(animDt, this.waiterAnim(run), Math.max(speed, run.phase === "ending" ? 7 : 0));
       waiter.root.visible = gap < 40;
 
       if (s.grounded || py < this.groundY) this.groundY = py;
-      if (run.phase === "ending" || run.phase === "over") mode = "end";
-      else if (run.intro && run.countdown > 0) mode = "intro";
+      if (run.phase === "ending" || run.phase === "over") {
+        mode = "end";
+        if (!this.wasEnd) this.endSide = this.freeSide(run);
+        this.wasEnd = true;
+      } else if (run.intro && run.countdown > 0) mode = "intro";
       else mode = "chase";
     }
 
@@ -378,13 +431,35 @@ class Game implements GameApi {
     this.fovKick += ((patinete ? 6 : 0) - this.fovKick) * Math.min(1, dt * 3);
     const introT = run && run.intro ? Math.min(1, Math.max(0, (COUNTDOWN_TIME - run.countdown) / COUNTDOWN_TIME) * 1.15) : 1;
     this.cam.update(dt, {
-      mode, x: px, y: py, z: -p, groundY: this.groundY, speed, intro: introT, fovKick: this.fovKick,
+      mode, x: px, y: py, z: -p, groundY: run ? this.groundY : 0, speed, intro: introT, fovKick: this.fovKick,
+      endSide: this.endSide, waiterZ: this.waiterZ,
     });
+    if (this.fade > 0) {
+      this.fade = Math.max(0, this.fade - dt * 2.2);
+      this.fadeMesh.material.color.copy(world.fog.color);
+      this.fadeMesh.material.opacity = Math.min(1, this.fade * 1.4);
+    }
+    this.fadeMesh.visible = this.fade > 0;
     this.focus.set(px, py, -p);
     world.updateEnvironment(dt, this.cam.camera, this.focus);
     const lines = run && run.phase === "running" && !frozen ? (patinete ? 1 : Math.max(0, (speed - 22) / 12)) : 0;
     this.effects.update(frozen ? 0 : dt, lines, speed);
     this.renderer.render(world.scene, this.cam.camera);
+  }
+
+  /** Side (+1 right, -1 left) of the runner with fewer obstacles, for the end shot. */
+  private freeSide(run: Run): number {
+    const s = run.player;
+    let left = 0;
+    let right = 0;
+    for (let i = 0; i < run.boxes.count; i++) {
+      const b = run.boxes.box(i);
+      if (!b || b.dMax < s.p - 9 || b.dMin > s.p + 3) continue;
+      if (b.xMax > s.x + 0.6) right++;
+      if (b.xMin < s.x - 0.6) left++;
+    }
+    if (left === right) return s.x > 0.5 ? -1 : 1; // Towards the middle of the road.
+    return right < left ? 1 : -1;
   }
 
   // --- Debug ---------------------------------------------------------------------------------

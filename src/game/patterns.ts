@@ -622,6 +622,39 @@ const mixedRows: PatternFn = (b) => {
   return true;
 };
 
+/**
+ * Zone finale: a dense, bellota-rich weave (rows of two obstacles, the gap shifting lane by lane)
+ * ending with a barrier across the road and bellota arcs in every lane.
+ */
+const finale: PatternFn = (b) => {
+  const { rng, ctx } = b;
+  const pal = palette(ctx);
+  const rows = ctx.difficulty > 0.3 ? 4 : 3;
+  let gap = ctx.entryLane;
+  let front = b.start;
+  for (let r = 0; r < rows; r++) {
+    let rowLen = 0;
+    const shortWalls = pal.wall.filter(([k]) => OBSTACLE_DEFS[k].length <= 5.4);
+    for (const l of otherLanes(gap)) {
+      const kind = rng.chance(0.65) && shortWalls.length > 0 ? rng.weighted(shortWalls) : rng.weighted(pal.low);
+      b.place(kind, l, front);
+      rowLen = Math.max(rowLen, OBSTACLE_DEFS[kind].length);
+    }
+    b.trail(gap, front - b.s(0.45), front + rowLen + 1, 0.9, 1.5);
+    b.line = gap;
+    front += rowLen + rowGap(b, false);
+    const options = LANES3.filter((l) => Math.abs(l - gap) === 1);
+    gap = rng.pick(options);
+  }
+  const kind = pal.full.some(([k]) => k === "valla-larga") ? "valla-larga" : rng.weighted(pal.full);
+  front += b.s(0.2);
+  b.place(kind, 0, front);
+  for (const l of LANES3) lineCell(b, l, kind, front);
+  b.slot(b.line, front + b.s(1.3), 1.0, false);
+  b.line = gap;
+  return true;
+};
+
 export interface PatternDef {
   name: string;
   fn: PatternFn;
@@ -629,6 +662,8 @@ export interface PatternDef {
   easy: boolean;
   /** Uses moving vehicles. */
   movers: boolean;
+  /** Only placed on purpose (never picked at random). */
+  special?: boolean;
 }
 
 export const PATTERNS = {
@@ -644,6 +679,7 @@ export const PATTERNS = {
   trafficJam: { name: "trafficJam", fn: trafficJam, easy: false, movers: false },
   lowZigzag: { name: "lowZigzag", fn: lowZigzag, easy: true, movers: false },
   mixedRows: { name: "mixedRows", fn: mixedRows, easy: false, movers: false },
+  finale: { name: "finale", fn: finale, easy: false, movers: false, special: true },
 } as const satisfies Record<string, PatternDef>;
 
 export type PatternName = keyof typeof PATTERNS;
@@ -661,7 +697,7 @@ export function patternWeights(ctx: PatternContext): Weights<PatternName> {
       ];
     case "valdepasillas":
       return [
-        ["rampRoof", 3], ["oncoming", 2.5 + 2 * d], ["trafficJam", 3], ["slalom", 2], ["carHop", 2],
+        ["rampRoof", 4], ["oncoming", 2.5 + 2 * d], ["trafficJam", 3], ["slalom", 2], ["carHop", 2],
         ["twoBlock", 2], ["single", 1], ["fullBarrier", 1], ["arcValla", 1],
       ];
     case "san-francisco":
@@ -681,7 +717,7 @@ export function patternWeights(ctx: PatternContext): Weights<PatternName> {
       ];
     case "margen-derecha":
       return [
-        ["oncoming", 4 + 2 * d], ["trafficJam", 3], ["slalom", 2], ["rampRoof", 2], ["carHop", 1.5],
+        ["oncoming", 4 + 2 * d], ["trafficJam", 3], ["slalom", 2], ["rampRoof", 3], ["carHop", 2],
         ["twoBlock", 2], ["single", 1], ["fullBarrier", 1],
       ];
   }

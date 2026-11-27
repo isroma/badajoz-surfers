@@ -183,6 +183,70 @@ export class Builder {
     return this;
   }
 
+  /**
+   * Optional junction clip: everything beside the road (|x| > ax) is kept out of z > z.
+   * Short primitives touching that strip are dropped; long ones (strips, facades, ridges running
+   * along the road) are cut back to z by clamping their vertices. The road itself is untouched.
+   */
+  clip: { z: number; ax: number } | null = null;
+
+  private emit(b: Bucket, pos: number[], nrm: number[], uv: number[]): void {
+    const n = pos.length / 3;
+    const c = this.clip;
+    if (c) {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const x = pos[i * 3] ?? 0;
+        const z = pos[i * 3 + 2] ?? 0;
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+      }
+      if (maxZ > c.z + 1e-4 && (maxX > c.ax || minX < -c.ax)) {
+        if (maxZ - minZ < 12) return;
+        // clamp per triangle, re-deriving uv from the original triangle (affine along the strip)
+        for (let t = 0; t < n; t += 3) {
+          const P = [0, 1, 2].map((k) => new THREE.Vector3(pos[(t + k) * 3], pos[(t + k) * 3 + 1], pos[(t + k) * 3 + 2]));
+          const U = [0, 1, 2].map((k) => new THREE.Vector2(uv[(t + k) * 2], uv[(t + k) * 2 + 1]));
+          const clamped = P.map((p) => p.z > c.z);
+          const all = clamped.every(Boolean);
+          for (let k = 0; k < 3; k++) {
+            const p = P[k];
+            const u = U[k];
+            if (!p || !u) continue;
+            if (clamped[k]) {
+              const q = new THREE.Vector3(p.x, p.y, c.z);
+              if (!all) {
+                const [a0, a1, a2] = P;
+                const [u0, u1, u2] = U;
+                if (a0 && a1 && a2 && u0 && u1 && u2) {
+                  const bc = new THREE.Triangle(a0, a1, a2).getBarycoord(q, new THREE.Vector3());
+                  if (bc) u.set(u0.x * bc.x + u1.x * bc.y + u2.x * bc.z, u0.y * bc.x + u1.y * bc.y + u2.y * bc.z);
+                }
+              }
+              p.copy(q);
+            }
+          }
+          for (let k = 0; k < 3; k++) {
+            const p = P[k];
+            const u = U[k];
+            if (!p || !u) continue;
+            b.pos.push(p.x, p.y, p.z);
+            b.nrm.push(nrm[(t + k) * 3] ?? 0, nrm[(t + k) * 3 + 1] ?? 1, nrm[(t + k) * 3 + 2] ?? 0);
+            b.col.push(_c.r, _c.g, _c.b);
+            b.uv.push(u.x, u.y);
+          }
+        }
+        return;
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      b.pos.push(pos[i * 3] ?? 0, pos[i * 3 + 1] ?? 0, pos[i * 3 + 2] ?? 0);
+      b.nrm.push(nrm[i * 3] ?? 0, nrm[i * 3 + 1] ?? 0, nrm[i * 3 + 2] ?? 0);
+      b.col.push(_c.r, _c.g, _c.b);
+      b.uv.push(uv[i * 2] ?? 0, uv[i * 2 + 1] ?? 0);
+    }
+  }
+
   /** Add a template geometry with transform `m` (local), flat colour. Optional uv remap. */
   add(geo: THREE.BufferGeometry, m: THREE.Matrix4, color: THREE.ColorRepresentation, mat: THREE.Material = SOLID, uvRect?: readonly [number, number, number, number]): this {
     const t = toTpl(geo);
@@ -192,19 +256,22 @@ export class Builder {
     _c.set(color);
     const n = t.pos.length / 3;
     const flip = _full.determinant() < 0;
+    const pos: number[] = [];
+    const nrm: number[] = [];
+    const uv: number[] = [];
     for (let k = 0; k < n; k++) {
       // Mirrored transforms reverse the winding; swap two vertices per triangle to keep faces outward.
       const i = flip && k % 3 === 1 ? k + 1 : flip && k % 3 === 2 ? k - 1 : k;
       _v.set(t.pos[i * 3] ?? 0, t.pos[i * 3 + 1] ?? 0, t.pos[i * 3 + 2] ?? 0).applyMatrix4(_full);
       _n.set(t.nrm[i * 3] ?? 0, t.nrm[i * 3 + 1] ?? 0, t.nrm[i * 3 + 2] ?? 1).applyMatrix3(_nm).normalize();
-      b.pos.push(_v.x, _v.y, _v.z);
-      b.nrm.push(_n.x, _n.y, _n.z);
-      b.col.push(_c.r, _c.g, _c.b);
+      pos.push(_v.x, _v.y, _v.z);
+      nrm.push(_n.x, _n.y, _n.z);
       const u = t.uv[i * 2] ?? 0;
       const w = t.uv[i * 2 + 1] ?? 0;
-      if (uvRect) b.uv.push(uvRect[0] + (uvRect[2] - uvRect[0]) * u, uvRect[1] + (uvRect[3] - uvRect[1]) * w);
-      else b.uv.push(u, w);
+      if (uvRect) uv.push(uvRect[0] + (uvRect[2] - uvRect[0]) * u, uvRect[1] + (uvRect[3] - uvRect[1]) * w);
+      else uv.push(u, w);
     }
+    this.emit(b, pos, nrm, uv);
     return this;
   }
 
@@ -266,12 +333,7 @@ export class Builder {
       pc = tmp;
     }
     const nrm = new THREE.Vector3().subVectors(pc, pb).cross(new THREE.Vector3().subVectors(pa, pb)).normalize();
-    for (const p of [pa, pb, pc]) {
-      bk.pos.push(p.x, p.y, p.z);
-      bk.nrm.push(nrm.x, nrm.y, nrm.z);
-      bk.col.push(_c.r, _c.g, _c.b);
-      bk.uv.push(0, 0);
-    }
+    this.emit(bk, [pa.x, pa.y, pa.z, pb.x, pb.y, pb.z, pc.x, pc.y, pc.z], [nrm.x, nrm.y, nrm.z, nrm.x, nrm.y, nrm.z, nrm.x, nrm.y, nrm.z], [0, 0, 0, 0, 0, 0]);
     return this;
   }
   /**

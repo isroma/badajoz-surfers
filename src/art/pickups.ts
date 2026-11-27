@@ -5,13 +5,13 @@
 import * as THREE from "three";
 import type { PickupKind, PickupMesh } from "../contracts";
 import { Builder, T, xf } from "./geom";
-import { glowTexture, letterMat } from "./text";
+import { glowTexture, letterMat, sparkleTexture } from "./text";
 
 const GOLD = new THREE.MeshPhongMaterial({
   vertexColors: true,
   shininess: 90,
   specular: 0xfff1b0,
-  emissive: 0x9a6400,
+  emissive: 0xb07400,
   emissiveIntensity: 1,
   flatShading: true,
 });
@@ -135,6 +135,8 @@ function halo(kind: Exclude<PickupKind, "bellota">): { ring: THREE.Mesh; sprite:
   return { ring, sprite };
 }
 
+let BELLOTA_SPARK: THREE.SpriteMaterial | null = null;
+
 const LETTER_EDGE = new THREE.MeshLambertMaterial({ color: 0xffb703, emissive: 0x7a4a00 });
 
 export function createPickup(kind: PickupKind, letter?: string): PickupMesh {
@@ -150,6 +152,14 @@ export function createPickup(kind: PickupKind, letter?: string): PickupMesh {
     mesh.castShadow = true;
     mesh.rotation.z = 0.25;
     spinner.add(mesh);
+    // one shared sparkle billboard behind the acorn: 2 draw calls per coin
+    if (!BELLOTA_SPARK) {
+      BELLOTA_SPARK = new THREE.SpriteMaterial({ map: sparkleTexture(), transparent: true, depthWrite: false, opacity: 0.85 });
+    }
+    sprite = new THREE.Sprite(BELLOTA_SPARK);
+    sprite.scale.setScalar(0.95);
+    sprite.renderOrder = 1;
+    root.add(sprite);
   } else {
     if (kind === "letra") {
       const ch = (letter ?? "B").slice(0, 1).toUpperCase();
@@ -182,7 +192,11 @@ export function createPickup(kind: PickupKind, letter?: string): PickupMesh {
         ring.rotation.x = Math.PI / 2 + Math.sin(t * 1.7 + phase) * 0.35;
         ring.position.y = spinner.position.y * 0.5;
       }
-      if (sprite) sprite.material.opacity = 0.6 + 0.2 * Math.sin(t * 5 + phase);
+      if (sprite && kind === "bellota") {
+        sprite.scale.setScalar(0.85 + 0.15 * Math.sin(t * 6 + phase));
+        sprite.position.y = spinner.position.y;
+        sprite.material.rotation = t * 0.8;
+      } else if (sprite) sprite.material.opacity = 0.6 + 0.2 * Math.sin(t * 5 + phase);
     },
   };
 }

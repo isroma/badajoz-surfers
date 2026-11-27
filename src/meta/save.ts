@@ -5,12 +5,22 @@
  */
 import { POWERUPS, type PowerupKind } from "../contracts";
 import { clampLevel } from "./economy";
-import { drawMissions, getTemplate, initialMissions, targetOf, type ActiveMission, type MissionsState } from "./missions";
+import { ACHIEVEMENTS, MAX_RECORDS, type DailyState, type Lifetime, type RunRecord } from "./progress";
+import {
+  drawMissions,
+  emptyRunStats,
+  getTemplate,
+  initialMissions,
+  targetOf,
+  type ActiveMission,
+  type MissionsState,
+  type RunStats,
+} from "./missions";
 
-export const SAVE_VERSION = 1;
-export const SAVE_KEY = "simpa.save.v1";
-/** Keys of older formats that are read once and migrated. */
-export const LEGACY_KEYS: readonly string[] = ["simpa.save"];
+export const SAVE_VERSION = 2;
+export const SAVE_KEY = "simpa.save.v2";
+/** Keys of older formats that are read once and migrated (newest first). */
+export const LEGACY_KEYS: readonly string[] = ["simpa.save.v1", "simpa.save"];
 
 export interface Settings {
   music: boolean;
@@ -30,7 +40,22 @@ export interface SaveData {
   settings: Settings;
   /** The "Cómo se juega" screen has been shown once. */
   seenHowTo: boolean;
+  /** The in-game tutorial was completed (a `hint: "complete"` event arrived). */
+  tutorialDone: boolean;
+  lifetime: Lifetime;
+  /** Unlocked achievement ids. */
+  achievements: string[];
+  /** Top local runs, best first. */
+  records: RunRecord[];
+  daily: DailyState;
 }
+
+export const emptyLifetime = (): Lifetime => ({
+  totals: emptyRunStats(),
+  zonesSeen: 0,
+  bestZones: 0,
+  bestRun: { distance: 0, bellotas: 0, zones: 0, score: 0 },
+});
 
 const POWERUP_KINDS = Object.keys(POWERUPS) as PowerupKind[];
 
@@ -45,6 +70,11 @@ export function defaultSave(): SaveData {
     missions: initialMissions(),
     settings: { music: true, sfx: true, volume: 0.8 },
     seenHowTo: false,
+    tutorialDone: false,
+    lifetime: emptyLifetime(),
+    achievements: [],
+    records: [],
+    daily: { date: "", progress: 0, done: false },
   };
 }
 
@@ -76,6 +106,41 @@ function parseMissions(raw: unknown): MissionsState {
   return { setsCompleted, active };
 }
 
+function parseLifetime(raw: unknown): Lifetime {
+  const base = emptyLifetime();
+  if (!isRecord(raw)) return base;
+  const t = isRecord(raw["totals"]) ? raw["totals"] : {};
+  const totals = { ...base.totals };
+  for (const k of Object.keys(totals) as (keyof RunStats)[]) totals[k] = count(t[k]);
+  const b = isRecord(raw["bestRun"]) ? raw["bestRun"] : {};
+  return {
+    totals,
+    zonesSeen: count(raw["zonesSeen"]) & 0xffff,
+    bestZones: count(raw["bestZones"]),
+    bestRun: { distance: count(b["distance"]), bellotas: count(b["bellotas"]), zones: count(b["zones"]), score: count(b["score"]) },
+  };
+}
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseRecords(raw: unknown): RunRecord[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RunRecord[] = [];
+  for (const r of raw) {
+    if (!isRecord(r)) continue;
+    const date = typeof r["date"] === "string" && DAY.test(r["date"]) ? r["date"] : "";
+    out.push({ date, score: count(r["score"]), distance: count(r["distance"]), zones: count(r["zones"]) });
+  }
+  return out.sort((a, b) => b.score - a.score || b.distance - a.distance).slice(0, MAX_RECORDS);
+}
+
+function parseDaily(raw: unknown): DailyState {
+  if (!isRecord(raw) || typeof raw["date"] !== "string" || !DAY.test(raw["date"])) return { date: "", progress: 0, done: false };
+  return { date: raw["date"], progress: count(raw["progress"]), done: bool(raw["done"], false) };
+}
+
+const ACHIEVEMENT_IDS = new Set(ACHIEVEMENTS.map((a) => a.id));
+
 export function parseSave(raw: unknown): SaveData {
   const base = defaultSave();
   if (!isRecord(raw)) return base;
@@ -96,6 +161,14 @@ export function parseSave(raw: unknown): SaveData {
     missions: parseMissions(raw["missions"]),
     settings: { music: bool(s["music"], true), sfx: bool(s["sfx"], true), volume },
     seenHowTo: bool(raw["seenHowTo"], count(raw["runsPlayed"]) > 0),
+    // Players from version 1 already know the controls.
+    tutorialDone: bool(raw["tutorialDone"], count(raw["runsPlayed"]) > 0),
+    lifetime: parseLifetime(raw["lifetime"]),
+    achievements: Array.isArray(raw["achievements"])
+      ? [...new Set(raw["achievements"].filter((a): a is string => typeof a === "string" && ACHIEVEMENT_IDS.has(a)))]
+      : [],
+    records: parseRecords(raw["records"]),
+    daily: parseDaily(raw["daily"]),
   };
 }
 
