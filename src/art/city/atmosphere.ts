@@ -10,7 +10,7 @@ import type { ZoneId } from "../../city/data";
 import { skyState } from "../sky";
 
 const day = (top: number, horizon: number, sun: number, sunI: number, pos: [number, number, number], amb: number): Atmosphere => ({
-  skyTop: top, skyBottom: horizon, fogColor: horizon, fogNear: 250, fogFar: 1200,
+  skyTop: top, skyBottom: horizon, fogColor: horizon, fogNear: 220, fogFar: 1000,
   sunColor: sun, sunIntensity: sunI, sunPosition: pos,
   ambientColor: amb, ambientIntensity: 2.9,
 });

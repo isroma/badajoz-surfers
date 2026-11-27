@@ -40,9 +40,10 @@ describe("the real course", () => {
     expect(underArch(course, 4905 + LAP_LENGTH, 4910 + LAP_LENGTH)).toBe(true);
   });
 
-  it("speed builds slowly over the 8.2 km lap: ~22 m/s by 5 km, faster on lap 2", () => {
+  it("speed builds slowly over the 8.2 km lap: 15 m/s by 2 km, ~21 by 5 km, faster on lap 2", () => {
     expect(speedAt(0)).toBeCloseTo(11, 6);
-    expect(speedAt(5000)).toBeGreaterThan(21);
+    expect(speedAt(2000)).toBeCloseTo(15, 1);
+    expect(speedAt(5000)).toBeGreaterThan(20);
     expect(speedAt(5000)).toBeLessThan(23);
     expect(speedAt(LAP_LENGTH + 100)).toBeGreaterThan(speedAt(LAP_LENGTH - 100));
   });

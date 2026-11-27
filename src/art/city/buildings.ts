@@ -157,7 +157,7 @@ function walls(accs: FacadeAccs, ctx: CityCtx, pb: PreparedBuilding, st: Buildin
       acc.quad(A, B, C, D, [u0, v0], [u1, v0], [u1, v1], [u0, v1], c0, c0, c1, c1, n);
     };
     const gTop = Math.min(st.Gf, yTo);
-    const simple = pb.src.dist > 18;
+    const simple = pb.src.dist > 12;
     // below the street (hides slopes) and the ground floor with its darker base band
     if (yFrom === null && simple) q(accs.flat, ga - 3, gd - 3, gTop, gTop, dark, st.ground);
     else if (yFrom === null) {

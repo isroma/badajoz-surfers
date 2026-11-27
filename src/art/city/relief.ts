@@ -12,7 +12,7 @@ import { T, xf } from "../geom";
 import type { Bag } from "./bag";
 import { styleOf } from "./buildings";
 import { drawLabel, flatMaterial, glowMaterial, signMaterial, signSlot } from "./cmats";
-import { CLEARANCE, type CityCtx, type PreparedBuilding } from "./context";
+import { CLEARANCE, plausibleName, type CityCtx, type PreparedBuilding } from "./context";
 import { hash01 } from "./shared";
 import { newFrame } from "./track";
 
@@ -75,6 +75,26 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
       const mz = (a.z + d.z) / 2;
       const g = pb.streetGround ? ctx.streetLevel(mx, mz, pb.src.s) : pb.src.h0;
       const ry = Math.atan2(nx, nz);
+      // Plaza Alta: the arcade's dark arch openings under the red and white houses
+      if (pb.typ === "plazaAlta") {
+        const bays = Math.max(1, Math.round(len / 3.2));
+        const bw = len / bays;
+        const acc = bag.acc(m);
+        const dark = new THREE.Color(0x4a3a30);
+        const r = bw / 2 - 0.35;
+        for (let k = 0; k < bays; k++) {
+          const cx = a.x + ux * (k + 0.5) * bw + nx * 0.04;
+          const cz = a.z + uz * (k + 0.5) * bw + nz * 0.04;
+          const V = (du: number, y: number): THREE.Vector3 => new THREE.Vector3(cx + ux * du, g + y, cz + uz * du);
+          const nn = new THREE.Vector3(nx, 0, nz);
+          acc.quad(V(-r, 0), V(r, 0), V(r, 2.2), V(-r, 2.2), [0, 0], [0, 0], [0, 0], [0, 0], dark, dark, dark, dark, nn);
+          for (let j = 0; j < 6; j++) {
+            const a0 = (j / 6) * Math.PI;
+            const a1 = ((j + 1) / 6) * Math.PI;
+            acc.tri(V(0, 2.2), V(Math.cos(a0) * r, 2.2 + Math.sin(a0) * r * 0.9), V(Math.cos(a1) * r, 2.2 + Math.sin(a1) * r * 0.9), [0, 0], [0, 0], [0, 0], dark, nn);
+          }
+        }
+      }
       // balconies: one slab and a dark railing band per floor along the facade
       if (st.accentKind === "balconies" && st.floors > 0) {
         for (let fl = 0; fl < Math.min(st.floors, 8); fl++) {
@@ -128,7 +148,7 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
   // the real businesses on the nearest facade facing the route
   const f = newFrame();
   for (const poi of ctx.city.pois) {
-    if (poi.s < s0 || poi.s >= s1 || poi.dist > 35) continue;
+    if (poi.s < s0 || poi.s >= s1 || poi.dist > 35 || !plausibleName(poi.name)) continue;
     let best: { x: number; z: number; ry: number; g: number; d: number } | null = null;
     for (const pb of ctx.buildingGrid.query(poi.x - 25, poi.z - 25, poi.x + 25, poi.z + 25)) {
       const r = pb.ring;

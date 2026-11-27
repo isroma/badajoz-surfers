@@ -92,6 +92,8 @@ export const MARGINAL_CLIP = 0.3;
 
 // --- Run --------------------------------------------------------------------------------------
 export const START_SPEED = 11;
+/** Metres over which the first lap eases from START_SPEED to START_SPEED + 4. */
+export const GENTLE_RAMP = 2000;
 export const PATINETE_SPEED_FACTOR = 1.25;
 export const STUMBLE_SLOWDOWN = 0.65; // speed factor right after a stumble, recovers over ~1 s
 export const STUMBLE_WINDOW = 8; // a second stumble within this many seconds = caught
@@ -141,7 +143,10 @@ export function speedAt(distance: number): number {
   const d = Math.max(0, distance);
   const lap = lapAt(d);
   const cap = Math.min(34, 24 + 2.5 * (lap - 1));
-  const ramp = START_SPEED + 12.5 * (1 - Math.exp(-d / 2500)) + 2 * (lap - 1);
+  // Gentle over the first 2 km (11 → 15 m/s), then towards ~23 by the end of the lap.
+  const w = d - (lap - 1) * LAP_LENGTH;
+  const first = lap === 1 && w < GENTLE_RAMP ? START_SPEED + 4 * (w / GENTLE_RAMP) : NaN;
+  const ramp = Number.isFinite(first) ? first : START_SPEED + 4 + 8.5 * (1 - Math.exp(-Math.max(0, d - GENTLE_RAMP) / 2500)) + 2 * (lap - 1);
   return Math.min(cap, ramp);
 }
 

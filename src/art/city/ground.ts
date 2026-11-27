@@ -102,6 +102,7 @@ export function buildGround(ctx: CityCtx): GroundLayer {
         if (ga) kind[i] = ga.kind === "forest" || ga.kind === "wood" ? 6 : ga.kind === "scrub" || ga.kind === "recreation_ground" ? 5 : 1;
         else if (h < wl + 1.6) kind[i] = 8;
         else if (h < wl + 5) kind[i] = 7;
+        else if (inside && ctx.buildingGrid.query(x - 25, z - 25, x + 25, z + 25).size === 0) kind[i] = 5; // empty plots: dry grass
         else kind[i] = inside ? 0 : 4;
       }
       // keep the terrain under the route's surface (the road is drawn at the route height)

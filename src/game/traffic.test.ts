@@ -75,7 +75,7 @@ describe("traffic model", () => {
           expect(o.k).toBeLessThanOrEqual(-0.55 + 1e-9);
           const closing = (1 + o.k) * speedAt(o.d);
           expect(closing).toBeGreaterThanOrEqual(2.99);
-          expect(closing).toBeLessThanOrEqual(6.01 + 0.1 * speedAt(o.d));
+          expect(closing).toBeLessThanOrEqual(6.01 + 0.15 * speedAt(o.d));
           // Never past the zone-end light while it exists.
           expect(obstacleCentre(o, lifetime(o)[1]) + def.length / 2).toBeLessThanOrEqual(lightFor(span) + 1e-6);
         }

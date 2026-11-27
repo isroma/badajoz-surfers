@@ -145,6 +145,19 @@ function classify(b: CityBuilding, zone: ZoneId, s: number, area: number, plazaA
   }
 }
 
+/** Corrections to names in the data, by OSM id (the owner's local knowledge). Add more here. */
+export const NAME_OVERRIDES: Record<string, string> = {
+  w566029376: "Colegio Salesiano Ramón Izquierdo",
+  w566029377: "Colegio Salesiano Ramón Izquierdo",
+  w566029380: "Colegio Salesiano Ramón Izquierdo",
+  w566029383: "Colegio Salesiano Ramón Izquierdo",
+};
+
+/** Reject placeholder / test strings found in OSM names (e.g. "Churrería aAaaa"). */
+export function plausibleName(n: string): boolean {
+  return !/(.)\1{2,}/i.test(n) && !/\b[a-z][A-Z]/.test(n) && n.trim().length >= 2;
+}
+
 export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
   const L = track.lapLength;
   const wrapS = (s: number): number => ((s % L) + L) % L;
@@ -218,7 +231,10 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
     const typ = classify(b, zone, b.s, area, plazaAlta, poi?.category ?? null);
     // building names: OSM's, or an institution inside (shops keep to their own ground-floor signs)
     const institution = poi && /^amenity:(school|college|university|kindergarten|hospital|clinic|theatre|place_of_worship|townhall|police|post_office|library)$|^tourism:hotel$/.test(poi.category);
-    const name = b.tags?.["name"] ?? (institution ? poi.name : null) ?? (isSchoolBuilding && nearSchool ? nearSchool.name : null);
+    const rawName = NAME_OVERRIDES[b.id] ?? b.tags?.["name"] ?? (institution ? poi.name : null) ?? (isSchoolBuilding && nearSchool ? nearSchool.name : null);
+    // shops and bars show their own sign; implausible names (test strings in OSM) are not shown
+    const shopLike = !!(b.tags?.["shop"] || /^(restaurant|bar|cafe|fast_food|pub)$/.test(b.tags?.["amenity"] ?? ""));
+    const name = rawName && !NAME_OVERRIDES[b.id] && (shopLike || !plausibleName(rawName)) ? null : rawName;
     // clip out of the runnable surface
     const near = b.dist < 25;
     let upperRing: P2[] | null = null;

@@ -191,8 +191,9 @@ export function waterMaterial(): THREE.MeshLambertMaterial {
 // once (prewarm draws all the city's names at load). LRU reuse if it ever fills up.
 // ---------------------------------------------------------------------------------------------
 
-const SLOT_W = 512;
-const SLOT_H = 96;
+/** Slots are drawn at 512 x 96 design units, stored at half resolution: 336 slots, the whole lap fits. */
+const SLOT_W = 256;
+const SLOT_H = 48;
 const ATLAS = 2048;
 const COLS = ATLAS / SLOT_W;
 const ROWS = Math.floor(ATLAS / SLOT_H);
@@ -213,11 +214,11 @@ function textAtlas(): { canvas: HTMLCanvasElement; tex: THREE.CanvasTexture } {
   return { canvas: atlasCanvas, tex: atlasTex };
 }
 
-export function signMaterial(lit = false): THREE.Material {
-  return cached(`signs-${lit}`, () => {
+/** All text in one unlit material (signs read the same in any light): one draw call per chunk. */
+export function signMaterial(_lit = false): THREE.Material {
+  return cached("signs", () => {
     const { tex } = textAtlas();
-    const m = lit ? new THREE.MeshBasicMaterial({ map: tex, vertexColors: true }) : new THREE.MeshLambertMaterial({ map: tex, vertexColors: true });
-    return tagMat(m, false);
+    return tagMat(new THREE.MeshBasicMaterial({ map: tex, vertexColors: true }), false);
   });
 }
 
@@ -231,7 +232,8 @@ export function signSlot(key: string, draw: (ctx: CanvasRenderingContext2D, w: n
   if (!s) {
     let i = slots.size;
     if (i >= COLS * ROWS) {
-      // full: reuse the least recently used slot
+      // full (should not happen: the atlas holds the whole lap): reuse the least recently used slot
+      console.warn("city text atlas full");
       let oldest: [string, { i: number; used: number }] | null = null;
       for (const e of slots) if (!oldest || e[1].used < oldest[1].used) oldest = e;
       if (oldest) {
@@ -251,7 +253,8 @@ export function signSlot(key: string, draw: (ctx: CanvasRenderingContext2D, w: n
       ctx.rect(0, 0, SLOT_W, SLOT_H);
       ctx.clip();
       ctx.clearRect(0, 0, SLOT_W, SLOT_H);
-      draw(ctx, SLOT_W, SLOT_H);
+      ctx.scale(SLOT_W / 512, SLOT_H / 96);
+      draw(ctx, 512, 96);
       ctx.restore();
       tex.needsUpdate = true;
     }

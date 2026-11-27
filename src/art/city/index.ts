@@ -43,7 +43,7 @@ let NEAR_AHEAD = 180;
 const NEAR_BEHIND = 70;
 const BUDGET_MS = 4;
 /** Permanent meshes farther than this (beyond the fog) are hidden. */
-const CULL_FAR = 1000;
+const CULL_FAR = 850;
 
 export interface CityInternals extends CityScenery {
   ctx: CityCtx;
@@ -132,7 +132,7 @@ export function createCity(city: CityData, track: Track): CityInternals {
       const detail = o.parent?.name.endsWith("-detail") ?? false;
       const tree = o.name === "trees";
       const terrain = o.name === "terrain";
-      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 420 : tree ? 600 : terrain ? 650 : CULL_FAR });
+      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 260 : tree ? 420 : terrain ? 600 : CULL_FAR });
     });
   };
 
@@ -249,7 +249,7 @@ export function createCity(city: CityData, track: Track): CityInternals {
         if (!(d + CHUNK > -NEAR_BEHIND && d < NEAR_AHEAD)) dropChunk(i);
       }
     },
-    update(s, lap, camera) {
+    update(s, lap, camera, alsoKeepS) {
       const now = performance.now();
       camera.getWorldPosition(camPos);
       for (const e of cullList) e.o.visible = e.c.distanceTo(camPos) - e.r < e.max;
@@ -262,9 +262,11 @@ export function createCity(city: CityData, track: Track): CityInternals {
         return;
       }
       // unload
+      // keep the menu's start area built while the run starts elsewhere (alsoKeepS)
+      const pinned = alsoKeepS === undefined ? null : new Set(wanted(alsoKeepS, AHEAD, BEHIND));
       for (const i of [...chunks.keys()]) {
         const d = rel(i, s);
-        if (d + CHUNK < -KEEP_BEHIND || d > KEEP_AHEAD) dropChunk(i);
+        if ((d + CHUNK < -KEEP_BEHIND || d > KEEP_AHEAD) && !pinned?.has(i)) dropChunk(i);
       }
       // load, nearest first, within the time budget; upgrade chunks coming near to full dressing
       const start = performance.now();

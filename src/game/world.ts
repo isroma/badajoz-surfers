@@ -617,12 +617,15 @@ export class World {
     this.snapAtmosphere(s, lap);
   }
 
-  /** Per frame: stream the city round the runner. */
-  updateScenery(s: number, lap: number, camera: THREE.Camera): void {
+  /**
+   * Per frame: stream the city round the runner. `alsoKeepS` (the menu: the run's start) asks the
+   * art to keep that area built too, when it supports it.
+   */
+  updateScenery(s: number, lap: number, camera: THREE.Camera, alsoKeepS?: number): void {
     const lapLength = this.space.lapLength;
     const within = Number.isFinite(lapLength) ? ((s % lapLength) + lapLength) % lapLength : s;
     try {
-      this.cityScenery?.update(within, lap, camera);
+      this.cityScenery?.update(within, lap, camera, alsoKeepS);
     } catch (error) {
       console.error("Badajoz Surfers: city update failed", error);
     }

@@ -116,7 +116,9 @@ function finaleRoom(span: ZoneSpan): { finaleLength: number; before: number } {
   const difficulty = difficultyAt(span.end);
   const reaction = reactionWindow(difficulty);
   const rows = difficulty > 0.3 ? 4 : 3;
-  const finaleLength = rows * (5.4 + v * (reaction + 0.35 + 0.25 * (1 - difficulty))) + v * 0.4 + 1;
+  // Row gap as in patterns.rowGap(+0.12 s lane change), plus the lap-1 breather of the finale.
+  const extra = 0.12 + (span.lap === 1 ? 0.25 : 0);
+  const finaleLength = rows * (5.4 + v * (reaction + 0.35 + extra + 0.25 * (1 - difficulty))) + v * (span.lap === 1 ? 0.65 : 0.4) + 1;
   return { finaleLength, before: v * (reaction + 1.1 + 0.35 * (1 - difficulty)) + 4 };
 }
 
@@ -203,8 +205,12 @@ export class TrackGenerator {
     const b = new PatternBuilder(ctx, 0);
     const middle = centreLane(ctx.layout);
     // Teach "left/right" towards a neighbouring lane of the same carriageway (not across a median).
+    // Dodge left into the next road lane of our carriageway (own-2) where there is one, else the
+    // nearest lane a normal change away.
     const near = b.lanes.filter((l) => l !== middle && Math.abs(b.xOf(l) - b.xOf(middle)) < 3.8);
-    const side = near.length > 0 ? this.rng.pick(near) : middle === 0 ? 1 : middle - 1;
+    const road = near.filter((l) => b.isRoad(l));
+    const side = road.length > 0 ? road.reduce((a, l) => (b.xOf(l) < b.xOf(a) ? l : a)) : near.length > 0 ? near[0]! : middle === 0 ? 1 : middle - 1;
+    this.rng.next();
     const step = (action: TutorialAction, lane: number, front: number, end: number): void => {
       this.tutorial.push({ action, lane, front, end });
     };
@@ -421,7 +427,9 @@ export class TrackGenerator {
   }
 
   private step(): void {
-    // Skip over reserved stork landings.
+    const zone0 = zoneAt(this.cursor);
+    if (this.cursor < zone0.start + ZONE_MARGIN) this.cursor = zone0.start + ZONE_MARGIN;
+    // Skip over reserved stork landings (after the zone margin, which may move into one).
     for (const f of this.flights) {
       if (this.cursor >= f.clearFrom - 1 && this.cursor < f.clearTo) this.cursor = f.clearTo + 0.01;
     }
@@ -480,6 +488,8 @@ export class TrackGenerator {
       if (def.movers && tutorial && this.cursor < 250) return false;
       // The first stretch of the first lap: single obstacles and simple pairs only.
       if (tutorial && this.cursor < 360 && (name === "slalom" || name === "carHop" || name === "fullBarrier")) return false;
+      // First 1.5 km of a run: no barriers across the whole street (a forced jump).
+      if (ctx.lap === 1 && this.cursor < 1500 && name === "fullBarrier") return false;
       return true;
     });
     if (finalePending && ctx.lightAt - this.cursor < 25) {
