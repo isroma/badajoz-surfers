@@ -10,13 +10,14 @@ const BURST_COLORS: Readonly<Record<PickupKind | "crash" | "shield", readonly nu
   zapatillas: [0x46e07a, 0xffffff, 0x1fb6ff],
   jamon: [0xd2463c, 0xffd28a, 0xffffff],
   patinete: [0x23c7f2, 0xffffff, 0xffe14a],
+  ciguena: [0xffffff, 0xf0f0f0, 0xff8a3a],
   letra: [0xffd400, 0xffffff, 0xff7a00],
   crash: [0xffffff, 0xcfcfcf, 0xffd27a],
   shield: [0x23c7f2, 0xffffff, 0x9ff3ff],
 };
 
 const BURST_COUNT: Readonly<Record<PickupKind | "crash" | "shield", number>> = {
-  bellota: 6, iman: 28, zapatillas: 28, jamon: 28, patinete: 28, letra: 32, crash: 40, shield: 44,
+  bellota: 6, ciguena: 48, iman: 28, zapatillas: 28, jamon: 28, patinete: 28, letra: 32, crash: 40, shield: 44,
 };
 
 /** A soft round dot so particles are not squares. */

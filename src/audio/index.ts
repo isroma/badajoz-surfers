@@ -26,6 +26,7 @@ export class AudioEngine {
   private mode: MusicMode = "off";
   private powerup = false;
   private zone = 0;
+  private flight = false;
   private lastPlayed = new Map<SfxName, number>();
   private bellotaStreak = 0;
   private lastBellota = -1;
@@ -86,6 +87,7 @@ export class AudioEngine {
       this.music.setMode(this.mode);
       this.music.setPowerup(this.powerup);
       this.music.setZone(this.zone);
+      this.music.setFlight(this.flight);
       void ctx.resume().catch(() => undefined);
     } catch {
       this.ctx = null;
@@ -134,6 +136,11 @@ export class AudioEngine {
   setMusicMode(mode: MusicMode): void {
     this.mode = mode;
     this.music?.setMode(mode);
+  }
+
+  setFlight(on: boolean): void {
+    this.flight = on;
+    this.music?.setFlight(on);
   }
 
   /** Musical variation for the zone (index into ZONES). */

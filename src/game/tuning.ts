@@ -42,6 +42,14 @@ export const STUMBLE_WINDOW = 8; // a second stumble within this many seconds = 
 export const SHIELD_INVULNERABLE_TIME = 1.2;
 export const MAGNET_RADIUS = 6;
 
+// Stork flight ("ciguena").
+export const FLIGHT_SPEED_FACTOR = 1.15;
+/** Seconds to rise to FLIGHT_HEIGHT, and to glide back down at the end of the flight. */
+export const FLIGHT_RISE_TIME = 0.6;
+export const FLIGHT_DESCENT_TIME = 1.2;
+/** No stork before this distance. */
+export const FLIGHT_MIN_DISTANCE = 400;
+
 export const LAP_LENGTH = ZONES.reduce((sum, zone) => sum + zone.length, 0);
 
 /** Lap ("vuelta", 1-based) at a distance. */

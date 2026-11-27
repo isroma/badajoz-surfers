@@ -61,6 +61,24 @@ const JUNCTIONS: Record<ZoneId, { plaque: string; surface: SurfaceName; tint: nu
   "margen-derecha": { plaque: "c-elvas", surface: "paving", tint: 0xd8d2c6 },
 };
 
+/**
+ * Night versions (even laps): deep indigo sky, cool moonlight and generous ambient light so the
+ * road and obstacles stay perfectly readable; the city provides the warm accents.
+ */
+const night = (top: number, bottom: number, ambient: number): Atmosphere => ({
+  skyTop: top, skyBottom: bottom, fogColor: bottom, fogNear: 55, fogFar: 215,
+  sunColor: 0xb9c8ff, sunIntensity: 1.1, sunPosition: [-35, 70, 25],
+  ambientColor: ambient, ambientIntensity: 1.55,
+});
+const NIGHT: Record<ZoneId, Atmosphere> = {
+  "puente-real": night(0x070b26, 0x26315f, 0x8f9fd0),
+  valdepasillas: night(0x080b28, 0x2b3263, 0x949fcf),
+  "san-francisco": night(0x0a0a2a, 0x33305e, 0x9d9bcc),
+  "casco-antiguo": night(0x0c0a28, 0x3b2f58, 0xa69ac8),
+  "alcazaba-palmas": night(0x0d0a2a, 0x40305a, 0xab9cc6),
+  "margen-derecha": night(0x060a24, 0x232d5a, 0x8c9bd0),
+};
+
 const BUILDERS: Record<ZoneId, (s: Seg) => void> = {
   "puente-real": buildPuenteReal,
   valdepasillas: buildValdepasillas,
@@ -74,17 +92,22 @@ export function createZoneScenery(zone: ZoneId): ZoneScenery {
   const zoneHash = hashStr(zone);
   return {
     atmosphere: { ...ATMOSPHERES[zone] },
+    atmosphereFor(lap: number): Atmosphere {
+      return lap % 2 === 0 ? { ...NIGHT[zone] } : { ...ATMOSPHERES[zone] };
+    },
     buildSegment(index: number, count: number, lap: number): THREE.Object3D {
       const b = new Builder();
       // the layout is the same every lap; the lap only reshuffles small details
       const s: Seg = {
         b,
-        r: makeRng(hashInts(zoneHash, index, lap % 3)),
+        r: makeRng(hashInts(zoneHash, index, lap % 2 === 0 ? 2 : 1)),
         index,
         count,
         lap,
-        night: zone === "margen-derecha",
+        // margen-derecha is always at dusk/night; every zone switches to night on even laps
+        night: zone === "margen-derecha" || lap % 2 === 0,
       };
+      b.litSigns = s.night;
       // every zone opens with the same crossroads, so handovers read as crossing a street
       const opening = index === 0;
       if (opening) b.clip = { z: -JUNCTION, ax: RW + 0.3 };

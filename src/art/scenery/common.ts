@@ -6,9 +6,9 @@
 import * as THREE from "three";
 import { ROAD_HALF_WIDTH, SEGMENT_LENGTH } from "../../contracts";
 import { Builder, T, xf, type V3 } from "../geom";
-import { CLOTH, FAR, GLASS, GLOW, SOLID } from "../materials";
+import { CLOTH, COOLLIT, FAR, GLASS, GLOW, SKYGLOW, SOLID, WARMLIT } from "../materials";
 import type { Rng } from "../rng";
-import { facadeMat, surfaceMat, type FacadeStyle, type SurfaceName } from "../text";
+import { facadeMat, lightPoolMat, surfaceMat, surfaceMatLit, type FacadeStyle, type SurfaceName } from "../text";
 
 export const L = SEGMENT_LENGTH;
 export const RW = ROAD_HALF_WIDTH;
@@ -85,6 +85,12 @@ export function flat(s: Seg, side: Side, x0: number, x1: number, y: number, colo
   s.b.span(side * x0, side * x1, y - 0.3, y, z0, z1, color, FAR);
 }
 
+/** Soft warm pool of lamplight on the ground (night only): a flat additive decal. */
+export function lightPool(s: Seg, x: number, z: number, r: number, y = 0.17, color = 0xffb35c): void {
+  if (!s.night) return;
+  s.b.quad(xf(x, y, z, r * 2, r * 2, 1, -Math.PI / 2, 0, 0), color, lightPoolMat());
+}
+
 // ---------------------------------------------------------------------------
 // Street furniture
 // ---------------------------------------------------------------------------
@@ -99,6 +105,7 @@ export function lampModern(s: Seg, side: Side, x: number, z: number, h = 8): voi
   b.beam([px, h - 0.1, z], [tip, h + 0.15, z], 0.07, 0x7d848c, SOLID);
   b.box(tip, h + 0.05, z, 0.7, 0.14, 0.3, 0x5c636b, SOLID);
   b.box(tip, h - 0.04, z, 0.55, 0.05, 0.22, s.night ? 0xfff0c0 : 0xf2f2ea, s.night ? GLOW : SOLID);
+  lightPool(s, px - side * 0.9, z, 3.2, 0.17);
 }
 
 /** Classic black cast-iron lamp (old town, promenades, Puente de Palmas). */
@@ -111,6 +118,7 @@ export function lampClassic(s: Seg, side: Side, x: number, z: number, h = 4.2, b
   b.add(T.frustum(1.6, 6), xf(px, base + h - 0.3, z, 0.14, 0.5, 0.14), s.night ? 0xffe2a0 : 0xfff8e6, s.night ? GLOW : SOLID);
   b.cone(px, base + h - 0.05, z, 0.28, 0.25, 0x1f2326, 6, SOLID);
   b.sphere(px, base + h + 0.24, z, 0.05, 0.06, 0.05, 0x1f2326, SOLID, 5, 3);
+  lightPool(s, px, z, 2.4, base + 0.03);
 }
 
 /** Lamp bracket on a wall at x (wall face), arm points towards the road. */
@@ -120,6 +128,7 @@ export function lampWall(s: Seg, side: Side, x: number, z: number, y = 4.8): voi
   b.beam([px, y, z], [px - side * 0.8, y + 0.15, z], 0.05, 0x1f2326, SOLID);
   b.add(T.frustum(1.6, 6), xf(px - side * 0.8, y - 0.2, z, 0.12, 0.4, 0.12), s.night ? 0xffe2a0 : 0xfff8e6, s.night ? GLOW : SOLID);
   b.cone(px - side * 0.8, y + 0.02, z, 0.22, 0.2, 0x1f2326, 6, SOLID);
+  lightPool(s, px - side * 0.6, z, 2.0, 0.17);
 }
 
 export function bench(s: Seg, side: Side, x: number, z: number, color = 0x7a5230, rotY = 0): void {
@@ -524,7 +533,7 @@ export function junction(s: Seg, plaque: string, surface: SurfaceName = "paving"
   }
   // zebra crossing on the main road
   for (let k = 0; k < 8; k++) b.quad(xf(-3.6 + k * 1.03, 0.017, -5, 0.55, 3.4, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
-  b.quad(xf(0, 0.017, -7.1, RW * 2 - 0.4, 0.3, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
+  b.quad(xf(0, 0.017, -2.9, RW * 2 - 0.4, 0.3, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR); // stop line before the zebra
   // street name sign for the zone, readable when approaching (kept outside the road)
   b.cyl(4.85, 0.15, -9.8, 0.06, 3.3, 0x555555, 6, SOLID);
   const w = 0.5 * 5;
@@ -565,4 +574,53 @@ export function pigeons(s: Seg, x: number, z: number, n = 6, y = 0.15): void {
     s.b.sphere(0, 0.2, -0.1, 0.05, 0.05, 0.05, 0x5c626b, SOLID, 4, 3);
     s.b.pop();
   }
+}
+
+/** Fairground lantern strings (farolillos) across the street at night, above `y` (>= 4.7). */
+export function farolillos(s: Seg, z: number, half: number, y = 5.0): void {
+  if (!s.night) return;
+  const b = s.b;
+  const cols = [0xff3b3b, 0xffffff, 0x3bd16f, 0xffd23f];
+  const n = Math.round((half * 2) / 0.7);
+  const sag = 0.6;
+  const top = y + sag + 0.3;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const x = -half + t * half * 2;
+    const yy = top - Math.sin(t * Math.PI) * sag;
+    b.sphere(x, yy - 0.22, z, 0.17, 0.2, 0.17, cols[i % cols.length] ?? 0xffffff, GLOW, 6, 4);
+  }
+  b.beam([-half, top, z], [0, top - sag, z], 0.02, 0x333333, FAR);
+  b.beam([0, top - sag, z], [half, top, z], 0.02, 0x333333, FAR);
+}
+
+/** A firework burst frozen in the night sky (unfogged so it reads through the haze). */
+export function firework(s: Seg, x: number, y: number, z: number, r: number, color: number): void {
+  if (!s.night) return;
+  const b = s.b;
+  const n = 26;
+  for (let k = 0; k < n; k++) {
+    const u = (k + 0.5) / n;
+    const phi = Math.acos(1 - 2 * u);
+    const th = k * 2.399963;
+    const dx = Math.sin(phi) * Math.cos(th);
+    const dy = Math.cos(phi);
+    const dz = Math.sin(phi) * Math.sin(th) * 0.3;
+    b.beam([x + dx * r * 0.35, y + dy * r * 0.35, z + dz * r * 0.35], [x + dx * r, y + dy * r - 0.15 * r * (1 - dy), z + dz * r], r * 0.035, color, SKYGLOW);
+    b.sphere(x + dx * r, y + dy * r - 0.15 * r * (1 - dy), z + dz * r, r * 0.06, r * 0.06, r * 0.06, 0xffffff, SKYGLOW, 4, 3);
+  }
+}
+
+let warmMap: Map<THREE.Material, THREE.Material> | null = null;
+let coolMap: Map<THREE.Material, THREE.Material> | null = null;
+
+/** At night, build `fn` floodlit: warm for stone and rammed earth, cool for white concrete. */
+export function floodlit(s: Seg, tone: "warm" | "cool", fn: () => void): void {
+  if (!s.night) {
+    fn();
+    return;
+  }
+  if (!warmMap) warmMap = new Map<THREE.Material, THREE.Material>([[SOLID, WARMLIT], [FAR, WARMLIT], [surfaceMat("tapial"), surfaceMatLit("tapial")]]);
+  if (!coolMap) coolMap = new Map<THREE.Material, THREE.Material>([[SOLID, COOLLIT], [FAR, COOLLIT]]);
+  s.b.with(tone === "warm" ? warmMap : coolMap, fn);
 }

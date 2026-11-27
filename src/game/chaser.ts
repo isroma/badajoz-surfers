@@ -23,6 +23,9 @@ export class Chaser {
   private mode: "intro" | "chase" | "stumble" | "grab" | "arrive" = "intro";
   private since = 0;
   private from = CHASER_INTRO;
+  /** Extra metres he drops back by (e.g. while the runner flies). Eased. */
+  lag = 0;
+  private lagNow = 0;
 
   reset(): void {
     this.gap = CHASER_INTRO;
@@ -71,6 +74,7 @@ export class Chaser {
 
   update(dt: number): void {
     this.since += dt;
+    this.lagNow += (this.lag - this.lagNow) * Math.min(1, dt * 0.8);
     switch (this.mode) {
       case "intro":
         this.gap = CHASER_INTRO;
@@ -98,6 +102,11 @@ export class Chaser {
         this.gap = this.from + (1.3 - this.from) * smooth(this.since / 1.0);
         break;
     }
+  }
+
+  /** Gap including the extra lag. */
+  get distance(): number {
+    return this.gap + this.lagNow;
   }
 
   /** 0 = far behind, 1 = on your heels. */

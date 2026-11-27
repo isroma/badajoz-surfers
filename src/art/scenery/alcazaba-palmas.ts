@@ -11,7 +11,7 @@
 import { alcazabaHill, alcazabaWall, espantaperros, puertaPalmas } from "../landmarks/alcazaba";
 import { FAR, SOLID } from "../materials";
 import {
-  L, RW, building, cypress, flat, pigeons, storkNest, groundQuad, lampClassic, palm, pavement, person, pine, road, shrub, type Seg, type Side,
+  L, RW, building, cypress, firework, flat, floodlit, pigeons, storkNest, groundQuad, lampClassic, palm, pavement, person, pine, road, shrub, type Seg, type Side,
 } from "./common";
 import { river } from "./puente-real";
 
@@ -54,8 +54,11 @@ function alcazabaSide(s: Seg): void {
   b.span(6.5, 7.1, 0, 1.6, 0, -L, 0xc9a774, SOLID);
   hill(s, 1, 7.1, 18, 8);
   const towerZ = i % 2 === 0 ? -12 : -30;
-  alcazabaWall(b, 1, 18, 0, -L, 8, 10, i === 3 ? undefined : towerZ);
-  if (i === 3) espantaperros(b, 14.5, -20, 6.5);
+  floodlit(s, "warm", () => {
+    alcazabaWall(b, 1, 18, 0, -L, 8, 10, i === 3 ? undefined : towerZ);
+    if (i === 3) espantaperros(b, 14.5, -20, 6.5);
+  });
+  if (i === 3) firework(s, 40, 70, -120, 12, 0xffd23f);
   else if (i % 2 === 1) storkNest(b, 17.2, 22.05, towerZ, 0.4, i === 1);
   // the inner keep area beyond the wall: higher ground, a couple of palace roofs
   b.span(20.4, 160, -0.5, 14, 0, -L, 0xb39c60, FAR);
@@ -80,7 +83,7 @@ function descent(s: Seg): void {
     // the walls step down the hill towards the gate
     const base = Math.max(0, 6 - (i - 6) * 3);
     hill(s, 1, 9, 22, base + 0.1);
-    alcazabaWall(b, 1, 22, 0, -L, base, 9, -20);
+    floodlit(s, "warm", () => alcazabaWall(b, 1, 22, 0, -L, base, 9, -20));
   } else {
     // past the gate: the riverside park opens up
     flat(s, 1, 60, 160, 0.1, 0x93b05a);
@@ -101,7 +104,9 @@ function gateSegment(s: Seg): void {
     lampClassic(s, side, 12, -30, 4.2, 0.12);
     flat(s, side, 40, 160, 0.1, 0x93b05a);
   }
-  puertaPalmas(b, -20);
+  floodlit(s, "warm", () => puertaPalmas(b, -20));
+  firework(s, -20, 55, -160, 13, 0xff3b3b);
+  firework(s, 30, 65, -190, 10, 0x7dff6a);
   storkNest(b, -9.3, 16.75, -20, 1.2, true);
   pigeons(s, -8, -8, 6, 0.12);
   b.sign("c-palmas", -13.0, 3.0, -16.4, 0.45, 0);
@@ -181,8 +186,10 @@ function bridge(s: Seg): void {
   }
   // riverside parks and the Alcazaba hill back across the river
   for (let k = 0; k < 3; k++) pine(s, -r.range(125, 160), -r.range(2, 38), 1.3, WATER_Y + 2.5, FAR);
-  if (s.index === 13 || s.index === 16) alcazabaHill(b, 175, -10, 120);
-  if (s.index === 14) alcazabaHill(b, -190, -20, 90);
+  floodlit(s, "warm", () => {
+    if (s.index === 13 || s.index === 16) alcazabaHill(b, 175, -10, 120);
+    if (s.index === 14) alcazabaHill(b, -190, -20, 90);
+  });
   for (let k = 0; k < 2; k++) person(s, (r.chance(0.5) ? -1 : 1) * r.range(4.7, 5.3), -r.range(2, 38), r.chance(0.5) ? 0 : Math.PI);
 }
 

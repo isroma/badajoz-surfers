@@ -3,7 +3,7 @@
  * `parseSave` accepts anything (corrupt JSON, old versions, hand-edited values) and always
  * returns a valid SaveData.
  */
-import { POWERUPS, type PowerupKind } from "../contracts";
+import { OUTFITS, POWERUPS, type OutfitId, type PowerupKind } from "../contracts";
 import { clampLevel } from "./economy";
 import { ACHIEVEMENTS, MAX_RECORDS, type DailyState, type Lifetime, type RunRecord } from "./progress";
 import {
@@ -17,10 +17,10 @@ import {
   type RunStats,
 } from "./missions";
 
-export const SAVE_VERSION = 2;
-export const SAVE_KEY = "simpa.save.v2";
+export const SAVE_VERSION = 3;
+export const SAVE_KEY = "simpa.save.v3";
 /** Keys of older formats that are read once and migrated (newest first). */
-export const LEGACY_KEYS: readonly string[] = ["simpa.save.v1", "simpa.save"];
+export const LEGACY_KEYS: readonly string[] = ["simpa.save.v2", "simpa.save.v1", "simpa.save"];
 
 export interface Settings {
   music: boolean;
@@ -48,7 +48,14 @@ export interface SaveData {
   /** Top local runs, best first. */
   records: RunRecord[];
   daily: DailyState;
+  /** Outfits bought (free ones are always owned) and the one equipped. */
+  outfits: { owned: OutfitId[]; equipped: OutfitId };
 }
+
+const OUTFIT_IDS = new Set<string>(OUTFITS.map((o) => o.id));
+const FREE_OUTFITS: OutfitId[] = OUTFITS.filter((o) => o.price === 0).map((o) => o.id);
+export const DEFAULT_OUTFIT: OutfitId = FREE_OUTFITS[0] ?? "clasico";
+const isOutfit = (v: unknown): v is OutfitId => typeof v === "string" && OUTFIT_IDS.has(v);
 
 export const emptyLifetime = (): Lifetime => ({
   totals: emptyRunStats(),
@@ -66,7 +73,7 @@ export function defaultSave(): SaveData {
     bestScore: 0,
     bestDistance: 0,
     runsPlayed: 0,
-    upgrades: { iman: 0, zapatillas: 0, jamon: 0, patinete: 0 },
+    upgrades: { iman: 0, zapatillas: 0, jamon: 0, patinete: 0, ciguena: 0 },
     missions: initialMissions(),
     settings: { music: true, sfx: true, volume: 0.8 },
     seenHowTo: false,
@@ -75,7 +82,16 @@ export function defaultSave(): SaveData {
     achievements: [],
     records: [],
     daily: { date: "", progress: 0, done: false },
+    outfits: { owned: [...FREE_OUTFITS], equipped: DEFAULT_OUTFIT },
   };
+}
+
+function parseOutfits(raw: unknown): SaveData["outfits"] {
+  const r = isRecord(raw) ? raw : {};
+  const list = Array.isArray(r["owned"]) ? r["owned"].filter(isOutfit) : [];
+  const owned = [...new Set<OutfitId>([...FREE_OUTFITS, ...list])];
+  const equipped = isOutfit(r["equipped"]) && owned.includes(r["equipped"]) ? r["equipped"] : DEFAULT_OUTFIT;
+  return { owned, equipped };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -169,6 +185,7 @@ export function parseSave(raw: unknown): SaveData {
       : [],
     records: parseRecords(raw["records"]),
     daily: parseDaily(raw["daily"]),
+    outfits: parseOutfits(raw["outfits"]),
   };
 }
 

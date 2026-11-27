@@ -52,11 +52,23 @@ export const ICON_WAITER = wrap(`
   <circle cx="26" cy="31" r="2.3" fill="${INK}"/><circle cx="38" cy="31" r="2.3" fill="${INK}"/>
   <path d="M22 38 C26 34 30 36 32 37 C34 36 38 34 42 38 C38 39 35 39 32 38.5 C29 39 26 39 22 38 Z" fill="${INK}"/>`);
 
+/** White stork in flight, black wing tips, red beak and legs. */
+export const ICON_CIGUENA = wrap(`
+  <path d="M6 30 C14 18 24 16 30 24 C36 14 48 10 60 16 C52 18 46 24 40 30 Z" fill="#ffffff" stroke="${INK}" stroke-width="3.5"/>
+  <path d="M6 30 C10 25 14 22 18 21 L14 30 Z M60 16 C56 17 52 19 49 22 L52 25 Z" fill="${INK}"/>
+  <path d="M18 34 C24 28 36 28 44 32 C40 38 30 40 22 38 Z" fill="#ffffff" stroke="${INK}" stroke-width="3.5"/>
+  <path d="M44 32 C48 30 52 30 54 32" fill="none" stroke="${INK}" stroke-width="5"/>
+  <path d="M44 32 C48 30 52 30 54 32" fill="none" stroke="#ffffff" stroke-width="2"/>
+  <path d="M54 32 L63 35 L54 35 Z" fill="#E8423A" stroke="${INK}" stroke-width="2"/>
+  <circle cx="51" cy="31.5" r="1.1" fill="${INK}"/>
+  <path d="M22 38 L12 48 M26 38 L18 50" stroke="#E8423A" stroke-width="2.8"/>`);
+
 const POWERUP_ICONS: Record<PowerupKind, string> = {
   iman: ICON_IMAN,
   zapatillas: ICON_ZAPATILLAS,
   jamon: ICON_JAMON,
   patinete: ICON_PATINETE,
+  ciguena: ICON_CIGUENA,
 };
 export const powerupIcon = (kind: PowerupKind): string => POWERUP_ICONS[kind];
 
@@ -66,6 +78,7 @@ export const POWERUP_COLORS: Record<PowerupKind, string> = {
   zapatillas: "#FFC53D",
   jamon: "#C2485A",
   patinete: "#2FB5A6",
+  ciguena: "#7CC6F2",
 };
 
 // Monochrome UI glyphs (use currentColor).
@@ -92,3 +105,5 @@ export const GLYPH_LIST = glyph(`<path d="M9 6 H20 M9 12 H20 M9 18 H20"/><circle
 export const GLYPH_CALENDAR = glyph(`<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10 H20.5 M8 3 V7 M16 3 V7"/><circle cx="12" cy="15" r="1.6" fill="currentColor"/>`);
 export const GLYPH_LOCK = glyph(`<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5 V8 A4 4 0 0 1 16 8 V10.5"/>`);
 export const GLYPH_MAP = glyph(`<path d="M3 6 L9 4 L15 6 L21 4 V18 L15 20 L9 18 L3 20 Z M9 4 V18 M15 6 V20"/>`);
+export const GLYPH_COPY = glyph(`<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8 V5.5 A1.5 1.5 0 0 0 14.5 4 H5.5 A1.5 1.5 0 0 0 4 5.5 V14.5 A1.5 1.5 0 0 0 5.5 16 H8"/>`);
+export const GLYPH_SHIRT = glyph(`<path d="M8 4 L4 7 L6 11 L8 10 V20 H16 V10 L18 11 L20 7 L16 4 C15 6 9 6 8 4 Z"/>`);

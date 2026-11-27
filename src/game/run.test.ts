@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OBSTACLE_DEFS, POWERUPS, type GameEvent, type Lane, type ObstacleKind } from "../contracts";
+import { FLIGHT_HEIGHT, OBSTACLE_DEFS, POWERUPS, ZONES, type GameEvent, type Lane, type ObstacleKind } from "../contracts";
 import { Bot } from "./bot";
 import { Run, type RunFx } from "./run";
 import { TICK } from "./tuning";
@@ -157,5 +157,68 @@ describe("run", () => {
     ticks(run, 2);
     const resumed = events.filter((e) => e.type === "countdown" && e.resume === true).length;
     expect(resumed).toBe(4);
+  });
+
+  it("stork flight: rises, flies over traffic, collects air bellotas, lands safely", () => {
+    const { run, events } = startRunning(12);
+    const s = run.player;
+    run.gen.pickups.push({ id: 300000, kind: "ciguena", lane: 0, d: s.p + 6, y: 1 });
+    ticks(run, 0.6);
+    expect(events.some((e) => e.type === "powerup-start" && e.kind === "ciguena")).toBe(true);
+    expect(s.carried).toBe(true);
+    ticks(run, 0.7);
+    expect(s.y).toBeCloseTo(FLIGHT_HEIGHT, 1);
+    // A wall of buses below is harmless, and lanes still work.
+    for (const lane of [-1, 0, 1] as const) put(run, "bus", lane, s.p + 15);
+    run.push("left");
+    ticks(run, 0.5);
+    expect(s.lane).toBe(-1);
+    const before = run.bellotas;
+    // Put obstacles right where it will land: they must be cleared away.
+    const landAt = s.p + s.speed * (POWERUPS.ciguena.baseDuration - 1.8);
+    for (const lane of [-1, 0, 1] as const) put(run, "coche", lane, landAt);
+    ticks(run, POWERUPS.ciguena.baseDuration);
+    expect(s.carried).toBe(false);
+    expect(run.phase).toBe("running");
+    expect(run.removed.size).toBeGreaterThanOrEqual(3);
+    expect(events.some((e) => e.type === "powerup-end" && e.kind === "ciguena")).toBe(true);
+    expect(events.some((e) => e.type === "crash" || e.type === "stumble")).toBe(false);
+    ticks(run, 0.5);
+    expect(s.grounded).toBe(true);
+    expect(s.y).toBe(0);
+    expect(run.bellotas).toBeGreaterThanOrEqual(before);
+  });
+
+  it("stork flight: the autopilot steers into the air bellota lines", () => {
+    const { run } = startRunning(13);
+    const bot = new Bot();
+    run.gen.pickups.push({ id: 300001, kind: "ciguena", lane: 0, d: run.player.p + 6, y: 1 });
+    const before = run.bellotas;
+    for (let i = 0; i < 0.7 / TICK; i++) {
+      bot.update(run);
+      run.tick(TICK);
+    }
+    const air = run.gen.pickups.filter((p) => p.y > FLIGHT_HEIGHT).length;
+    const length = run.player.speed * (POWERUPS.ciguena.baseDuration - 1.8);
+    // About 3 bellotas per 10 m of cruise.
+    expect(air).toBeGreaterThan((length / 10) * 2.4);
+    for (let i = 0; i < 7 / TICK; i++) {
+      bot.update(run);
+      run.tick(TICK);
+    }
+    expect(run.bellotas - before).toBeGreaterThan(air * 0.7);
+  });
+
+  it("debug start zone: one consistent zone event and zone count", () => {
+    const events: GameEvent[] = [];
+    const run = new Run({
+      seed: 5, powerupDuration: (k) => POWERUPS[k].baseDuration, baseMultiplier: () => 1,
+      emit: (e) => events.push(e), fx: () => {},
+    });
+    run.begin("casco-antiguo");
+    const zones = events.filter((e) => e.type === "zone");
+    expect(zones).toHaveLength(1);
+    expect(zones[0]).toMatchObject({ type: "zone", first: true, zone: { id: "casco-antiguo" } });
+    expect(ZONES[run.zonesCompleted % ZONES.length]?.id).toBe("casco-antiguo");
   });
 });

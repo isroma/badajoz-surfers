@@ -88,7 +88,7 @@ describe("track generator", () => {
       }
       expect(powerups.length).toBeGreaterThan(LAP_LENGTH / 500);
       const letters = gen.pickups.filter((p) => p.kind === "letra");
-      expect(letters.length).toBeGreaterThan(LAP_LENGTH / 300);
+      expect(letters.length).toBeGreaterThan(LAP_LENGTH / 420);
       for (let i = 1; i < letters.length; i++) expect(letters[i]!.d - letters[i - 1]!.d).toBeGreaterThan(100);
     }
   });
@@ -152,7 +152,10 @@ describe("track generator", () => {
         const start = zoneStartDistance(index, lap);
         const zone = ZONES[index]!;
         const inZone = gen.placed.filter((p) => p.start >= start && p.start < start + zone.length);
-        expect(inZone.some((p) => p.name === "finale"), `seed ${seed} ${zone.id} lap ${lap}: finale`).toBe(true);
+        // A stork landing reserved at the end of the zone may take the finale's place.
+        const end = start + zone.length;
+        const landing = gen.flights.some((f) => f.clearTo > end - 200 && f.clearFrom < end);
+        if (!landing) expect(inZone.some((p) => p.name === "finale"), `seed ${seed} ${zone.id} lap ${lap}: finale`).toBe(true);
         if (zone.id === "valdepasillas" || zone.id === "margen-derecha") {
           expect(inZone.some((p) => p.name === "rampRoof"), `seed ${seed} ${zone.id}: roof route`).toBe(true);
         }
@@ -177,5 +180,38 @@ describe("track generator", () => {
       expect(scripted.length).toBe(4);
       expect(solve(gen.obstacles, createPlayer(0), 500, { decision: 0.25, dt: 1 / 120, maxFrontier: 200 }).ok).toBe(true);
     }
+  });
+
+  it("storks: rarer than other power-ups, never early, at normal height, with a clear landing", () => {
+    let storks = 0;
+    let others = 0;
+    for (let seed = 1; seed <= 30; seed++) {
+      const gen = new TrackGenerator(seed * 31, 0, { flightDuration: 9 });
+      gen.generateUntil(LAP_LENGTH * 2);
+      for (const p of gen.pickups) {
+        if (p.kind === "ciguena") {
+          storks++;
+          expect(p.d).toBeGreaterThanOrEqual(400);
+          expect(p.y).toBeLessThan(1.5);
+          // Not under anything overhead.
+          const over = gen.obstacles.some((o) => OBSTACLE_DEFS[o.kind].yMin > 0 && Math.abs(o.d - p.d) < 3);
+          expect(over).toBe(false);
+        } else if (p.kind !== "bellota" && p.kind !== "letra") others++;
+      }
+      for (const f of gen.flights) {
+        const blocked = gen.obstacles.filter((o) => {
+          const [a, b] = interval(o);
+          return b > f.clearFrom && a < f.clearTo;
+        });
+        expect(blocked, `seed ${seed}: landing ${f.clearFrom.toFixed(0)}-${f.clearTo.toFixed(0)}`).toEqual([]);
+        // No other power-up or letter during the flight or its landing.
+        const rewards = gen.pickups.filter((p) => p.kind !== "bellota" && p.kind !== "ciguena" && p.d > f.start && p.d < f.clearTo);
+        expect(rewards).toEqual([]);
+      }
+    }
+    expect(storks).toBeGreaterThan(5);
+    const share = storks / (storks + others);
+    expect(share).toBeGreaterThan(0.08);
+    expect(share).toBeLessThan(0.28);
   });
 });

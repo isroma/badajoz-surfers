@@ -231,10 +231,10 @@ const VARIANTS: Record<ObstacleKind, number> = {
   andamio: 2,
   pancarta: 4,
   contenedor: 3,
-  coche: 24,
-  moto: 8,
+  coche: 12,
+  moto: 6,
   furgoneta: 4,
-  bus: 5,
+  bus: 4,
   "camion-rampa": 4,
 };
 
@@ -262,19 +262,38 @@ function fitToBox(tpl: THREE.Group, kind: ObstacleKind): void {
   }
 }
 
+function template(kind: ObstacleKind, variant: number, moving: boolean): THREE.Group {
+  const key = `${kind}:${variant}:${moving}`;
+  let tpl = cache.get(key);
+  if (tpl) return tpl;
+  const b = new Builder();
+  BUILD[kind](b, variant, moving);
+  tpl = b.build(true);
+  if (kind !== "pancarta") fitToBox(tpl, kind);
+  if (moving) {
+    // a moving vehicle differs from the parked one only in its lamps (GLOW bucket): share the rest
+    const parked = template(kind, variant, false);
+    for (const m of tpl.children) {
+      if (!(m instanceof THREE.Mesh) || m.material === GLOW) continue;
+      const twin = parked.children.find((p) => p instanceof THREE.Mesh && p.material === m.material);
+      if (twin instanceof THREE.Mesh) {
+        (m.geometry as THREE.BufferGeometry).dispose();
+        m.geometry = twin.geometry;
+      }
+    }
+  }
+  cache.set(key, tpl);
+  return tpl;
+}
+
 export function createObstacle(kind: ObstacleKind, seed: number, moving = false): THREE.Object3D {
   const def = OBSTACLE_DEFS[kind];
   const isMoving = moving && def.vehicle;
-  const variant = ((Math.floor(seed) % VARIANTS[kind]) + VARIANTS[kind]) % VARIANTS[kind];
-  const key = `${kind}:${variant}:${isMoving}`;
-  let tpl = cache.get(key);
-  if (!tpl) {
-    const b = new Builder();
-    BUILD[kind](b, variant, isMoving);
-    tpl = b.build(true);
-    if (kind !== "pancarta") fitToBox(tpl, kind);
-    cache.set(key, tpl);
-  }
+  // any 32-bit (or odd) seed folds into a small fixed set of variants: caches stay bounded
+  const n = VARIANTS[kind];
+  const safe = Number.isFinite(seed) ? Math.floor(Math.abs(seed)) : 0;
+  const variant = safe % n;
+  const tpl = template(kind, variant, isMoving);
   const inner = instance(tpl);
   // moving vehicles drive towards the runner: turn them so the front faces +Z
   if (isMoving) inner.rotation.y = Math.PI;

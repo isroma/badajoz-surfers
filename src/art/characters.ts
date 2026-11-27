@@ -4,7 +4,9 @@
  * vertex-coloured mesh whose geometry is shared by every instance of that character.
  */
 import * as THREE from "three";
-import type { Actor, ActorAnim } from "../contracts";
+import type { Actor, ActorAnim, OutfitId } from "../contracts";
+import { buildOutfitPart, type BodyPart } from "./outfits";
+import { buildStorkBody, buildStorkWing } from "./stork";
 import { Builder, T, instance, xf } from "./geom";
 import { GLOW, SKIN } from "./materials";
 
@@ -12,15 +14,7 @@ import { GLOW, SKIN } from "./materials";
 // Proportions (metres)
 // ---------------------------------------------------------------------------
 
-const HIP_Y = 0.88;
-const THIGH = 0.43;
-const SHIN = 0.45; // knee to sole
-const TORSO = 0.5;
-const UPPER_ARM = 0.28;
-const FOREARM = 0.3;
-const SHOULDER_X = 0.25;
-const HIP_X = 0.11;
-const SPIN_Y = 0.38;
+import { FOREARM, HIP_X, HIP_Y, SHIN, SHOULDER_X, SPIN_Y, THIGH, TORSO, UPPER_ARM } from "./proportions";
 
 type Kind = "runner" | "waiter";
 
@@ -61,16 +55,21 @@ const WAITER: Palette = {
 // Part geometry (cached per character kind)
 // ---------------------------------------------------------------------------
 
-type PartName = "pelvis" | "torso" | "head" | "upperArmL" | "upperArmR" | "forearmL" | "forearmR" | "thigh" | "shin" | "apron" | "apronLow" | "scooter";
+type PartName = BodyPart | "apron" | "apronLow" | "scooter" | "storkBody" | "storkWing";
+const BODY: readonly string[] = ["pelvis", "torso", "head", "upperArmL", "upperArmR", "forearmL", "forearmR", "thigh", "shin"];
 
 const partCache = new Map<string, THREE.Group>();
 
-function part(kind: Kind, name: PartName): THREE.Group {
-  const key = `${kind}:${name}`;
+function part(kind: Kind, name: PartName, outfit: OutfitId = "clasico"): THREE.Group {
+  const dressed = kind === "runner" && outfit !== "clasico" && BODY.includes(name);
+  const key = `${kind}:${dressed ? outfit : "base"}:${name}`;
   let tpl = partCache.get(key);
   if (!tpl) {
     const b = new Builder();
-    buildPart(b, kind, name);
+    if (dressed) buildOutfitPart(b, outfit, name as BodyPart);
+    else if (name === "storkBody") buildStorkBody(b);
+    else if (name === "storkWing") buildStorkWing(b);
+    else buildPart(b, kind, name);
     tpl = b.build(true);
     partCache.set(key, tpl);
   }
@@ -278,7 +277,7 @@ const smooth = (x: number): number => {
   return c * c * (3 - 2 * c);
 };
 
-function targetPose(kind: Kind, anim: ActorAnim | "ride", t: number, phase: number, p: Pose): void {
+function targetPose(kind: Kind, anim: ActorAnim | "ride" | "carried", t: number, phase: number, p: Pose): void {
   Object.assign(p, basePose());
   const waiter = kind === "waiter";
   switch (anim) {
@@ -434,6 +433,24 @@ function targetPose(kind: Kind, anim: ActorAnim | "ride", t: number, phase: numb
       }
       break;
     }
+    case "carried": {
+      // dangling under the stork: hands up gripping its legs, legs swinging happily
+      const w = t * 2.6;
+      p.shLX = 2.85 + Math.sin(w * 0.7) * 0.08;
+      p.shRX = 2.85 - Math.sin(w * 0.7) * 0.08;
+      p.shLZ = p.shRZ = 0.22;
+      p.elL = p.elR = 0.25;
+      p.thLX = 0.45 * Math.sin(w);
+      p.thRX = 0.45 * Math.sin(w + 2.4);
+      p.thLZ = p.thRZ = 0.08;
+      p.knL = 0.35 + 0.35 * (1 + Math.sin(w + 1));
+      p.knR = 0.35 + 0.35 * (1 + Math.sin(w + 3.4));
+      p.spine = -0.05;
+      p.headX = -0.25;
+      p.headY = Math.sin(t * 0.9) * 0.4;
+      p.twist = Math.sin(t * 1.3) * 0.12;
+      break;
+    }
     case "ride": {
       const sway = Math.sin(t * 2.5);
       p.thLX = 0.22;
@@ -484,20 +501,20 @@ function joint(parent: THREE.Object3D, x: number, y: number, z: number, ...meshe
   return g;
 }
 
-function buildRig(kind: Kind, root: THREE.Group): Rig {
+function buildRig(kind: Kind, root: THREE.Group, outfit: OutfitId): Rig {
   const lift = joint(root, 0, 0, 0);
   const spin = joint(lift, 0, SPIN_Y, 0);
-  const hips = joint(spin, 0, HIP_Y - SPIN_Y, 0, part(kind, "pelvis"));
-  const torso = joint(hips, 0, 0.05, 0, part(kind, "torso"));
-  const head = joint(torso, 0, TORSO + 0.02, 0, part(kind, "head"));
-  const shL = joint(torso, -SHOULDER_X, TORSO - 0.08, 0, part(kind, "upperArmL"));
-  const shR = joint(torso, SHOULDER_X, TORSO - 0.08, 0, part(kind, "upperArmR"));
-  const elL = joint(shL, 0, -UPPER_ARM, 0, part(kind, "forearmL"));
-  const elR = joint(shR, 0, -UPPER_ARM, 0, part(kind, "forearmR"));
-  const thL = joint(hips, -HIP_X, 0, 0, part(kind, "thigh"));
-  const thR = joint(hips, HIP_X, 0, 0, part(kind, "thigh"));
-  const knL = joint(thL, 0, -THIGH, 0, part(kind, "shin"));
-  const knR = joint(thR, 0, -THIGH, 0, part(kind, "shin"));
+  const hips = joint(spin, 0, HIP_Y - SPIN_Y, 0, part(kind, "pelvis", outfit));
+  const torso = joint(hips, 0, 0.05, 0, part(kind, "torso", outfit));
+  const head = joint(torso, 0, TORSO + 0.02, 0, part(kind, "head", outfit));
+  const shL = joint(torso, -SHOULDER_X, TORSO - 0.08, 0, part(kind, "upperArmL", outfit));
+  const shR = joint(torso, SHOULDER_X, TORSO - 0.08, 0, part(kind, "upperArmR", outfit));
+  const elL = joint(shL, 0, -UPPER_ARM, 0, part(kind, "forearmL", outfit));
+  const elR = joint(shR, 0, -UPPER_ARM, 0, part(kind, "forearmR", outfit));
+  const thL = joint(hips, -HIP_X, 0, 0, part(kind, "thigh", outfit));
+  const thR = joint(hips, HIP_X, 0, 0, part(kind, "thigh", outfit));
+  const knL = joint(thL, 0, -THIGH, 0, part(kind, "shin", outfit));
+  const knR = joint(thR, 0, -THIGH, 0, part(kind, "shin", outfit));
   const apron = kind === "waiter" ? joint(hips, 0, 0.08, -0.17, part(kind, "apron")) : null;
   const apronLow = apron ? joint(apron, 0, -0.33, 0, part(kind, "apronLow")) : null;
   return { lift, spin, hips, torso, head, shL, shR, elL, elR, thL, thR, knL, knR, apron, apronLow };
@@ -534,15 +551,29 @@ function shadows(root: THREE.Object3D): void {
   });
 }
 
-function createActor(kind: Kind): Actor {
+function createActor(kind: Kind, outfit: OutfitId = "clasico"): Actor {
   const root = new THREE.Group();
   root.name = kind;
-  const rig = buildRig(kind, root);
+  const rig = buildRig(kind, root, outfit);
   let scooter: THREE.Group | null = null;
   if (kind === "runner") {
     scooter = part("runner", "scooter");
     scooter.visible = false;
     root.add(scooter);
+  }
+  // the carrying stork: body + two wings, hidden until setCarried(true)
+  let stork: THREE.Group | null = null;
+  let wingL: THREE.Group | null = null;
+  let wingR: THREE.Group | null = null;
+  if (kind === "runner") {
+    stork = new THREE.Group();
+    stork.add(part("runner", "storkBody"));
+    wingR = joint(stork, 0.2, 0.1, -0.05, part("runner", "storkWing"));
+    wingL = joint(stork, -0.2, 0.1, -0.05, part("runner", "storkWing"));
+    wingL.scale.x = -1;
+    stork.position.set(0, 2.35, 0.02);
+    stork.visible = false;
+    rig.lift.add(stork);
   }
   shadows(root);
 
@@ -553,6 +584,10 @@ function createActor(kind: Kind): Actor {
   let phase = 0;
   let spinAngle = 0;
   let lastAnim: ActorAnim = "idle";
+  let carried = false;
+  let leaving = 0; // seconds left of the stork's flap-away
+  // the roll ball must stay under 0.8 m even with tall hats / hoods
+  const rollScale = outfit === "carnaval" ? 0.62 : outfit === "clasico" ? 0.71 : 0.66;
 
   const actor: Actor = {
     root,
@@ -561,16 +596,17 @@ function createActor(kind: Kind): Actor {
       t += step;
       const freq = 1.25 + Math.max(0, speed) * 0.075;
       phase += step * Math.PI * 2 * freq;
-      const effective = riding && (anim === "run" || anim === "idle") ? "ride" : anim;
+      const effective = carried ? "carried" : riding && (anim === "run" || anim === "idle") ? "ride" : anim;
       targetPose(kind, effective, t, phase, target);
+      if (effective === "roll") target.scale = rollScale;
       // snappier blending into and within fast cycles
-      const rate = anim === "run" || anim === "stumble" ? 22 : anim === "roll" ? 18 : 11;
+      const rate = carried ? 8 : anim === "run" || anim === "stumble" ? 22 : anim === "roll" ? 18 : 11;
       const k = anim !== lastAnim && lastAnim === "roll" ? 1 - Math.exp(-step * 14) : 1 - Math.exp(-step * rate);
       for (const key of POSE_KEYS) current[key] += (target[key] - current[key]) * k;
       lastAnim = anim;
       // the roll spin: keep spinning while rolling, finish the turn smoothly afterwards
       const TAU = Math.PI * 2;
-      if (anim === "roll") {
+      if (anim === "roll" && !carried) {
         spinAngle -= step * TAU * 1.9;
       } else if (spinAngle !== 0) {
         const target2 = Math.floor(spinAngle / TAU) * TAU; // next full turn in the roll direction
@@ -579,8 +615,26 @@ function createActor(kind: Kind): Actor {
       }
       rig.spin.rotation.x = spinAngle;
       applyPose(rig, current);
-      rig.lift.position.y = riding ? 0.17 : 0;
+      rig.lift.position.y = riding && !carried ? 0.17 : 0;
       rig.lift.scale.setScalar(0.96);
+      if (stork && wingL && wingR) {
+        // slow, powerful wingbeat with a matching body bob
+        const flap = Math.sin(t * Math.PI * 2 * (leaving > 0 ? 2.2 : 1.1));
+        wingR.rotation.z = 0.12 + flap * 0.6;
+        wingL.rotation.z = -(0.12 + flap * 0.6);
+        if (carried) {
+          stork.position.set(0, 2.35 - flap * 0.06, 0.02);
+          stork.rotation.x = 0.06;
+          rig.lift.rotation.z = Math.sin(t * 1.1) * 0.05;
+        } else if (leaving > 0) {
+          leaving = Math.max(0, leaving - step);
+          const k = 1 - leaving / 0.9;
+          stork.position.set(0, 2.35 + k * k * 6, 0.02 - k * 7);
+          stork.rotation.x = -0.35 * k;
+          if (leaving === 0) stork.visible = false;
+        }
+        if (!carried) rig.lift.rotation.z *= 0.9;
+      }
     },
   };
   if (scooter) {
@@ -590,8 +644,23 @@ function createActor(kind: Kind): Actor {
       sc.visible = on;
     };
   }
+  if (stork) {
+    const st = stork;
+    actor.setCarried = (on: boolean) => {
+      if (on === carried) return;
+      carried = on;
+      if (on) {
+        leaving = 0;
+        st.visible = true;
+        st.position.set(0, 2.35, 0.02);
+        st.rotation.x = 0.06;
+      } else if (st.visible) {
+        leaving = 0.9; // flap away up and forward
+      }
+    };
+  }
   return actor;
 }
 
-export const createRunner = (): Actor => createActor("runner");
+export const createRunner = (outfit: OutfitId = "clasico"): Actor => createActor("runner", outfit);
 export const createWaiter = (): Actor => createActor("waiter");

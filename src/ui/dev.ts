@@ -37,9 +37,10 @@ function seedSave(): void {
     s.bestDistance = 2315;
     s.runsPlayed = 14;
     s.seenHowTo = true;
-    s.upgrades = { iman: 2, zapatillas: 0, jamon: 5, patinete: 1 };
+    s.upgrades = { iman: 2, zapatillas: 0, jamon: 5, patinete: 1, ciguena: 0 };
+    s.outfits = { owned: ["clasico", "futbolera"], equipped: "futbolera" };
     s.tutorialDone = params.get("tutorial") !== "1";
-    s.achievements = ["primer-simpa", "plaza-alta", "turista", "saltimbanqui", "ciguena"];
+    s.achievements = ["primer-simpa", "plaza-alta", "turista", "saltimbanqui", "ciguena", "estrenando"];
     s.lifetime = {
       totals: { bellotas: 4210, distance: 18350, score: 0, jumps: 640, rolls: 120, nearMisses: 33, roofMetres: 612, powerups: 41, words: 3, letters: 38, zones: 51, runs: 14 },
       zonesSeen: 63,
@@ -85,26 +86,29 @@ function paintBackground(): void {
     const hgt = (canvas.height = innerHeight);
     const g = canvas.getContext("2d");
     if (!g) return;
+    const night = params.get("bg") === "night";
     const sky = g.createLinearGradient(0, 0, 0, hgt * 0.6);
-    sky.addColorStop(0, "#4aa3e8");
-    sky.addColorStop(1, "#ffe2a8");
+    sky.addColorStop(0, night ? "#050817" : "#4aa3e8");
+    sky.addColorStop(1, night ? "#1b1f45" : "#ffe2a8");
     g.fillStyle = sky;
     g.fillRect(0, 0, w, hgt);
     g.fillStyle = "#fff3b0";
     g.beginPath();
     g.arc(w * 0.78, hgt * 0.2, hgt * 0.08, 0, Math.PI * 2);
     g.fill();
-    const colors = ["#f4d7a1", "#e9a46b", "#f6efe0", "#d86f45", "#f2c14e", "#ffffff", "#c9a27a"];
+    const colors = night
+      ? ["#1d2040", "#262446", "#1a1c33", "#2b2140", "#232a4a", "#1f1f38", "#2a2a44"]
+      : ["#f4d7a1", "#e9a46b", "#f6efe0", "#d86f45", "#f2c14e", "#ffffff", "#c9a27a"];
     for (let i = 0; i < 14; i++) {
       const bw = w * 0.09;
       const bh = hgt * (0.18 + ((i * 37) % 11) / 30);
       const x = i < 7 ? i * bw * 0.6 : w - (i - 6) * bw * 0.6;
       g.fillStyle = colors[i % colors.length] ?? "#fff";
       g.fillRect(x - bw / 2, hgt * 0.58 - bh, bw, bh);
-      g.fillStyle = "rgba(40,60,90,0.45)";
+      g.fillStyle = night ? "rgba(255,210,120,0.75)" : "rgba(40,60,90,0.45)";
       for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) g.fillRect(x - bw / 2 + 8 + c * (bw / 3.2), hgt * 0.58 - bh + 12 + r * (bh / 5), bw / 6, bh / 9);
     }
-    g.fillStyle = "#7a7f88";
+    g.fillStyle = night ? "#2a2d38" : "#7a7f88";
     g.beginPath();
     g.moveTo(w * 0.44, hgt * 0.58);
     g.lineTo(w * 0.56, hgt * 0.58);
@@ -380,6 +384,40 @@ if (root) {
   switch (screen) {
     case "shop":
       clickButton("Tienda");
+      break;
+    case "outfits":
+      clickButton("Tienda");
+      clickButton("Atuendos");
+      break;
+    case "feel": {
+      // Combo chip, a 1.000 m milestone, a reward floater with its gold flash, and the night caption.
+      playingHud();
+      game.hud = { ...game.hud, distance: 980, chaser: 0, powerups: [{ kind: "ciguena", remaining: 5.5, duration: 7 }] };
+      game.setState("playing");
+      setTimeout(() => {
+        game.hud = { ...game.hud, distance: 1004 };
+        game.emit({ type: "powerup-start", kind: "ciguena", duration: 7 });
+      }, 3000);
+      setTimeout(() => {
+        for (let i = 0; i < 25; i++) {
+          game.hud = { ...game.hud, bellotas: game.hud.bellotas + 1 };
+          game.emit({ type: "pickup", kind: "bellota" });
+        }
+        game.emit({ type: "word-complete" });
+      }, Number(params.get("at") ?? 3750));
+      setTimeout(() => (game.hud = { ...game.hud, score: game.hud.score + 2500 }), Number(params.get("at") ?? 3750) + 20);
+      setTimeout(() => (document.title = `combo=${root.querySelector(".combo-chip.show")?.textContent ?? "-"} floater=${root.querySelector(".floater")?.textContent ?? "-"}`), 3950);
+      break;
+    }
+    case "night":
+      playingHud();
+      game.hud = { ...game.hud, chaser: 0.2, lap: 2, zone: ZONES[0] ?? game.hud.zone, zoneProgress: 0.05 };
+      game.setState("playing");
+      setTimeout(() => {
+        game.emit({ type: "zone", zone: ZONES[0] ?? game.hud.zone, lap: 2, first: false });
+        game.emit({ type: "near-miss" });
+        game.emit({ type: "stumble" });
+      }, 3000);
       break;
     case "achievements":
       clickButton("Logros");

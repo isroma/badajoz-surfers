@@ -53,6 +53,7 @@ export class Music {
   private bpm = MENU_BPM;
   private targetBpm = MENU_BPM;
   private powerup = false;
+  private flight = false;
   private enabled = true;
   private variant: ZoneVariant = ZONE_VARIANTS[0] ?? { transpose: 0, lead: "square", castanets: false };
   private pendingVariant: ZoneVariant | null = null;
@@ -137,6 +138,13 @@ export class Music {
     this.applyLevels(on ? 0.4 : 0.3);
   }
 
+  /** Flying with the stork: lighter drums, open filter, lead an octave up. */
+  setFlight(on: boolean): void {
+    if (on === this.flight) return;
+    this.flight = on;
+    this.applyLevels(on ? 0.5 : 0.35);
+  }
+
   /** Stop the loop and play a short "game over" sting. */
   sting(out: AudioNode): void {
     this.setMode("off");
@@ -163,12 +171,13 @@ export class Music {
     if (this.mode === "off") return;
     const lv = LEVELS[this.mode];
     const now = this.ctx.currentTime;
-    const boost = this.powerup && this.mode === "play";
+    const boost = (this.powerup || this.flight) && this.mode === "play";
+    const fly = this.flight && this.mode === "play";
     const set = (g: GainNode, v: number): void => {
       g.gain.setTargetAtTime(v, now, time / 3);
     };
-    set(this.layers.drums, lv.drums);
-    set(this.layers.kick, lv.kick);
+    set(this.layers.drums, lv.drums * (fly ? 0.45 : 1));
+    set(this.layers.kick, lv.kick * (fly ? 0.3 : 1));
     set(this.layers.chords, lv.chords);
     set(this.layers.bass, lv.bass);
     set(this.layers.lead, lv.lead);
@@ -243,7 +252,7 @@ export class Music {
 
     for (const ev of LEAD_BARS[bar] ?? []) {
       if (ev.step !== s) continue;
-      const f = midiToFreq(ev.midi + tr);
+      const f = midiToFreq(ev.midi + tr + (this.flight && this.mode === "play" ? 12 : 0));
       const hold = Math.max(0.02, ev.len * stepDur * 0.7);
       const leadGain = v.lead === "sawtooth" ? 0.035 : v.lead === "triangle" ? 0.08 : 0.05;
       tone(ctx, L.lead, t, { type: v.lead, freq: f, gain: leadGain, attack: 0.008, hold, decay: 0.12, lowpass: 2800 });

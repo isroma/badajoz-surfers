@@ -26,7 +26,11 @@ export type SfxName =
   | "denied"
   | "mission"
   | "hint"
-  | "hintDone";
+  | "hintDone"
+  | "flight"
+  | "flightEnd"
+  | "combo"
+  | "reward";
 
 type Ctx = BaseAudioContext;
 type Player = (ctx: Ctx, out: AudioNode, t: number, arg: number) => void;
@@ -149,6 +153,29 @@ export const SFX: Record<SfxName, Player> = {
   denied: (c, o, t) => {
     tone(c, o, t, { type: "square", freq: 180, gain: 0.05, decay: 0.08, lowpass: 1200 });
     tone(c, o, t + 0.1, { type: "square", freq: 150, gain: 0.05, decay: 0.12, lowpass: 1200 });
+  },
+  flight: (c, o, t) => {
+    // Rising whoosh as the stork lifts you, then four big wing flaps.
+    noise(c, o, t, { gain: 0.14, attack: 0.08, decay: 0.7, filter: "bandpass", freq: 400, freqEnd: 3800, q: 1.4 });
+    tone(c, o, t, { type: "triangle", freq: n(64), freqEnd: n(88), gain: 0.06, attack: 0.05, decay: 0.6 });
+    for (let i = 0; i < 4; i++) {
+      noise(c, o, t + 0.25 + i * 0.22, { gain: 0.11 - i * 0.015, attack: 0.02, decay: 0.12, filter: "lowpass", freq: 900 });
+    }
+  },
+  flightEnd: (c, o, t) => {
+    noise(c, o, t, { gain: 0.1, attack: 0.03, decay: 0.3, filter: "bandpass", freq: 2500, freqEnd: 500, q: 1.2 });
+    tone(c, o, t + 0.22, { freq: 130, freqEnd: 55, gain: 0.3, decay: 0.14 });
+  },
+  combo: (c, o, t, level) => {
+    // Gets one note longer and higher with every combo step.
+    const root = 79 + Math.min(level, 5) * 2;
+    for (let i = 0; i <= Math.min(level, 4) + 1; i++) {
+      tone(c, o, t + i * 0.045, { type: "square", freq: n(root + ([0, 4, 7, 12, 16, 19][i] ?? 0)), gain: 0.035, decay: 0.08, lowpass: 5000 });
+    }
+  },
+  reward: (c, o, t) => {
+    [72, 76, 79, 84].forEach((m, i) => tone(c, o, t + i * 0.05, { type: "triangle", freq: n(m), gain: 0.07, decay: 0.18 }));
+    noise(c, o, t + 0.15, { gain: 0.05, decay: 0.35, filter: "highpass", freq: 7000 });
   },
   hint: (c, o, t) => {
     tone(c, o, t, { type: "triangle", freq: n(81), gain: 0.07, decay: 0.12 });

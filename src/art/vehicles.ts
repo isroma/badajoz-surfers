@@ -13,7 +13,7 @@ const TRIM = 0x2b2d31;
 const CHROME = 0xc9ccd1;
 const GLASS_TINT = 0x5d7287;
 const HEAD_ON = 0xfff6d8;
-const HEAD_OFF = 0xd9dde2;
+const HEAD_OFF = 0x9aa0a8; // unlit lamp glass (kept in the GLOW bucket so parked/moving share geometry)
 const TAIL = 0xe0141e;
 const INDICATOR = 0xff9a1a;
 
@@ -84,7 +84,7 @@ export function buildCar(b: Builder, seed: number, lit: boolean): void {
   // front: grille, headlights, plate
   b.box(0, hoodFront - 0.17, -half - 0.005, 0.7, 0.14, 0.02, TRIM, SOLID);
   for (const sx of [-1, 1]) {
-    b.box(sx * 0.62, hoodFront - 0.14, -half - 0.01, 0.34, 0.12, 0.04, lit ? HEAD_ON : HEAD_OFF, lit ? GLOW : SOLID);
+    b.box(sx * 0.62, hoodFront - 0.14, -half - 0.01, 0.34, 0.12, 0.04, lit ? HEAD_ON : HEAD_OFF, GLOW);
     b.box(sx * 0.82, hoodFront - 0.14, -half + 0.02, 0.06, 0.08, 0.04, INDICATOR, GLOW);
     // rear lights
     b.box(sx * 0.68, beltY - 0.17, half + 0.0, 0.34, 0.14, 0.04, TAIL, GLOW);
@@ -126,7 +126,7 @@ export function buildMoto(b: Builder, seed: number, lit: boolean): void {
   // steering column + handlebar + headlight
   b.beam([0, 0.95, -0.5], [0, 1.08, -0.47], 0.08, c, PAINT);
   b.beam([-0.36, 1.08, -0.45], [0.36, 1.08, -0.45], 0.04, TRIM, SOLID);
-  b.box(0, 1.0, -0.56, 0.14, 0.1, 0.06, lit ? HEAD_ON : HEAD_OFF, lit ? GLOW : SOLID);
+  b.box(0, 1.0, -0.56, 0.14, 0.1, 0.06, lit ? HEAD_ON : HEAD_OFF, GLOW);
   b.box(0, 0.7, 0.86, 0.14, 0.06, 0.04, TAIL, GLOW);
   b.sign("plate", 0, 0.52, 0.87, 0.08, 0, 0.22);
   // rider: legs, torso, arms, helmet
@@ -187,7 +187,7 @@ export function buildVan(b: Builder, seed: number, lit: boolean): void {
     // vertical tail light cluster
     b.box(sx * 0.9, 1.0, half + 0.02, 0.14, 0.5, 0.04, TAIL, GLOW);
     b.box(sx * 0.9, 0.7, half + 0.02, 0.14, 0.1, 0.04, INDICATOR, GLOW);
-    b.box(sx * 0.68, 1.38, -half - 0.01, 0.34, 0.14, 0.04, lit ? HEAD_ON : HEAD_OFF, lit ? GLOW : SOLID);
+    b.box(sx * 0.68, 1.38, -half - 0.01, 0.34, 0.14, 0.04, lit ? HEAD_ON : HEAD_OFF, GLOW);
   }
   // rear doors split, bumpers, plates, grille
   b.box(0, 1.5, half + 0.01, 0.03, 2.1, 0.02, 0x999999, SOLID);
@@ -233,7 +233,7 @@ export function buildBus(b: Builder, seed: number, lit: boolean): void {
   b.span(-hw + 0.1, hw - 0.1, top - 0.38, top - 0.06, -half - 0.02, -half, 0x111111, SOLID);
   b.sign(line, 0, top - 0.22, -half - 0.025, 0.26, Math.PI, 1.9);
   for (const sx of [-1, 1]) {
-    b.box(sx * 0.95, 0.75, -half - 0.01, 0.4, 0.16, 0.04, lit ? HEAD_ON : HEAD_OFF, lit ? GLOW : SOLID);
+    b.box(sx * 0.95, 0.75, -half - 0.01, 0.4, 0.16, 0.04, lit ? HEAD_ON : HEAD_OFF, GLOW);
     b.box(sx * 1.0, 1.0, half + 0.01, 0.18, 0.5, 0.04, TAIL, GLOW);
     b.box(sx * 1.0, 0.68, half + 0.01, 0.18, 0.12, 0.04, INDICATOR, GLOW);
   }

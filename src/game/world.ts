@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import {
   OBSTACLE_DEFS,
+  type OutfitId,
   SEGMENT_LENGTH,
   WORD,
   laneX,
@@ -36,7 +37,7 @@ const POOL_CAP = 8;
 const LEAD_IN_SEGMENTS = 4;
 /** Obstacles and pickups this close to the camera are hidden so the view stays readable. */
 const CAMERA_CLEARANCE = 2.5;
-const PICKUP_CAMERA_CLEARANCE = 3;
+const PICKUP_CAMERA_CLEARANCE = 4;
 const BELLOTA_POOL_CAP = 80;
 
 interface ObstacleView {
@@ -113,7 +114,10 @@ export class World {
   readonly hemi = new THREE.HemisphereLight(0xffffff, 0x5a5048, 1);
   readonly fog = new THREE.Fog(0xcfe8ff, 60, 220);
   readonly sky: SkyDome;
-  readonly runner: Actor;
+  runner: Actor;
+  private outfit: OutfitId | undefined;
+  /** Soft light from the camera side, raised at night so gameplay objects stay readable. */
+  readonly fill = new THREE.DirectionalLight(0xdfe8ff, 0);
   readonly waiter: Actor;
 
   private readonly scenery = new Map<ZoneId, ZoneScenery>();
@@ -130,7 +134,7 @@ export class World {
   private readonly atmoTo: AtmosphereState;
   private readonly atmo: AtmosphereState;
   private atmoT = 1;
-  private atmoZone: ZoneId | null = null;
+  private atmoZone: string | null = null;
 
   constructor(private readonly art: ArtApi) {
     const scene = this.scene;
@@ -156,6 +160,7 @@ export class World {
     scene.add(this.sky.mesh);
 
     this.runner = art.createRunner();
+    scene.add(this.fill, this.fill.target);
     this.waiter = art.createWaiter();
     for (const actor of [this.runner, this.waiter]) {
       actor.root.traverse((o) => {
@@ -171,6 +176,23 @@ export class World {
     this.applyAtmosphere();
   }
 
+  /** Re-create the runner when the equipped outfit changes. Returns true if it was replaced. */
+  setOutfit(outfit: OutfitId | undefined): boolean {
+    if (outfit === undefined || outfit === this.outfit) return false;
+    const old = this.runner;
+    this.outfit = outfit;
+    const runner = this.art.createRunner(outfit);
+    runner.root.traverse((o) => {
+      o.castShadow = true;
+    });
+    runner.root.position.copy(old.root.position);
+    this.scene.remove(old.root);
+    this.art.release(old.root);
+    this.scene.add(runner.root);
+    this.runner = runner;
+    return true;
+  }
+
   sceneryFor(zone: ZoneId): ZoneScenery {
     let s = this.scenery.get(zone);
     if (!s) {
@@ -182,11 +204,13 @@ export class World {
 
   // --- Atmosphere --------------------------------------------------------------------------
 
-  /** Blend towards a zone's atmosphere over ~2 s (or instantly). */
-  setZone(zone: ZoneId, instant = false): void {
-    if (zone === this.atmoZone && !instant) return;
-    this.atmoZone = zone;
-    const target = this.sceneryFor(zone).atmosphere;
+  /** Blend towards a zone's atmosphere (day on odd laps, night on even ones) over ~2 s, or instantly. */
+  setZone(zone: ZoneId, instant = false, lap = 1): void {
+    const key = `${zone}|${lap % 2}`;
+    if (key === this.atmoZone && !instant) return;
+    this.atmoZone = key;
+    const scenery = this.sceneryFor(zone);
+    const target = scenery.atmosphereFor?.(lap) ?? scenery.atmosphere;
     if (instant) {
       toState(target, this.atmo);
       this.atmoT = 1;
@@ -209,6 +233,9 @@ export class World {
     this.hemi.color.copy(a.ambientColor);
     this.hemi.groundColor.copy(a.ambientColor).multiplyScalar(0.45);
     this.hemi.intensity = a.ambientIntensity;
+    // Night (dim sun and ambient): a soft camera-side fill so the runner and obstacles pop.
+    const light = a.sunIntensity * 0.35 + a.ambientIntensity;
+    this.fill.intensity = Math.max(0, Math.min(1.2, (1.6 - light) * 1.1));
   }
 
   /** Per frame: atmosphere blend, sky on the camera, sun shadow following the runner. */
@@ -239,7 +266,13 @@ export class World {
     this.sun.target.position.set(tx, 0, tz);
     this.sun.position.set(tx, 0, tz).addScaledVector(this.atmo.sunDir, 60);
     this.sun.target.updateMatrixWorld();
+    // Fill light comes from behind the camera, towards the runner.
+    this.fill.target.position.copy(focus);
+    this.fill.position.copy(camera.position).add(this.fillOffset);
+    this.fill.target.updateMatrixWorld();
   }
+
+  private readonly fillOffset = new THREE.Vector3(0, 6, 4);
 
   // --- Scenery segments --------------------------------------------------------------------
 
@@ -329,7 +362,12 @@ export class World {
     const pooled = this.pickupPool.get(key)?.pop();
     if (pooled) return { mesh: pooled, key };
     this.created.pickups++;
-    return { mesh: this.art.createPickup(kind, letter), key };
+    try {
+      return { mesh: this.art.createPickup(kind, letter), key };
+    } catch {
+      // Art without this kind yet (e.g. a new power-up): show a generic power-up instead.
+      return { mesh: this.art.createPickup("iman"), key };
+    }
   }
 
   private dropPickup(view: PickupView): void {
@@ -356,7 +394,7 @@ export class World {
 
   /** Bring the meshes in line with the run at (interpolated) distance `p`. */
   sync(run: Run, p: number, dt: number, time: number, camera: THREE.Vector3, endShot = false): void {
-    const pickupClearance = endShot ? PICKUP_CAMERA_CLEARANCE * 2 : PICKUP_CAMERA_CLEARANCE;
+    const pickupClearance = endShot ? PICKUP_CAMERA_CLEARANCE * 1.5 : PICKUP_CAMERA_CLEARANCE;
     this.frame++;
     const frame = this.frame;
     const list = run.gen.obstacles;
@@ -378,6 +416,7 @@ export class World {
       if (c + def.length / 2 < p - BEHIND) continue;
       if (spawn.k > 0 && c - p > MOVER_VIEW_DISTANCE) continue;
       let view = this.obstacles.get(spawn.id);
+      if (run.removed.has(spawn.id)) continue; // Dropped below (not seen this frame).
       if (!view) {
         if (run.ignore.has(spawn.id) && c < p) continue;
         const obj = this.takeObstacle(spawn);
@@ -432,6 +471,8 @@ export class World {
       const spawn = pickups[i];
       if (!spawn || spawn.d > p + PICKUP_VIEW) break;
       if (run.taken.has(spawn.id)) continue;
+      // Gone behind the runner: never draw it next to the lens.
+      if (spawn.d < p - 0.5 && !run.magnet.has(spawn.id)) continue;
       let letter: string | undefined;
       if (spawn.kind === "letra") {
         const index = run.letterFor(spawn.id);

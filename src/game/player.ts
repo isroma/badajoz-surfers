@@ -62,6 +62,12 @@ export interface PlayerState {
   /** Fast-falling: roll as soon as we land. */
   rollQueued: boolean;
   superJump: boolean;
+  /**
+   * Carried by the stork: no gravity, jump and roll ignored, lanes still work. The feet follow
+   * `flightY`, which the run animates (rise, cruise, descent).
+   */
+  carried: boolean;
+  flightY: number;
   /** Previous tick values for swept collision. */
   pp: number;
   px: number;
@@ -84,7 +90,7 @@ export function createPlayer(p = 0, lane: Lane = 0): PlayerState {
   return {
     p, speed: 0, x, lane, prevLane: lane, fromX: x, laneT: 1, queuedDir: 0,
     y: 0, vy: 0, grounded: true, supportId: -1, coyote: 0, jumpBuffer: 0, roll: 0, rollQueued: false,
-    superJump: false, pp: p, px: x, py: 0, prolling: false,
+    superJump: false, carried: false, flightY: 0, pp: p, px: x, py: 0, prolling: false,
   };
 }
 
@@ -183,9 +189,10 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
         break;
       }
       case "jump":
-        s.jumpBuffer = JUMP_BUFFER_TIME;
+        if (!s.carried) s.jumpBuffer = JUMP_BUFFER_TIME;
         break;
       case "roll":
+        if (s.carried) break;
         if (s.grounded) startRoll(s, ev);
         else {
           // Fast-fall into a roll.
@@ -228,6 +235,16 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
   world.prepare(s.pp, s.p);
 
   // Vertical.
+  if (s.carried) {
+    s.y = s.flightY;
+    s.vy = 0;
+    s.grounded = false;
+    s.supportId = -1;
+    s.roll = 0;
+    s.rollQueued = false;
+    s.coyote = 0;
+    return;
+  }
   if (!s.grounded) {
     s.vy = Math.max(s.vy - GRAVITY * dt, -MAX_FALL_SPEED);
     const prevY = s.y;

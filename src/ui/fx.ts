@@ -136,10 +136,10 @@ export class Fx {
     } else el.remove();
   }
 
-  floater(text: string, sub?: string): void {
-    const el = h("div", "floater display", text, sub ? h("small", undefined, sub) : null);
+  floater(text: string, sub?: string, variant?: "reward"): void {
+    const el = h("div", `floater display${variant ? ` ${variant}` : ""}`, text, sub ? h("small", undefined, sub) : null);
     this.el.append(el);
-    this.later(() => el.remove(), 950);
+    this.later(() => el.remove(), variant ? 1500 : 950);
   }
 
   /** Remove everything (new screen, new run). */

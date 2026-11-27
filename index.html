@@ -4,18 +4,43 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Simpa: corre por Badajoz</title>
-    <meta name="description" content="Te has ido sin pagar y el camarero te persigue por todo Badajoz. Corre desde el Puente Real." />
+    <meta name="description" content="Te has ido sin pagar y el camarero te persigue por todo Badajoz. Un juego de correr gratis en el navegador: del Puente Real a la Alcazaba, esquivando coches, terrazas y autobuses." />
     <meta name="theme-color" content="#141f3f" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="es_ES" />
+    <meta property="og:title" content="Simpa: corre por Badajoz" />
+    <meta property="og:description" content="Te has ido sin pagar. El camarero no perdona. Corre por Badajoz desde el Puente Real y no dejes que te pille." />
+    <meta name="twitter:card" content="summary" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <style>
-      /* Before the shell's CSS loads: no white flash, no scrollbars. */
+      /* Before the shell's CSS loads: no white flash, no scrollbars, and a quiet loading line. */
       html, body { margin: 0; height: 100%; overflow: hidden; background: #141f3f; }
       canvas#game { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+      #boot, .noscript {
+        position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; gap: 0.6em;
+        color: #fff4dc; font: 700 clamp(14px, 2.2vmin, 28px) "Avenir Next", "Segoe UI", system-ui, sans-serif;
+        z-index: 50; pointer-events: none;
+      }
+      #boot::before {
+        content: ""; width: 0.9em; height: 0.9em; border-radius: 50%;
+        border: 0.18em solid rgba(255, 197, 61, 0.3); border-top-color: #ffc53d;
+        animation: boot-spin 0.8s linear infinite;
+      }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+      .noscript { flex-direction: column; text-align: center; padding: 1em; pointer-events: auto; background: #141f3f; }
+      .noscript strong { color: #ffc53d; font-size: 1.6em; }
     </style>
   </head>
   <body>
     <canvas id="game"></canvas>
     <div id="ui"></div>
+    <div id="boot" role="status">Cargando Badajoz…</div>
+    <noscript>
+      <div class="noscript">
+        <strong>Simpa necesita JavaScript</strong>
+        <span>Actívalo en tu navegador para salir corriendo por Badajoz. El camarero te espera.</span>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

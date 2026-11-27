@@ -12,7 +12,7 @@ import { T, xf } from "../geom";
 import { FAR, SOLID, WATER } from "../materials";
 import { buildLeadIn } from "./lead-in";
 import {
-  L, RW, building, farBlock, flat, lampModern, palm, pavement, person, pine, planeTree, road, shrub, terraceSet, type Seg, type Side,
+  L, RW, building, farBlock, firework, flat, floodlit, lampModern, palm, pavement, person, pine, planeTree, road, shrub, terraceSet, type Seg, type Side,
 } from "./common";
 
 const WATER_Y = -13;
@@ -200,11 +200,13 @@ export function buildPuenteReal(s: Seg): void {
   if (pylonHere) {
     // widen the deck around the pylon legs
     for (const sx of [-1, 1]) b.span(sx * (DECK_X + 0.4), sx * 15, -2.4, 0.35, -15, -25, 0xf3f2ee, SOLID);
-    pylon(b, -20, WATER_Y);
+    floodlit(s, "cool", () => pylon(b, -20, WATER_Y));
+    firework(s, -40, 95, -170, 14, 0xff4fd8);
+    firework(s, 55, 80, -200, 11, 0x5ee8ff);
   }
   if (i >= 3 && i <= 9) {
     const pylonZ = -(PYLON_SEG - i) * L - 20;
-    stayCables(b, 0, -L, pylonZ, DECK_X + 0.1);
+    floodlit(s, "cool", () => stayCables(b, 0, -L, pylonZ, DECK_X + 0.1));
   }
   // a few distant towers of the left-bank city ahead/aside
   if (i % 3 === 0) farBlock(s, -s.r.range(190, 230), -20, 22, 22, s.r.range(28, 42), 0xece3d2);

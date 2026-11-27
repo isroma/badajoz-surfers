@@ -12,7 +12,7 @@ import { T, xf } from "../geom";
 import { CLOTH, FAR, SOLID, WATER } from "../materials";
 import { surfaceMat } from "../text";
 import {
-  L, RW, building, farBlock, flat, lampClassic, lampModern, palm, pavement, person, planeTree, road, shrub, terraceSet, type Seg, type Side,
+  L, RW, building, farBlock, farolillos, firework, flat, floodlit, lampClassic, lampModern, palm, pavement, person, planeTree, road, shrub, terraceSet, type Seg, type Side,
 } from "./common";
 
 const NOBLE = [0xf1e5c8, 0xf6f0e2, 0xf0d9a8, 0xe9d1b5, 0xf3e8d0];
@@ -124,7 +124,12 @@ function park(s: Seg): void {
     b.sign("cafe-paseo", kx + 2.5, 2.7, kz, 0.5, Math.PI / 2, 2.0);
     for (const [dx, dz] of [[5, -4], [5, 3], [8, -1], [8, 5]] as const) terraceSet(s, kx + dx, kz + dz, 0xf4f1ea);
   }
-  if (i === 4) templete(s, -18, -20);
+  if (i === 4) {
+    floodlit(s, "warm", () => templete(s, -18, -20));
+    firework(s, -45, 60, -110, 12, 0xff4fd8);
+  }
+  farolillos(s, -10, 10.5, 5.2);
+  farolillos(s, -30, 10.5, 5.2);
   if (i === 7) smallFountain(s, -20, -20, 4);
   if (i === 5 || i === 8) {
     // newspaper kiosk on the pavement edge

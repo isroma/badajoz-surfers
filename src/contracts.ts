@@ -117,7 +117,7 @@ export const OBSTACLE_DEFS: Readonly<Record<ObstacleKind, ObstacleDef>> = {
 // ---------------------------------------------------------------------------
 
 /** The currency is the "bellota" (acorn). The four power-ups, and the letters of BADAJOZ. */
-export type PowerupKind = "iman" | "zapatillas" | "jamon" | "patinete";
+export type PowerupKind = "iman" | "zapatillas" | "jamon" | "patinete" | "ciguena";
 export type PickupKind = "bellota" | PowerupKind | "letra";
 
 export const WORD = "BADAJOZ";
@@ -136,7 +136,35 @@ export const POWERUPS: Readonly<Record<PowerupKind, PowerupInfo>> = {
   zapatillas: { kind: "zapatillas", name: "Zapatillas", description: "Saltos enormes: súbete a furgonetas y autobuses", baseDuration: 10 },
   jamon: { kind: "jamon", name: "Jamón ibérico", description: "Puntuación doble", baseDuration: 12 },
   patinete: { kind: "patinete", name: "Patinete", description: "Más rápido, y te salva de un golpe", baseDuration: 12 },
+  ciguena: { kind: "ciguena", name: "Cigüeña", description: "Una cigüeña te lleva volando sobre el tráfico", baseDuration: 7 },
 };
+
+/** Height of the runner's feet above the road while a stork carries them. Nothing on the track reaches it. */
+export const FLIGHT_HEIGHT = 6.5;
+
+// ---------------------------------------------------------------------------
+// Runner outfits (bought in the shop with bellotas; purely cosmetic)
+// ---------------------------------------------------------------------------
+
+export type OutfitId = "clasico" | "carnaval" | "futbolera" | "feria" | "romano" | "cigueno";
+
+export interface OutfitInfo {
+  id: OutfitId;
+  /** Spanish name and one-line description for the shop. */
+  name: string;
+  description: string;
+  /** Price in bellotas; 0 = owned from the start. */
+  price: number;
+}
+
+export const OUTFITS: readonly OutfitInfo[] = [
+  { id: "clasico", name: "Clásico", description: "Sudadera naranja y gorra: el uniforme del simpa", price: 0 },
+  { id: "futbolera", name: "Blanquinegro", description: "Camiseta a rayas blancas y negras, de domingo de fútbol", price: 400 },
+  { id: "feria", name: "De Feria", description: "Traje de flamenca o de corto, con su clavel", price: 900 },
+  { id: "carnaval", name: "Murguista", description: "Disfraz de Carnaval de Badajoz, con plumas y purpurina", price: 1500 },
+  { id: "romano", name: "Emérito", description: "Toga y laurel: recién llegado de Mérida", price: 2500 },
+  { id: "cigueno", name: "Cigüeño", description: "Disfraz de cigüeña. Las de verdad te miran raro", price: 4000 },
+];
 
 // ---------------------------------------------------------------------------
 // Art API (implemented by src/art/index.ts)
@@ -154,6 +182,11 @@ export interface Actor {
   update(dt: number, anim: ActorAnim, speed: number): void;
   /** Runner only: show or hide the "patinete" (electric scooter) under the runner. */
   setRiding?(riding: boolean): void;
+  /**
+   * Runner only: show or hide a white stork gripping the runner by the shoulders and flapping
+   * above them; while carried the runner dangles (legs swinging) whatever `anim` says.
+   */
+  setCarried?(carried: boolean): void;
 }
 
 export interface PickupMesh {
@@ -180,6 +213,11 @@ export interface Atmosphere {
 export interface ZoneScenery {
   atmosphere: Atmosphere;
   /**
+   * Atmosphere for a given lap (1-based). Odd laps are the daytime journey (`atmosphere`); even
+   * laps are the same city at night, lit by street lamps, windows and fairground lights.
+   */
+  atmosphereFor(lap: number): Atmosphere;
+  /**
    * Build one segment of this zone: road surface, lane markings, kerbs, pavements, and everything
    * beside the road (buildings, trees, the river, landmarks). Local space: X centred on the road,
    * the segment runs from z = 0 to z = -SEGMENT_LENGTH. Nothing solid may enter the road
@@ -199,7 +237,8 @@ export interface SkyDome {
 }
 
 export interface ArtApi {
-  createRunner(): Actor;
+  /** `outfit` defaults to "clasico". */
+  createRunner(outfit?: OutfitId): Actor;
   createWaiter(): Actor;
   /** `seed` picks the variant (colour, livery, taxi or not). `moving` vehicles show lit headlights. */
   createObstacle(kind: ObstacleKind, seed: number, moving?: boolean): THREE.Object3D;
@@ -293,6 +332,8 @@ export interface GameOptions {
   powerupDuration(kind: PowerupKind): number;
   /** Base score multiplier (grows with completed missions). */
   baseMultiplier(): number;
+  /** The outfit the player has equipped; read at the start of each run and when returning to the menu. */
+  outfit(): OutfitId;
   /** True until the player has finished the tutorial once: the run then opens with scripted, prompted obstacles. */
   tutorial(): boolean;
 }
