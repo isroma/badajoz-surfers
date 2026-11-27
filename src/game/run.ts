@@ -732,6 +732,9 @@ export class Run {
       if (o.d > s.p + v * (HORN_TIME + 0.5) + 10) break;
       if (o.k <= 0 || this.flashed.has(o.id) || this.ignore.has(o.id)) continue;
       const def = OBSTACLE_DEFS[o.kind];
+      // Only motor vehicles honk and flash, and only in a lane with traffic (never a pedestrian,
+      // never in a pedestrian street or on a pavement).
+      if (!isMotor(o.kind) || (this.layoutFn(s.p).flow[s.lane] ?? 0) === 0) continue;
       if (Math.abs(o.x - this.boxes.laneX(s.lane, s.p)) > def.width / 2 + 0.3) continue;
       const [front] = footprintOf(o);
       if ((front - s.p) / v > HORN_TIME) continue;
@@ -950,6 +953,11 @@ export class Run {
     if (this.crashedOn) summary.obstacle = this.crashedOn;
     return summary;
   }
+}
+
+/** Motor vehicles (they honk and flash their lights): every vehicle kind but people. */
+export function isMotor(kind: ObstacleKind): boolean {
+  return OBSTACLE_DEFS[kind].vehicle || kind === "camion-rampa";
 }
 
 /** Is a kind a vehicle (for visuals)? */

@@ -718,8 +718,14 @@ function rowGap(b: PatternBuilder, action: boolean): number {
   // Early on (low difficulty) rows breathe a little more, and more still on the first 1.5 km.
   const early = 0.25 * (1 - b.ctx.difficulty) + (firstStretch(b) ? 0.2 : 0);
   // (+0.12 s: a lane change now takes ~0.24 s, not 0.125)
-  return b.s(b.ctx.reaction + (action ? 0.35 : 0.05) + 0.12 + early);
+  const gap = b.ctx.reaction + (action ? 0.35 : 0.05) + 0.12 + early;
+  // Two-lane streets: the other lane stays free for TWO_LANE_GAP s around each obstacle (the
+  // generator checks it: track.ts TWO_LANE_FREE).
+  return b.s(b.ctx.layout.offsets.length === 2 ? Math.max(gap, TWO_LANE_GAP) : gap);
 }
+
+/** Row gap in two-lane streets (a little over the generator's 1.2 s: the speed grows along a pattern). */
+const TWO_LANE_GAP = 1.3;
 
 /** Bellotas on the line for a row passed by a jump/roll/run. */
 function lineCell(b: PatternBuilder, lane: number, kind: ObstacleKind | null, front: number): void {

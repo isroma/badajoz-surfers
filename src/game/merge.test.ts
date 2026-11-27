@@ -4,12 +4,13 @@
  * always matches the street, lane-ends and turn events are true and one at a time.
  */
 import { describe, expect, it } from "vitest";
-import { OBSTACLE_DEFS, POWERUPS, type GameEvent } from "../contracts";
+import { OBSTACLE_DEFS, POWERUPS, type GameEvent, type ObstacleKind } from "../contracts";
 import { PASSAGE_AFTER, PASSAGE_BEFORE } from "./course";
 import { laneMergeAhead, laneShownAt, layoutAt, merges } from "./lanes";
 import { Run } from "./run";
 import { obstacleCentre } from "./spawns";
-import { MERGE_CLOSED, TARGET_CLEAR_AFTER, TARGET_CLEAR_BEFORE, TrackGenerator } from "./track";
+import { MERGE_CLOSED, TARGET_CLEAR_AFTER, TARGET_CLEAR_BEFORE, TWO_LANE_FREE, TrackGenerator } from "./track";
+import { copyPlayer, createPlayer, laneChangeTime } from "./player";
 import { footprintOf } from "./traffic";
 import { LAP_BONUS_EASE, TICK, speedAt } from "./tuning";
 import { useRealCourse } from "./test-course";
@@ -142,4 +143,64 @@ describe("lane tapers, passages and guides on the real lap", () => {
     }
     expect(speedAt(L + LAP_BONUS_EASE + 10) - speedAt(L - 1)).toBeGreaterThan(1.5);
   });
+});
+
+describe("two-lane streets and oncoming warnings", () => {
+  const twoLane = (d: number): boolean => layoutAt(d).offsets.length === 2;
+
+  it("in two-lane streets a lane change is quick, nothing covers both lane centres, and one lane stays free", () => {
+    const narrow = [...track.stretches].filter((st) => st.layout.offsets.length === 2);
+    expect(narrow.length).toBeGreaterThan(2);
+    for (const st of narrow) {
+      const gap = Math.abs(st.layout.offsets[1]! - st.layout.offsets[0]!);
+      expect(laneChangeTime(gap), `${st.layout.ids.join(",")} at ${st.fromS.toFixed(0)}`).toBeLessThanOrEqual(gap < 2 ? 0.2 : 0.22);
+    }
+    const bad: string[] = [];
+    for (let seed = 1; seed <= 12; seed++) {
+      const gen = new TrackGenerator(seed * 59);
+      gen.generateUntil(2 * L);
+      const narrowObs = gen.obstacles.filter((o) => OBSTACLE_DEFS[o.kind].lanes === 1 && twoLane(o.d));
+      for (const o of narrowObs) {
+        const half = OBSTACLE_DEFS[o.kind].width / 2;
+        const lay = layoutAt(o.d);
+        if (lay.offsets.every((x) => Math.abs(x - o.x) < half)) bad.push(`seed ${seed}: ${o.kind} covers both lanes at ${o.d.toFixed(0)}`);
+        const [a0, a1] = footprintOf(o);
+        for (const p of narrowObs) {
+          if (p === o || Math.abs(p.x - o.x) < 0.3) continue;
+          const [b0, b1] = footprintOf(p);
+          if (Math.max(a0, b0) - Math.min(a1, b1) < TWO_LANE_FREE * speedAt(o.d) - 1e-6) bad.push(`seed ${seed}: ${o.kind} and ${p.kind} block both lanes at ${o.d.toFixed(0)}`);
+        }
+      }
+    }
+    expect(bad.slice(0, 8)).toEqual([]);
+  }, 120_000);
+
+  it("only motor vehicles in a traffic lane honk and flash: never a pedestrian, never in a pedestrian street", () => {
+    const scene = (at: number, laneId: string, kinds: ObstacleKind[]): string[] => {
+      const horns: string[] = [];
+      const run = new Run({
+        seed: 21, powerupDuration: (k) => POWERUPS[k].baseDuration, baseMultiplier: () => 1, fx: () => {},
+        emit: (e) => {
+          if (e.type === "horn") horns.push(e.obstacle);
+        },
+      });
+      run.invincible = true;
+      run.begin(undefined, at);
+      for (let i = 0; i < 1.6 / TICK; i++) run.tick(TICK);
+      const p = run.player.p;
+      const lay = layoutAt(p) as ReturnType<typeof layoutAt> & { ids: readonly string[] };
+      const lane = lay.ids.indexOf(laneId);
+      copyPlayer(run.player, { ...createPlayer(p, lane, lay), speed: run.player.speed });
+      run.gen.obstacles.length = 0;
+      run.gen.pickups.length = 0;
+      kinds.forEach((kind, n) => run.gen.obstacles.push({ id: 7000 + n, kind, lane, x: lay.offsets[lane]!, d: p + 45 + n * 25, k: 0.4, seed: 1, flipped: false }));
+      for (let i = 0; i < 9 / TICK; i++) run.tick(TICK);
+      return horns;
+    };
+    // Puente Real, in an oncoming lane: the car honks, the pedestrian does not.
+    expect(scene(300, "opp-1", ["peaton", "coche"])).toEqual(["coche"]);
+    // A shared pedestrian street (no traffic flow): neither a pedestrian nor a scooter honks.
+    const shared = track.stretches.find((st) => st.layout.ids.join() === "ped-1,ped-2" && st.toS - st.fromS > 150)!;
+    expect(scene(shared.fromS + 20, "ped-1", ["peaton", "moto"])).toEqual([]);
+  }, 120_000);
 });

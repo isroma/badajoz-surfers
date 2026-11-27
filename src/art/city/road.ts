@@ -246,9 +246,11 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     const outer = (s: number, side: 1 | -1): number => {
       const edge = side > 0 ? hi : -lo;
       if (bridge) return edge + 0.35;
-      const f = ctx.facadeAt(s, side);
+      // out to the real wall (track.walls) when there is one close by: one surface wall to wall
+      const wi = Math.min(ctx.track.walls.left.length - 1, Math.max(0, Math.floor(s)));
+      const f = side > 0 ? ctx.track.walls.right[wi]! : ctx.track.walls.left[wi]!;
       let w: number;
-      if (f !== null && Math.abs(f) > edge + 0.3 && Math.abs(f) < edge + 16) w = Math.abs(f) + 0.3;
+      if (Math.abs(f) > edge - 0.05 && Math.abs(f) < 16) w = Math.max(edge, Math.abs(f)) + 0.3;
       else w = edge + (ped ? 1.5 : zone === "puente-real" || zone === "margen-derecha" ? 2.5 : 3.5);
       return curvatureLimit(s, side, w);
     };
@@ -322,7 +324,11 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
       const wf = E((l) => l.sidewalks[wi]?.from);
       const wt = E((l) => l.sidewalks[wi]?.to);
       if (ped) {
-        P.strip(surfMat, ss, wf, wt, 0, GROUND_SCALE[surf]);
+        // a street without carriageway (pedestrian or shared street) is paved, even where the
+        // section is tagged asphalt: one floor, wall to wall (asphalt here left dark bands beside
+        // the lanes' runnable paint)
+        if (surf === "asphalt") P.strip(groundMaterial("slabs"), ss, wf, wt, 0, GROUND_SCALE.hydraulic);
+        else P.strip(surfMat, ss, wf, wt, 0, GROUND_SCALE[surf]);
         return;
       }
       if (inner) {
@@ -513,16 +519,14 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
   const lanes = lay.offsets.map((o, i) => ({ from: o - lay.widths[i]! / 2, to: o + lay.widths[i]! / 2, kind: lay.kinds[i] as string, flow: lay.flow[i]! }));
   // runnable path lanes
   P.offRoad = true;
+  // lanes in the runnable colour on every surface, pedestrian streets included (the rest of the
+  // floor to the walls stays in pavement colour)
+  const yRun = ped ? 0.045 : KERB + 0.045;
   for (const l of lanes) {
-    if (l.kind === "road" || ped) continue;
-    P.paint(a, b, l.from, l.to, RUN, KERB + 0.045);
-  }
-  if (!ped) {
-    for (const l of lanes) {
-      if (l.kind === "road") continue;
-      P.paint(a, b, l.from, l.from + 0.07, RUN_EDGE, KERB + 0.05);
-      P.paint(a, b, l.to - 0.07, l.to, RUN_EDGE, KERB + 0.05);
-    }
+    if (l.kind === "road") continue;
+    P.paint(a, b, l.from, l.to, RUN, yRun);
+    P.paint(a, b, l.from, l.from + 0.07, RUN_EDGE, yRun + 0.005);
+    P.paint(a, b, l.to - 0.07, l.to, RUN_EDGE, yRun + 0.005);
   }
   P.offRoad = false;
   // carriageway the runner cannot use

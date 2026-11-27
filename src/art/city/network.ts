@@ -112,21 +112,12 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     }
     return false;
   };
-  /** On the route's own paved surface (its lanes, sidewalks and a margin for its outer pavement)? */
+  /** Inside the route's full drawn span (ctx.routeSpan) + margin: the route's own surfaces win there. */
   const onRoute = (x: number, z: number, margin: number): boolean => {
     const pr = tr.project(x, z);
-    const lay = tr.layoutAt(pr.s);
-    let lo = lay.left;
-    let hi = lay.right;
-    for (const c of lay.carriageways) {
-      lo = Math.min(lo, c.from);
-      hi = Math.max(hi, c.to);
-    }
-    for (const w of lay.sidewalks) {
-      lo = Math.min(lo, w.from);
-      hi = Math.max(hi, w.to);
-    }
-    return pr.lateral > lo - margin && pr.lateral < hi + margin && Math.abs(pr.lateral) < 40;
+    if (Math.abs(pr.lateral) > 40) return false;
+    const sp = ctx.routeSpan(pr.s);
+    return pr.lateral > sp.lo - margin && pr.lateral < sp.hi + margin;
   };
 
   const band = (acc: Acc, a: THREE.Vector3, b: THREE.Vector3, na: THREE.Vector2, nb: THREE.Vector2, l0: number, l1: number, dy: number, col: THREE.Color): void => {
@@ -134,6 +125,10 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     const A1 = new THREE.Vector3(a.x + na.x * l1, a.y + dy, a.z + na.y * l1);
     const B1 = new THREE.Vector3(b.x + nb.x * l1, b.y + dy, b.z + nb.y * l1);
     const B0 = new THREE.Vector3(b.x + nb.x * l0, b.y + dy, b.z + nb.y * l0);
+    // final guard: no piece whose triangles reach into the route's span
+    const c1x = (A0.x + A1.x + B1.x) / 3, c1z = (A0.z + A1.z + B1.z) / 3;
+    const c2x = (A0.x + B1.x + B0.x) / 3, c2z = (A0.z + B1.z + B0.z) / 3;
+    if (onRoute(c1x, c1z, 0.3) || onRoute(c2x, c2z, 0.3) || onRoute((c1x + c2x) / 2, (c1z + c2z) / 2, 0.3)) return;
     const cy = (A1.z - A0.z) * (B0.x - A0.x) - (A1.x - A0.x) * (B0.z - A0.z);
     if (cy < 0) acc.quad(A0, B0, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], col, col, col, col, UP);
     else acc.quad(A0, A1, B1, B0, [0, 0], [0, 0], [0, 0], [0, 0], col, col, col, col, UP);
@@ -163,7 +158,18 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     if (raw.length < 2) return;
     useTile(raw[0]!.x, raw[0]!.z);
     const w = widthOf(st);
-    const pts = densify(raw, 8);
+    // 8 m pieces, and 2 m pieces only where the street comes within 30 m of the route, so a side
+    // street stops cleanly at the route's span without densifying whole streets
+    const coarse = densify(raw, 8);
+    const latAt = coarse.map((p) => Math.abs(tr.project(p.x, p.z).lateral));
+    const pts: { x: number; z: number }[] = [];
+    for (let i = 0; i + 1 < coarse.length; i++) {
+      const a = coarse[i]!;
+      const b = coarse[i + 1]!;
+      const n = Math.min(latAt[i]!, latAt[i + 1]!) < 30 ? Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 2)) : 1;
+      for (let k = 0; k < n; k++) pts.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n });
+    }
+    if (coarse.length) pts.push(coarse[coarse.length - 1]!);
     const info = pts.map((p) => {
       const pr = tr.project(p.x, p.z);
       tr.frameAt(pr.s, f);
@@ -195,7 +201,12 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
       const mx = (p.x + q.x) / 2;
       const mz = (p.z + q.z) / 2;
       const near = info[i]!.near || info[i + 1]!.near;
-      if (onRoute(mx, mz, 0.5)) {
+      // the whole piece (its carriageway and pavements) must lie outside the route's span
+      const reach = w.road / 2 + w.walk;
+      const cornerIn = (c: { x: number; z: number }, n: THREE.Vector2): boolean => onRoute(c.x + n.x * reach, c.z + n.y * reach, 0.3) || onRoute(c.x - n.x * reach, c.z - n.y * reach, 0.3);
+      const nm = new THREE.Vector2(na.x + nb.x, na.y + nb.y).normalize();
+      const across = (f: number): boolean => onRoute(mx + nm.x * reach * f, mz + nm.y * reach * f, 0.3);
+      if (onRoute(mx, mz, 0.3) || cornerIn(p, na) || cornerIn(q, nb) || [-1, -0.5, 0.5, 1].some(across)) {
         along += len;
         continue;
       }
@@ -243,10 +254,12 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     const covered: boolean[] = [];
     for (let k = 0; k < n; k++) {
       const a = (k / n) * Math.PI * 2;
-      covered.push(onRoute(r.cx + Math.cos(a) * r.rc, r.cz + Math.sin(a) * r.rc, -0.5));
+      // a sector is drawn only when its whole width lies outside the route's span (no overlap)
+      const ca = Math.cos(a);
+      const sa = Math.sin(a);
+      covered.push([r.rc - r.hw, r.rc, r.rc + r.hw].some((rad) => onRoute(r.cx + ca * rad, r.cz + sa * rad, 0.3)));
     }
-    // grow the free arcs by two samples so they tuck under the route's ring
-    const draw = covered.map((_, k) => [-2, -1, 0, 1, 2].some((d) => !covered[(k + d + n) % n]));
+    const draw = covered.map((c) => !c);
     const cKerbD = new THREE.Color(PAL.kerb);
     for (let k = 0; k < n; k++) {
       if (!draw[k]) continue;

@@ -59,6 +59,12 @@ export interface CityCtx {
   /** layoutAt(s) with left/right widened to the extremes over s ± 10 m: props placed from it stay
    *  clear of the runnable surface across stretch boundaries and merges. */
   wideLayout(s: number): LaneLayout;
+  /**
+   * The route's full drawn span at s (laterals): carriageways, runnable lanes and pavements out to
+   * the real walls (track.walls) when they are within 16 m, else to the layout edge + 2.5 m. Nothing
+   * drawn from streets / squares / green may lie inside it: the route's own surfaces always win.
+   */
+  routeSpan(s: number): { lo: number; hi: number };
   /** In a park / garden polygon (set once the ground layer exists). */
   greenAt: (x: number, z: number) => boolean;
   /** Signed lateral distance to the facade line on a side (+1 right / -1 left), or null. */
@@ -316,6 +322,29 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
     chunkOf: (s) => Math.floor(wrapS(s) / CHUNK),
     frame, wrapS, facadeAt,
     greenAt: () => false,
+    routeSpan: (sIn) => {
+      const L = track.lapLength;
+      const s = ((sIn % L) + L) % L;
+      const lay = track.layoutAt(s);
+      let lo = lay.left;
+      let hi = lay.right;
+      for (const c of lay.carriageways) {
+        lo = Math.min(lo, c.from);
+        hi = Math.max(hi, c.to);
+      }
+      for (const w of lay.sidewalks) {
+        lo = Math.min(lo, w.from);
+        hi = Math.max(hi, w.to);
+      }
+      const i = Math.min(track.walls.left.length - 1, Math.max(0, Math.floor(s)));
+      const wl = track.walls.left[i] ?? -99;
+      const wr = track.walls.right[i] ?? 99;
+      // without a wall, as far as road.ts draws the pavement at least (1.5 m on pedestrian streets)
+      const m = lay.carriageways.length === 0 ? 1.5 : 2.5;
+      lo = wl > -16 ? Math.min(lo, wl) : lo - m;
+      hi = wr < 16 ? Math.max(hi, wr) : hi + m;
+      return { lo, hi };
+    },
     wideLayout: (sIn) => {
       const k = Math.round(wrapS(sIn));
       const hit = wideCache.get(k);

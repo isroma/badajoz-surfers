@@ -99,6 +99,9 @@ export function mergeClosures(course: Course): readonly Closure[] {
   return out;
 }
 
+/** In two-lane streets the other lane stays free this long (s) around an obstacle. */
+export const TWO_LANE_FREE = 1.2;
+
 /** Lateral reach of a closure (a lane is about 3 m wide; this keeps the runner's line clear). */
 const CLOSURE_HALF = 0.7;
 const PICKUP_CLOSURE_HALF = 1.0;
@@ -520,6 +523,41 @@ export class TrackGenerator {
   }
 
   /**
+   * Two-lane streets (the old town's narrow lanes, shared streets): one lane always stays free for
+   * TWO_LANE_FREE s of running around anything in the other (full-width jumpable rows aside).
+   */
+  private twoLaneSqueeze(b: PatternBuilder): boolean {
+    for (const o of b.obstacles) {
+      if (OBSTACLE_DEFS[o.kind].lanes === 3) continue;
+      const [a0, a1] = footprintOf(o);
+      const lay = this.layoutFn(o.d);
+      if (lay.offsets.length !== 2) continue;
+      const room = TWO_LANE_FREE * speedAt(o.d);
+      const clash = (other: ObstacleDraft): boolean => {
+        if (other === o || OBSTACLE_DEFS[other.kind].lanes === 3 || Math.abs(other.x - o.x) < 0.3) return false;
+        const [b0, b1] = footprintOf(other);
+        return Math.max(a0, b0) - Math.min(a1, b1) < room;
+      };
+      for (const other of b.obstacles) if (clash(other)) return true;
+      for (const other of this.movers) if (clash(other)) return true;
+      const list = this.obstacles;
+      let lo = 0;
+      let hi = list.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((list[mid]?.d ?? Infinity) < a0 - room - 15) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < list.length; i++) {
+        const other = list[i]!;
+        if (other.d > a1 + room + 15) break;
+        if (other.k === 0 && clash(other)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * A pattern is refused whole when anything it places sits in a closure or a passage; a plain
    * moving vehicle there (background traffic: nothing rides on it, the pattern does not need it)
    * is just left out.
@@ -640,8 +678,8 @@ export class TrackGenerator {
       if (!PATTERNS[name].fn(b) || !b.ok) continue;
       const flightLimit = this.flights.reduce((m, f) => (f.clearFrom > this.cursor ? Math.min(m, f.clearFrom - 2) : m), Infinity);
       if (b.end > Math.min(name === "finale" ? limit : normalLimit, flightLimit)) continue;
-      if (this.blocked(b, name) || this.conflicts(b)) {
-        if (!b.mirror() || this.blocked(b, name) || this.conflicts(b)) continue;
+      if (this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b)) {
+        if (!b.mirror() || this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b)) continue;
       }
       if (name === "rampRoof") this.roofSerial = span.serial;
       this.commit(name, b, limit, easy, span);
