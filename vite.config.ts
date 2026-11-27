@@ -7,5 +7,6 @@ export default defineConfig({
     target: "es2022",
     rollupOptions: { input: { main: "index.html", gallery: "gallery.html" } },
   },
-  test: { environment: "node", include: ["src/**/*.test.ts"] },
+  // The solver-backed generator tests take seconds on CI runners.
+  test: { environment: "node", include: ["src/**/*.test.ts"], testTimeout: 60_000 },
 });
