@@ -2519,3 +2519,18 @@ kbd,
   left: 78%;
   width: min(24rem, 40vw);
 }
+
+.r-debug {
+  margin: 0.4rem 0 0.1rem;
+  padding: 0.25rem 0.4rem;
+  border: 0.14rem dashed var(--terra);
+  color: var(--terra);
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 900;
+  transform: rotate(-1.5deg);
+}
+.stat-value.muted {
+  color: var(--muted);
+  text-decoration: line-through;
+}

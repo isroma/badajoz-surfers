@@ -188,8 +188,8 @@ export function buildPuenteReal(s: Seg): void {
       flat(s, sx, 8, 60, 0.1, 0x9bbf5e);
       for (const z of [-6, -20, -34]) planeTree(s, sx * 6.2, z, 0.95);
       lampModern(s, sx, 4.9, sx < 0 ? -13 : -27, 8);
-      farBlock(s, sx * 30, -14, 16, 22, 26, sx < 0 ? 0xf2efe8 : 0xd9b48a);
-      farBlock(s, sx * 34, -34, 18, 14, 18, 0xe2c9a3);
+      building(s, { side: sx, x: 14, z0: -2, z1: -19, depth: 14, floors: 6, color: sx < 0 ? 0xf2efe8 : 0xd9b48a, style: "piso", shops: ["cafeteria", "farmacia"], awningColors: [0x1f5f8b, 0x2e7d32], balconies: 0.5 });
+      building(s, { side: sx, x: 14, z0: -21, z1: -39, depth: 14, floors: 5, color: 0xe2c9a3, style: "piso", shops: ["panaderia", "estanco"], awningColors: [0xb22222], balconies: 0.5 });
     }
     return;
   }

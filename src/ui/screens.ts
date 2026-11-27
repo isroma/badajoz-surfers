@@ -8,7 +8,7 @@ import { ACHIEVEMENTS, type MetaStore, type MissionView, type RunResult } from "
 import { formatDay, zoneReached } from "../meta/progress";
 import { MAX_UPGRADE_LEVEL, powerupDuration, upgradeCost } from "../meta/economy";
 import { formatInt, formatMetres, formatSeconds } from "../meta/format";
-import { gameOverHeadline, PREMISE } from "./copy";
+import { gameOverHeadline, PREMISE, zoneInSentence } from "./copy";
 import { Minimap, shortZoneName } from "./minimap";
 import { button, h, svg, type Child } from "./dom";
 import {
@@ -116,8 +116,16 @@ export function soundToggles(ctx: ScreenCtx, withVolume: boolean): HTMLElement {
     input.dataset["bind"] = "volume";
     input.setAttribute("aria-label", "Volumen");
     input.addEventListener("input", () => ctx.actions.setVolume(Number(input.value) / 100));
-    input.addEventListener("change", () => input.blur());
-    el.append(h("label", "volume", "Volumen", input));
+    // Never keep focus: while an input is focused the engine ignores Esc/P and arrows would move
+    // the slider. Blur after any pointer or key interaction, changed or not.
+    for (const type of ["change", "pointerup", "pointercancel", "keyup", "focus"] as const) {
+      input.addEventListener(type, () => {
+        if (type === "focus") window.setTimeout(() => input.matches(":active") || input.blur(), 0);
+        else input.blur();
+      });
+    }
+    // A <span>, not a <label>: clicking the text must not focus the slider.
+    el.append(h("span", "volume", "Volumen", input));
   }
   return el;
 }
@@ -573,7 +581,7 @@ function routeCard(pos: MapPosition | null, title: string): HTMLElement {
     "route-card",
     h("div", "mini-head", h("div", "mini-title", svg(GLYPH_MAP), title), pos ? h("div", "pill lap-pill", `Vuelta ${formatInt(pos.lap)}`) : null),
     map.el,
-    zone ? h("div", "route-where", "Estás en ", h("b", undefined, zone.name)) : null,
+    zone ? h("div", "route-where", "Estás en ", h("b", undefined, zoneInSentence(zone.id, zone.name))) : null,
   );
 }
 
@@ -649,6 +657,7 @@ export function gameoverScreen(ctx: ScreenCtx, summary: RunSummary, result: RunR
       h("div", "r-where-text", "Has llegado hasta:", h("b", undefined, ZONES[pos.zoneIndex]?.name ?? ""), `Vuelta ${formatInt(pos.lap)}`),
       receiptMap(pos),
     ),
+    result.debug ? h("div", "r-debug", "Carrera de prueba: no se guarda") : null,
     h("div", "r-foot", "IVA incluido. Propina, no.", h("br"), "¡Menudo simpa!"),
   );
   const receiptWrap = h("div", "receipt-wrap", receipt);
@@ -676,7 +685,12 @@ export function gameoverScreen(ctx: ScreenCtx, summary: RunSummary, result: RunR
   const earned = h(
     "div",
     "earned panel",
-    h("div", "stat", h("div", "stat-label", "Has ganado"), h("div", "stat-value sun", svg(ICON_BELLOTA), `+${formatInt(result.bellotasEarned)}`)),
+    h(
+      "div",
+      "stat",
+      h("div", "stat-label", result.debug ? "De prueba, no cuenta" : "Has ganado"),
+      h("div", `stat-value ${result.debug ? "muted" : "sun"}`, svg(ICON_BELLOTA), `+${formatInt(result.bellotasEarned)}`),
+    ),
     h("div", "stat", h("div", "stat-label", "En tu bolsillo"), h("div", "stat-value", svg(ICON_BELLOTA), walletNum)),
     result.bonus > 0
       ? h(
@@ -707,7 +721,7 @@ export function gameoverScreen(ctx: ScreenCtx, summary: RunSummary, result: RunR
         button("Menú", actions.toMenu, { icon: GLYPH_HOME }),
       ),
       h("div", "hint", "Pulsa", ...keys("Espacio"), "o", ...keys("Intro"), "para volver a correr"),
-      button("Copiar resultado", () => actions.share(shareText(summary.distance, ZONES[pos.zoneIndex]?.name ?? "", pos.lap)), {
+      button("Copiar resultado", () => actions.share(shareText(summary.distance, zoneInSentence(ZONES[pos.zoneIndex]?.id ?? "", ZONES[pos.zoneIndex]?.name ?? ""), pos.lap)), {
         variant: "ghost",
         size: "sm",
         icon: GLYPH_COPY,

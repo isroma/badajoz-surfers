@@ -27,9 +27,14 @@ export const zonesMask = (zones: number): number => {
   return (1 << reached) - 1;
 };
 
-export function addRunToLifetime(life: Lifetime, run: RunStats): Lifetime {
+/**
+ * Add a run to the lifetime totals. With `bests: false` (an abandoned run) only the totals grow:
+ * best-run values, which feed records and single-run achievements, are left alone.
+ */
+export function addRunToLifetime(life: Lifetime, run: RunStats, bests = true): Lifetime {
   const totals = { ...life.totals };
   for (const k of Object.keys(totals) as (keyof RunStats)[]) totals[k] += Math.max(0, run[k]);
+  if (!bests) return { ...life, totals };
   return {
     totals,
     zonesSeen: life.zonesSeen | zonesMask(run.zones),

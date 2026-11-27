@@ -40,6 +40,16 @@ export const emptyRunStats = (): RunStats => ({
 
 export type MissionMetric = keyof RunStats;
 
+/** Replace NaN, infinities and negatives with 0 so odd engine values can't poison the save. */
+export function sanitizeStats(run: RunStats): RunStats {
+  const out = emptyRunStats();
+  for (const k of Object.keys(out) as (keyof RunStats)[]) {
+    const v = run[k];
+    out[k] = Number.isFinite(v) && v > 0 ? v : 0;
+  }
+  return out;
+}
+
 export interface MissionTemplate {
   id: string;
   metric: MissionMetric;

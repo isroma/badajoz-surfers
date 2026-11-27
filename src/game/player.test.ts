@@ -94,4 +94,14 @@ describe("player physics", () => {
     run(s, 0.3, { 0: "right" });
     expect(s.lane).toBe(1);
   });
+
+  it("roll then jump in the same tick is just a jump", () => {
+    const s = createPlayer();
+    const ev = createEvents();
+    s.speed = 12;
+    stepPlayer(s, ["roll", "jump"], TICK, empty, ev);
+    expect(ev.jumped).toBe(true);
+    expect(ev.rolled).toBe(false);
+    expect(s.roll).toBe(0);
+  });
 });

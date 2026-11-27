@@ -690,9 +690,9 @@ export class Run {
         cfg.emit({ type: "pickup", kind: "bellota" });
         break;
       case "letra": {
+        // Indices are absolute (collected + pending): taking one in order leaves the others right.
         const index = this.letterFor(pk.id);
         this.letterIndex.delete(pk.id);
-        for (const [other, i] of this.letterIndex) if (i > index) this.letterIndex.set(other, i - 1);
         if (index < 0) break;
         this.lettersCollected++;
         this.lettersTotal++;

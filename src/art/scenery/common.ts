@@ -177,7 +177,7 @@ export function person(s: Seg, x: number, z: number, ry: number, seated = false,
     b.box(0, 0.5, 0.05, 0.36, 0.14, 0.4, legs, SOLID);
     b.boxB(0, 0, -0.12, 0.3, 0.45, 0.14, legs, SOLID);
     b.add(T.capsule(0.8, 2, 6), xf(0, 0.88, 0.15, 0.19, 0.24, 0.14), top, SOLID);
-    b.sphere(0, 1.28, 0.15, 0.14, 0.15, 0.14, skin, SOLID, 6, 5);
+    b.sphere(0, 1.28, 0.15, 0.14, 0.15, 0.14, skin, SOLID, 6, 4);
   } else {
     b.boxB(-0.09, 0, 0, 0.13, 0.85, 0.15, legs, SOLID);
     b.boxB(0.09, 0, 0, 0.13, 0.85, 0.15, legs, SOLID);
@@ -187,7 +187,7 @@ export function person(s: Seg, x: number, z: number, ry: number, seated = false,
       b.add(T.box, xf(0.36, 1.62, 0, 0.09, 0.62, 0.1, 0, 0, -0.35), top, SOLID);
       b.sphere(0.47, 1.95, 0, 0.06, 0.07, 0.05, skin, SOLID, 5, 3);
     } else b.boxB(0.27, 0.75, 0, 0.09, 0.6, 0.1, top, SOLID);
-    b.sphere(0, 1.62, 0, 0.14, 0.16, 0.14, skin, SOLID, 6, 5);
+    b.sphere(0, 1.62, 0, 0.14, 0.16, 0.14, skin, SOLID, 6, 4);
     b.add(T.dome(6, 3), xf(0, 1.66, 0.01, 0.15, 0.12, 0.15), r.pick([0x2b2420, 0x6b4423, 0xd8c3a5, 0x111111]), SOLID);
   }
   b.pop();
@@ -391,17 +391,21 @@ export function building(s: Seg, o: BuildingOpts): void {
       // glazed shop front with a door
       const old = o.style === "viejo" || o.style === "noble";
       const glazeTop = gh - 0.6;
-      b.span(xf0 - sd * 0.06, xf0 + sd * 0.02, 0.5, glazeTop, za - 0.4, za - sw + 0.4, old ? 0x7a6a58 : 0x5f6a72, GLASS);
+      // shop front as flat layers on the facade (only the street side is ever seen)
+      const fq = (off: number, y0: number, y1: number, z0: number, z1: number, c: number, m: THREE.Material = mat): void => {
+        b.quad(xf(xf0 - sd * off, (y0 + y1) / 2, (z0 + z1) / 2, Math.abs(z0 - z1), y1 - y0, 1, 0, ry, 0), c, m);
+      };
+      fq(0.03, 0.5, glazeTop, za - 0.4, za - sw + 0.4, old ? 0x7a6a58 : 0x5f6a72, GLASS);
+      if (s.night) fq(0.045, 0.6, gh - 0.8, za - 0.6, zm + 0.7, 0xffd48a, GLOW);
       // half-lowered roller shutter (persiana metálica) or a wooden shop front
       const shutter = old ? 0x4f6b4a : 0xb7babd;
       const sh = (glazeTop - 0.5) * (old ? 0.22 : 0.38);
-      b.span(xf0 - sd * 0.09, xf0, glazeTop - sh, glazeTop, za - 0.35, za - sw + 0.35, shutter, mat);
-      for (let q = 1; q < 4; q++) b.span(xf0 - sd * 0.1, xf0 - sd * 0.08, glazeTop - (sh * q) / 4 - 0.02, glazeTop - (sh * q) / 4, za - 0.35, za - sw + 0.35, darken(shutter, 0.8), mat);
-      // window mullions and a stall-riser
-      for (const t of [0.25, 0.75]) b.span(xf0 - sd * 0.1, xf0, 0.5, glazeTop, za - sw * t + 0.05, za - sw * t - 0.05, old ? 0x3e2a1c : 0x8a8f96, mat);
-      b.span(xf0 - sd * 0.1, xf0, 0.15, 0.55, za - 0.4, za - sw + 0.4, old ? 0x3e2a1c : 0x8a8f96, mat);
-      b.span(xf0 - sd * 0.08, xf0, 0.15, 2.4, zm - 0.5, zm + 0.5, 0x5a3a24, mat);
-      if (s.night) b.span(xf0 - sd * 0.065, xf0 - sd * 0.05, 0.6, gh - 0.8, za - 0.6, zm + 0.7, 0xffd48a, GLOW);
+      fq(0.07, glazeTop - sh, glazeTop, za - 0.35, za - sw + 0.35, shutter);
+      for (let q = 1; q < 4; q++) fq(0.075, glazeTop - (sh * q) / 4 - 0.02, glazeTop - (sh * q) / 4, za - 0.35, za - sw + 0.35, darken(shutter, 0.8));
+      // window mullions, stall-riser and the door
+      for (const t of [0.25, 0.75]) fq(0.08, 0.5, glazeTop, za - sw * t + 0.05, za - sw * t - 0.05, old ? 0x3e2a1c : 0x8a8f96);
+      fq(0.08, 0.15, 0.55, za - 0.4, za - sw + 0.4, old ? 0x3e2a1c : 0x8a8f96);
+      fq(0.085, 0.15, 2.4, zm - 0.5, zm + 0.5, 0x5a3a24);
       if (name) b.sign(name, xf0 - sd * 0.14, gh - 0.75, zm, 0.6, ry);
       const ac = o.awningColors;
       if (ac && ac.length > 0) {
@@ -425,16 +429,30 @@ export function building(s: Seg, o: BuildingOpts): void {
         const z = o.z0 - off - (k + 0.5) * 3.2;
         const y = gh + f * fh + 0.05;
         const out = 0.7;
-        b.span(xf0, xf0 - sd * out, y, y + 0.12, z + 1.1, z - 1.1, trim, mat);
+        // flat strips only (faces the street can see): ~6-16 triangles per balcony instead of 36-72
+        const face = sd > 0 ? -Math.PI / 2 : Math.PI / 2;
+        const xo = xf0 - sd * out;
+        const vq = (x: number, y0: number, y1: number, za: number, zb: number, c: number): void => {
+          b.quad(xf(x, (y0 + y1) / 2, (za + zb) / 2, Math.abs(za - zb), y1 - y0, 1, 0, face, 0), c, mat);
+        };
+        const xm = (xf0 + xo) / 2;
+        // slab: front edge, top and soffit
+        vq(xo, y, y + 0.12, z + 1.1, z - 1.1, trim);
+        b.quad(xf(xm, y + 0.12, z, out, 2.2, 1, -Math.PI / 2, 0, 0), trim, mat);
+        b.quad(xf(xm, y, z, out, 2.2, 1, Math.PI / 2, 0, 0), darken(trim, 0.8), mat);
+        b.quad(xf(xm, y + 0.06, z + 1.1, out, 0.12, 1), trim, mat);
         if (s.r.chance(0.5)) {
-          // solid parapet in the wall colour
-          b.span(xf0 - sd * (out - 0.06), xf0 - sd * out, y + 0.12, y + 0.95, z + 1.1, z - 1.1, darken(o.color, 0.92), mat);
-          b.span(xf0 - sd * (out - 0.08), xf0 - sd * (out + 0.02), y + 0.95, y + 1.02, z + 1.12, z - 1.12, trim, mat);
+          // solid parapet in the wall colour, with its coping
+          vq(xo - sd * 0.005, y + 0.12, y + 0.95, z + 1.1, z - 1.1, darken(o.color, 0.92));
+          // end face towards the oncoming runner
+          b.quad(xf(xm, y + 0.5, z + 1.1, out, 1.0, 1), darken(o.color, 0.85), mat);
+          b.quad(xf(xo + sd * 0.03, y + 0.95, z, 0.08, 2.2, 1, -Math.PI / 2, 0, 0), trim, mat);
         } else {
-          // wrought iron railing: top rail, bottom rail and a few bars
-          b.span(xf0 - sd * (out - 0.05), xf0 - sd * out, y + 0.95, y + 1.02, z + 1.1, z - 1.1, 0x2a2d30, mat);
-          b.span(xf0 - sd * (out - 0.05), xf0 - sd * out, y + 0.2, y + 0.25, z + 1.1, z - 1.1, 0x2a2d30, mat);
-          for (let q = 0; q < 3; q++) b.span(xf0 - sd * (out - 0.04), xf0 - sd * out, y + 0.12, y + 0.97, z + 0.75 - q * 0.75, z + 0.7 - q * 0.75, 0x2a2d30, mat);
+          // wrought iron railing: top rail, bottom rail and a few bars as flat strips
+          const iron = 0x2a2d30;
+          vq(xo - sd * 0.005, y + 0.95, y + 1.02, z + 1.1, z - 1.1, iron);
+          vq(xo - sd * 0.005, y + 0.2, y + 0.25, z + 1.1, z - 1.1, iron);
+          for (let q = 0; q < 3; q++) vq(xo - sd * 0.006, y + 0.12, y + 0.97, z + 0.75 - q * 0.75, z + 0.7 - q * 0.75, iron);
         }
         if (s.r.chance(0.3)) b.box(xf0 - sd * 0.45, y + 0.35, z + 0.7, 0.35, 0.3, 0.3, 0x5a8f3a, mat);
       }
@@ -509,7 +527,7 @@ export function junction(s: Seg, plaque: string, surface: SurfaceName = "paving"
     }
     for (let x = 9; x < 90; x += 5) b.quad(xf(side * x, 0.045, (zA + zB) / 2, 2.5, 0.14, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
     // zebra across the cross street mouth
-    for (let k = 0; k < 6; k++) b.quad(xf(side * 8.2, 0.05, zA - 0.5 - k * 1.1, 1.8, 0.55, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
+    for (let k = 0; k < 6; k++) b.quad(xf(side * 8.2, 0.05, zA - 0.5 - k * 1.1, 1.8, 0.5, 1, -Math.PI / 2, 0, 0), 0xcfccc4, FAR);
     flat(s, side, 95, 170, 0.1, 0xcfc4ae, 0, -JUNCTION);
     // the cross street ends at a facade far away; a few trees line it
     b.span(side * 100, side * 118, 0, r.range(12, 22), 2, -12, r.pick([0xece3d2, 0xe2c9a3, 0xf2efe8]), FAR);
@@ -532,7 +550,7 @@ export function junction(s: Seg, plaque: string, surface: SurfaceName = "paving"
     if (r.chance(0.7)) person(s, side * r.range(5.2, 6.5), -r.range(1, 9), side > 0 ? -Math.PI / 2 : Math.PI / 2, false, r.chance(0.3));
   }
   // zebra crossing on the main road
-  for (let k = 0; k < 8; k++) b.quad(xf(-3.6 + k * 1.03, 0.017, -5, 0.55, 3.4, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR);
+  for (let k = 0; k < 8; k++) b.quad(xf(-3.6 + k * 1.03, 0.017, -5, 0.5, 3.2, 1, -Math.PI / 2, 0, 0), 0xcfccc4, FAR);
   b.quad(xf(0, 0.017, -2.9, RW * 2 - 0.4, 0.3, 1, -Math.PI / 2, 0, 0), 0xf4f4ef, FAR); // stop line before the zebra
   // street name sign for the zone, readable when approaching (kept outside the road)
   b.cyl(4.85, 0.15, -9.8, 0.06, 3.3, 0x555555, 6, SOLID);
@@ -581,14 +599,14 @@ export function farolillos(s: Seg, z: number, half: number, y = 5.0): void {
   if (!s.night) return;
   const b = s.b;
   const cols = [0xff3b3b, 0xffffff, 0x3bd16f, 0xffd23f];
-  const n = Math.round((half * 2) / 0.7);
+  const n = Math.round((half * 2) / 0.9);
   const sag = 0.6;
   const top = y + sag + 0.3;
   for (let i = 0; i <= n; i++) {
     const t = i / n;
     const x = -half + t * half * 2;
     const yy = top - Math.sin(t * Math.PI) * sag;
-    b.sphere(x, yy - 0.22, z, 0.17, 0.2, 0.17, cols[i % cols.length] ?? 0xffffff, GLOW, 6, 4);
+    b.add(T.sphere(5, 3), xf(x, yy - 0.22, z, 0.17, 0.2, 0.17), cols[i % cols.length] ?? 0xffffff, GLOW);
   }
   b.beam([-half, top, z], [0, top - sag, z], 0.02, 0x333333, FAR);
   b.beam([0, top - sag, z], [half, top, z], 0.02, 0x333333, FAR);
@@ -598,7 +616,7 @@ export function farolillos(s: Seg, z: number, half: number, y = 5.0): void {
 export function firework(s: Seg, x: number, y: number, z: number, r: number, color: number): void {
   if (!s.night) return;
   const b = s.b;
-  const n = 26;
+  const n = 20;
   for (let k = 0; k < n; k++) {
     const u = (k + 0.5) / n;
     const phi = Math.acos(1 - 2 * u);
@@ -607,7 +625,7 @@ export function firework(s: Seg, x: number, y: number, z: number, r: number, col
     const dy = Math.cos(phi);
     const dz = Math.sin(phi) * Math.sin(th) * 0.3;
     b.beam([x + dx * r * 0.35, y + dy * r * 0.35, z + dz * r * 0.35], [x + dx * r, y + dy * r - 0.15 * r * (1 - dy), z + dz * r], r * 0.035, color, SKYGLOW);
-    b.sphere(x + dx * r, y + dy * r - 0.15 * r * (1 - dy), z + dz * r, r * 0.06, r * 0.06, r * 0.06, 0xffffff, SKYGLOW, 4, 3);
+    b.add(T.sphere(4, 2), xf(x + dx * r, y + dy * r - 0.15 * r * (1 - dy), z + dz * r, r * 0.06, r * 0.06, r * 0.06), 0xffffff, SKYGLOW);
   }
 }
 

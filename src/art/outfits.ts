@@ -257,7 +257,8 @@ function cigueno(b: Builder, part: BodyPart): void {
       face(b);
       // white hood with a long red beak sticking out over the forehead and stork eyes
       b.add(T.sphere(12, 8), xf(0, 0.22, 0.02, 0.215, 0.23, 0.21), white, SKIN);
-      b.add(T.box, xf(0, 0.16, -0.12, 0.3, 0.26, 0.12), SKIN_TONE, SKIN);
+      // rounded face opening (an oval of skin set into the hood)
+      b.add(T.sphere(12, 8), xf(0, 0.17, -0.1, 0.15, 0.15, 0.1), SKIN_TONE, SKIN);
       b.sphere(-0.065, 0.22, -0.19, 0.028, 0.036, 0.015, 0x1a1a1a, SKIN, 6, 4);
       b.sphere(0.065, 0.22, -0.19, 0.028, 0.036, 0.015, 0x1a1a1a, SKIN, 6, 4);
       b.add(T.cone(8), xf(0, 0.36, -0.3, 0.05, 0.26, 0.04, -Math.PI / 2 + 0.15, 0, 0), red, SKIN);
