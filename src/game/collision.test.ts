@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { OBSTACLE_DEFS, type Lane, type ObstacleKind } from "../contracts";
+import { LANE_WIDTH, OBSTACLE_DEFS, type ObstacleKind } from "../contracts";
 import { BoxSet, type Aabb, type Contact } from "./collision";
 import { createEvents, createPlayer, prevRunnerBox, runnerBox, stepPlayer, type PlayerAction, type PlayerState } from "./player";
 import type { ObstacleSpawn } from "./spawns";
 import { TICK } from "./tuning";
 
 let nextId = 1;
-const obstacle = (kind: ObstacleKind, lane: Lane, front: number, k = 0): ObstacleSpawn => ({
-  id: nextId++, kind, lane, d: front + OBSTACLE_DEFS[kind].length / 2, k, seed: 1, flipped: false,
+/** `lane` is relative to the centre lane (-1 left, 0 centre, 1 right) of the 3-lane road. */
+const obstacle = (kind: ObstacleKind, lane: -1 | 0 | 1, front: number, k = 0): ObstacleSpawn => ({
+  id: nextId++, kind, lane: lane + 1, x: OBSTACLE_DEFS[kind].lanes === 3 ? 0 : lane * LANE_WIDTH,
+  d: front + OBSTACLE_DEFS[kind].length / 2, k, seed: 1, flipped: false,
 });
 
 interface Outcome {
@@ -77,7 +79,7 @@ describe("collisions", () => {
 
   it("landing marginally on a barrier is only a clip", () => {
     // Jump too early: the feet come down on the terrace.
-    const r = simulate([obstacle("terraza", 0, 9)], createPlayer(), 1.5, [[0.1, "jump"]], 12);
+    const r = simulate([obstacle("terraza", 0, 9)], createPlayer(), 1.5, [[0.18, "jump"]], 12);
     expect(r.contact).toBe("clip");
   });
 

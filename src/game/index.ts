@@ -17,23 +17,39 @@ import {
 } from "../contracts";
 import { art } from "../art";
 import { Bot } from "./bot";
-import { ChaseCamera, type CameraMode } from "./camera";
+import { ChaseCamera, type CameraMode, type SolidBox } from "./camera";
+import { laneOffset, layoutAt } from "./lanes";
+import { MEDIAN_GAP } from "./player";
+import { buildCourse, getCourse, setCourse } from "./course";
+import { TrackSpace } from "./space";
+import type { CityData } from "../city/data";
+import type { Track } from "../city/track";
 import { PathRecorder, type PathSample } from "./chaser";
 import { Effects } from "./effects";
 import { Input, type Command } from "./input";
 import { Loop } from "./loop";
 import { COUNTDOWN_TIME, Run, type RunFx } from "./run";
-import { TICK, zoneAt } from "./tuning";
+import { LAP_LENGTH, TICK, zoneAt } from "./tuning";
 import { World } from "./world";
 
 export interface GameDebug {
   setInvincible(on: boolean): void;
   setBot(on: boolean): void;
   warp(zone: ZoneId): void;
+  /** Jump to a distance along the route (metres; later laps beyond one lap). */
+  warpS(metres: number): void;
   setSpeed(mps: number | null): void;
   /** Drop a power-up pickup 8 m ahead in the runner's lane (e.g. "ciguena"). */
   powerup(kind: PowerupKind): void;
   stats(): Record<string, unknown>;
+  /** Where every live obstacle mesh is (verification). */
+  obstacles(): unknown;
+  /** Camera position and look state (verification). */
+  camera(): unknown;
+  /** Verification: stop the real-time loop (true) and drive frames by hand with `frames`. */
+  manual(on: boolean): void;
+  /** Verification: render `count` frames of `1/hz` seconds each (manual mode). */
+  frames(count: number, hz?: number): void;
 }
 
 declare global {
@@ -76,7 +92,7 @@ class Game implements GameApi {
   private groundY = 0;
   private readonly focus = new THREE.Vector3();
   /** Where the idle runner stands in the menu (on the bridge deck, before the pylon). */
-  private static readonly MENU_DISTANCE = 150;
+  private static readonly MENU_DISTANCE = 700;
   private readonly path = new PathRecorder();
   private readonly pathSample: PathSample = { x: 0, y: 0, rolling: false, airborne: false };
   /** 0..1 smoothed stork flight (camera blend). */
@@ -88,11 +104,31 @@ class Game implements GameApi {
   private fade = 0;
   private readonly fadeMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   private readonly hud: HudSnapshot;
+  /** Real seconds left of a hit-stop (time frozen) and of the crash slow-motion. */
+  private hitStop = 0;
+  private slowmo = 0;
+  /** Landing squash (0..1) and stumble knock-back (m), decaying. */
+  private squash = 0;
+  private knock = 0;
+  /** Waiter gap on the previous tick (interpolated when drawn). */
+  private prevGap = 0;
+  private readonly solids: SolidBox[] = [];
+  private readonly chest = new THREE.Vector3();
   private readonly hudPowerups: { kind: PowerupKind; remaining: number; duration: number }[] = [];
+
+  private readonly space: TrackSpace;
+  /** Lap to start runs on (?lap=2: a night lap for testing). */
+  private startLap = 1;
+  /** Debug start at a distance (?s=<m>). */
+  private startS: number | null = null;
+  private readonly vA = new THREE.Vector3();
+  private readonly vB = new THREE.Vector3();
+  private readonly vC = new THREE.Vector3();
 
   constructor(
     canvas: HTMLCanvasElement,
     private readonly options: GameOptions,
+    world: { city: CityData; track: Track } | null = null,
   ) {
     canvas.style.position = "fixed";
     canvas.style.inset = "0";
@@ -114,8 +150,16 @@ class Game implements GameApi {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
-    this.world = new World(art);
-    this.cam = new ChaseCamera(window.innerWidth / Math.max(1, window.innerHeight));
+    // The real lap: the course drives zones, lanes and the generator; the space maps to the world.
+    if (world) setCourse(buildCourse(world.city, world.track));
+    this.space = new TrackSpace(world?.track ?? null);
+    this.world = new World(art, this.space, world?.city ?? null);
+    try {
+      art.configureRenderer?.(this.renderer, this.world.scene);
+    } catch (error) {
+      console.error("Badajoz Surfers: configureRenderer failed", error);
+    }
+    this.cam = new ChaseCamera(window.innerWidth / Math.max(1, window.innerHeight), this.space);
     this.world.scene.add(this.cam.camera);
     this.effects = new Effects(this.world.scene, this.cam.camera);
     this.fadeMesh = new THREE.Mesh(
@@ -130,7 +174,7 @@ class Game implements GameApi {
 
     this.hud = {
       score: 0, bellotas: 0, distance: 0, multiplier: 1, speed: 0, zone: ZONES[0] ?? zoneAt(0).zone, zoneProgress: 0, lap: 1,
-      powerups: this.hudPowerups, letters: WORD.split("").map(() => false), chaser: 0, roofMetres: 0,
+      powerups: this.hudPowerups, letters: WORD.split("").map(() => false), chaser: 0, roofMetres: 0, street: null,
     };
 
     window.addEventListener("resize", this.onResize);
@@ -171,6 +215,7 @@ class Game implements GameApi {
       hud.letters.fill(false);
       hud.chaser = 0;
       hud.roofMetres = 0;
+      hud.street = null;
       return hud;
     }
     const p = run.player.p;
@@ -199,6 +244,7 @@ class Game implements GameApi {
     for (let i = 0; i < hud.letters.length; i++) hud.letters[i] = i < run.lettersCollected;
     hud.chaser = run.countdown > 0 ? 0 : run.chaser.hudValue;
     hud.roofMetres = Math.round(run.roofMetres);
+    hud.street = getCourse()?.streetNameAt(p) ?? null;
     return hud;
   }
 
@@ -269,15 +315,14 @@ class Game implements GameApi {
     this.world.setOutfit(this.options.outfit?.());
     this.resetVisuals();
     this.fade = 0;
-    this.world.updateSegments(Game.MENU_DISTANCE, 99, 4);
-    this.world.setZone("puente-real", true);
+    this.world.preload(Game.MENU_DISTANCE, 1);
     this.world.waiter.root.visible = false;
   }
 
   private newRun(): void {
     this.world.setOutfit(this.options.outfit?.());
     this.lastRun = null;
-    window.__simpaDebugRun = this.botOn || this.invincible || this.speedOverride !== null || this.startZone !== null;
+    window.__simpaDebugRun = this.botOn || this.invincible || this.speedOverride !== null || this.startZone !== null || this.startS !== null || this.startLap > 1;
     const seed = this.fixedSeed ?? (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0;
     const run = new Run({
       seed,
@@ -291,26 +336,20 @@ class Game implements GameApi {
     run.speedOverride = this.speedOverride;
     this.run = run;
     this.resetVisuals();
-    this.world.updateSegments(0, 99, 4);
-    this.world.setZone("puente-real", true);
     this.world.waiter.root.visible = true;
-    // Cut back to the start of the bridge through the fog colour.
+    // Cut back to the start of the bridge through the fog colour (the city builds behind it).
     this.fade = 1;
     this.bot.reset();
     this.setState("playing");
-    run.begin(this.startZone ?? undefined);
-    if (run.player.p > 1) {
-      // Debug start in another zone: build the scenery there straight away, including the end
-      // of the previous zone behind the intro camera.
-      this.world.clearSegments();
-      this.world.updateSegments(run.player.p, 99, 4);
-    }
+    const lapStart = (this.startLap - 1) * LAP_LENGTH;
+    const startS = this.startS !== null ? this.startS + lapStart : lapStart > 0 ? lapStart : undefined;
+    run.begin(this.startZone ?? undefined, startS);
+    this.world.preload(run.player.p, run.lap);
   }
 
   private onRunEvent(e: GameEvent): void {
     switch (e.type) {
       case "zone":
-        this.world.setZone(e.zone.id, e.first, e.lap);
         break;
       case "powerup-start":
         if (e.kind === "patinete") this.world.runner.setRiding?.(true);
@@ -319,6 +358,27 @@ class Game implements GameApi {
           this.cam.shake(0.15);
         }
         break;
+      case "stumble":
+        // Hit-stop: a short freeze sells the impact, then the knock-back.
+        this.hitStop = Math.max(this.hitStop, 0.075);
+        this.knock = 0.55;
+        break;
+      case "crash":
+        this.hitStop = 0.12;
+        this.slowmo = 0.4;
+        break;
+      case "near-miss":
+        this.cam.fovPunch(5);
+        break;
+      case "lane": {
+        const s = this.run?.player;
+        // Foot-plant puff when pushing off at speed.
+        if (s && s.grounded && s.speed > 14) {
+          const w = this.space.point(s.p, s.x, s.y, this.vA);
+          this.effects.dust(w.x, w.y, w.z, Math.round(3 + (s.speed - 14) / 4), 0.7);
+        }
+        break;
+      }
       case "powerup-end":
         if (e.kind === "patinete") this.world.runner.setRiding?.(false);
         if (e.kind === "ciguena") this.world.runner.setCarried?.(false);
@@ -335,25 +395,35 @@ class Game implements GameApi {
 
   private onFx(f: RunFx): void {
     switch (f.type) {
-      case "burst":
-        this.effects.burst(f.kind, f.x, f.y, -f.d, f.kind === "crash" ? 0 : -(this.run?.player.speed ?? 0) * 0.9);
+      case "burst": {
+        const w = this.space.point(f.d, f.x, f.y, this.vA);
+        const v = f.kind === "crash" ? 0 : (this.run?.player.speed ?? 0) * 0.9;
+        const fw = this.space.forward(f.d, this.vB);
+        this.effects.burst(f.kind, w.x, w.y, w.z, fw.x * v, fw.z * v);
         break;
+      }
       case "knock":
         this.world.knock(f.id, f.dir);
         break;
       case "shake":
         this.cam.shake(f.amount);
         break;
+      case "flash":
+        this.world.flash(f.id);
+        break;
       case "remove": {
         const o = this.run?.gen.obstacles.find((x) => x.id === f.id);
-        if (o) this.effects.burst("crash", 0, 1, -o.d);
+        if (o) {
+          const w = this.space.point(o.d, o.x, 1, this.vA);
+          this.effects.burst("crash", w.x, w.y, w.z);
+        }
         break;
       }
       case "reset":
         this.path.clear();
         this.world.clearDynamic();
-        this.world.clearSegments();
-        if (this.run) this.world.updateSegments(this.run.player.p, 99);
+        if (this.run) this.world.preload(this.run.player.p, this.run.lap);
+        this.fade = Math.max(this.fade, 0.8);
         this.cam.snap();
         break;
     }
@@ -403,8 +473,18 @@ class Game implements GameApi {
     const run = this.run;
     if (!run || this.state === "paused" || this.state === "menu") return;
     if (this.botOn) this.bot.update(run);
-    run.tick(dt);
     const s = run.player;
+    const wasGrounded = s.grounded;
+    const vy = s.vy;
+    this.prevGap = run.chaser.distance;
+    run.tick(dt);
+    if (!wasGrounded && s.grounded && run.phase === "running") {
+      // Landing: squash, dust, and a camera dip that grows with the impact.
+      const impact = Math.min(1, Math.max(0, -vy - 4) / 16);
+      this.squash = Math.max(this.squash, 0.35 + 0.65 * impact);
+      this.effects.dust(s.x, s.y, -s.p, Math.round(5 + 12 * impact), 0.8 + impact);
+      this.cam.dip(0.6 + 2.2 * impact);
+    }
     // While the runner flies, the waiter stays on the street below.
     if (run.phase === "running") {
       if (s.carried) this.path.record(s.p, s.x, 0, false, false);
@@ -416,7 +496,10 @@ class Game implements GameApi {
   private timeScale(): number {
     const run = this.run;
     if (!run || this.state !== "playing" || run.countdown > 0) return 1;
-    return run.timeScale;
+    if (this.hitStop > 0) return 0;
+    // Crash: slow motion easing back to normal into the end shot.
+    const slow = this.slowmo > 0 ? 0.3 + 0.7 * (1 - this.slowmo / 0.4) ** 2 : 1;
+    return run.timeScale * slow;
   }
 
   private runnerAnim(run: Run): ActorAnim {
@@ -426,7 +509,11 @@ class Game implements GameApi {
     if (this.state === "paused" || run.countdown > 0) return s.grounded ? "idle" : "fall";
     if (run.stumbleAnim > 0) return "stumble";
     if (s.roll > 0) return "roll";
-    if (!s.grounded) return s.vy > 0 ? "jump" : "fall";
+    if (!s.grounded && !s.carried) {
+      // No single-frame flickers at roof seams: a short drop off an edge keeps running.
+      if (s.vy > 0.5) return "jump";
+      if (s.air > 0.08 || s.vy < -3) return "fall";
+    }
     return "run";
   }
 
@@ -444,41 +531,60 @@ class Game implements GameApi {
     const runner = world.runner;
     const run = this.run;
     const frozen = this.state === "paused";
+    // Real-time timers (hit-stop, slow-motion, squash) run on the frame clock.
+    if (!frozen) {
+      this.hitStop = Math.max(0, this.hitStop - dt);
+      if (this.hitStop <= 0) this.slowmo = Math.max(0, this.slowmo - dt);
+    }
     const animDt = frozen ? 0 : dt * this.timeScale();
     let mode: CameraMode = "menu";
     let px = 0;
     let py = 0;
     let p = 0;
     let speed = 0;
+    let laneX = 0;
 
+    let lap = 1;
     if (!run) {
+      // The menu: on the Puente Real deck, the pylon ahead, in the right-hand lane.
       p = Game.MENU_DISTANCE;
-      runner.root.position.set(0, 0, -p);
-      runner.root.rotation.set(0, 0.35, 0);
+      const layout = layoutAt(p);
+      px = layout.offsets[layout.offsets.length - 1] ?? 0;
+      this.space.place(runner.root, p, px, 0, 0.35, 0);
+      runner.root.scale.set(1, 1, 1);
       runner.update(dt, "idle", 0);
     } else {
+      lap = run.lap;
       const s = run.player;
       const a = frozen || run.countdown > 0 ? 1 : alpha;
       p = s.pp + (s.p - s.pp) * a;
       px = s.px + (s.x - s.px) * a;
       py = s.py + (s.y - s.py) * a;
       speed = s.speed;
-      world.updateSegments(p, 2, run.phase === "countdown" || p < 30 ? 4 : 1);
-      world.sync(run, p, animDt, this.time, this.cam.camera.position, run.phase === "ending" || run.phase === "over");
+      laneX = laneOffset(run.layoutFn(s.p), s.lane);
 
-      // Lean into lane changes.
+      // Lean into lane changes (the lane ease's overshoot shows as a little settle).
       const vx = (s.x - s.px) / TICK;
-      const leanGain = s.carried ? 0.04 : 0.018;
-      this.lean += (Math.max(-0.5, Math.min(0.5, -vx * leanGain)) - this.lean) * Math.min(1, dt * (s.carried ? 6 : 14));
+      const leanGain = s.carried ? 0.04 : 0.02;
+      this.lean += (Math.max(-0.5, Math.min(0.5, -vx * leanGain)) - this.lean) * Math.min(1, dt * (s.carried ? 6 : 16));
       this.flight += ((s.carried ? 1 : 0) - this.flight) * Math.min(1, dt * (s.carried ? 1.8 : 1.4));
-      runner.root.position.set(px, py, -p);
-      runner.root.rotation.set(0, 0, this.lean);
+      // Landing squash and stumble knock-back decay in real time.
+      this.squash *= Math.exp(-dt * 13);
+      this.knock *= Math.exp(-dt * 7);
+      const q = this.squash;
+      // Crossing a non-runnable median (the cable plane, a kerb island): a little vault.
+      const across = Math.abs(s.targetX - s.fromX);
+      const hop = s.laneT < 1 && across > MEDIAN_GAP ? Math.sin(Math.PI * s.laneT) * 0.45 * Math.min(1, (across - 3.5) / 2) : 0;
+      this.space.place(runner.root, p - this.knock, px, py + hop, 0, 0);
+      runner.root.rotation.x = -this.knock * 0.25;
+      runner.root.rotation.z = this.lean;
+      runner.root.scale.set(1 + 0.08 * q, 1 - 0.14 * q, 1 + 0.08 * q);
       runner.update(animDt, this.runnerAnim(run), speed);
       runner.root.visible = run.invulnerable > 0 ? Math.floor(this.time * 14) % 2 === 0 : true;
 
       // The waiter follows the runner's own path a few metres behind (lane changes, jumps, roofs).
       const waiter = world.waiter;
-      const gap = run.chaser.distance;
+      const gap = this.prevGap + (run.chaser.distance - this.prevGap) * a;
       const wp = p - gap;
       const sample = this.pathSample;
       let wy = 0;
@@ -490,8 +596,16 @@ class Game implements GameApi {
         sample.airborne = false;
         this.waiterX += (px - this.waiterX) * Math.min(1, dt * 3);
       }
-      waiter.root.position.set(this.waiterX, wy, -wp);
-      waiter.root.rotation.set(0, 0, 0);
+      // Intro: he storms out of the bar on the right-hand side and into the runner's lane.
+      let wx = this.waiterX;
+      if (run.intro && run.countdown > 0) {
+        const t = Math.min(1, Math.max(0, (COUNTDOWN_TIME - run.countdown) / COUNTDOWN_TIME));
+        const layout = layoutAt(p);
+        const kerb = (layout.right ?? px + 2) + 1.5;
+        wx = kerb + (px - kerb) * t * t * (3 - 2 * t);
+        this.waiterX = wx;
+      }
+      this.space.place(waiter.root, wp, wx, wy, 0, 0);
       this.waiterZ = -wp;
       waiter.update(animDt, this.waiterAnim(run), Math.max(speed, run.phase === "ending" ? 7 : 0));
       waiter.root.visible = gap < 40;
@@ -503,25 +617,43 @@ class Game implements GameApi {
         this.wasEnd = true;
       } else if (run.intro && run.countdown > 0) mode = "intro";
       else mode = "chase";
+
+      // Solids the lens must stay out of (vehicles, containers, scaffolds near the camera).
+      this.solids.length = 0;
+      for (let i = 0; i < run.boxes.count; i++) {
+        const b = run.boxes.box(i);
+        if (!b || b.yMax < 1 || run.ignore.has(b.spawn.id)) continue;
+        this.solids.push({ xMin: b.xMin, xMax: b.xMax, yMin: b.yMin, yMax: b.yMax, zMin: -b.dMax, zMax: -b.dMin });
+      }
     }
 
     const patinete = run?.active("patinete") !== undefined;
     this.fovKick += ((patinete ? 6 : 0) - this.fovKick) * Math.min(1, dt * 3);
     const introT = run && run.intro ? Math.min(1, Math.max(0, (COUNTDOWN_TIME - run.countdown) / COUNTDOWN_TIME) * 1.15) : 1;
-    this.cam.update(dt, {
-      mode, x: px, y: py, z: -p, groundY: run ? this.groundY : 0, speed, intro: introT, fovKick: this.fovKick,
+    const s = run?.player;
+    this.cam.update(frozen ? 0 : dt, {
+      mode, x: px, y: py, z: -p, laneX, groundY: run ? this.groundY : 0, speed, intro: introT, fovKick: this.fovKick,
       endSide: this.endSide, waiterZ: this.waiterZ, flight: run ? this.flight : 0, bank: run && this.flight > 0.05 ? this.lean * 0.35 * this.flight : 0,
+      rolling: s ? s.roll > 0 : false, grounded: s ? s.grounded : false, solids: this.solids,
+      clearance: getCourse()?.clearanceAt(p) ?? null,
     });
+    world.setCamera(this.cam.camera);
+    world.updateScenery(p, lap, this.cam.camera);
+    world.updateAtmosphere(p, lap);
+    if (run) {
+      this.chest.set(px, py + 1.1, -p);
+      world.sync(run, p, frozen || run.countdown > 0 ? 1 : alpha, animDt, this.time, this.cam.local, this.chest);
+    }
     if (this.fade > 0) {
       this.fade = Math.max(0, this.fade - dt * 2.2);
       this.fadeMesh.material.color.copy(world.fog.color);
       this.fadeMesh.material.opacity = Math.min(1, this.fade * 1.4);
     }
     this.fadeMesh.visible = this.fade > 0;
-    this.focus.set(px, py, -p);
-    world.updateEnvironment(dt, this.cam.camera, this.focus);
-    const lines = run && run.phase === "running" && !frozen ? (patinete ? 1 : Math.max(0, (speed - 22) / 12)) : 0;
-    this.effects.update(frozen ? 0 : dt, lines, speed);
+    this.space.point(p, px, py, this.focus);
+    world.updateEnvironment(this.cam.camera, this.focus, this.space.forward(p, this.vC));
+    const lines = run && run.phase === "running" && !frozen ? (patinete ? 1 : Math.max(0, Math.min(1, (speed - 17) / 12))) : 0;
+    this.effects.update(frozen ? 0 : animDt, lines, speed);
     if (!this.contextLost) this.renderer.render(world.scene, this.cam.camera);
   }
 
@@ -564,18 +696,36 @@ class Game implements GameApi {
       if (this.run && (this.run.phase === "running" || this.run.phase === "countdown")) this.run.warp(zone);
       else this.startZone = zone;
     },
+    warpS: (metres) => {
+      this.markDebugRun();
+      if (!Number.isFinite(metres)) return;
+      if (this.run && (this.run.phase === "running" || this.run.phase === "countdown")) this.run.warpTo(metres);
+      else this.startS = metres;
+    },
     powerup: (kind) => {
       this.markDebugRun();
       const run = this.run;
       if (!run || run.phase !== "running") return;
       const s = run.player;
-      run.gen.pickups.push({ id: 900_000_000 + Math.floor(this.time * 1000), kind, lane: s.lane, d: s.p + 8, y: 1 });
+      run.gen.pickups.push({ id: 900_000_000 + Math.floor(this.time * 1000), kind, lane: s.lane, x: laneOffset(run.layoutFn(s.p), s.lane), d: s.p + 8, y: 1 });
       run.gen.pickups.sort((a, b) => a.d - b.d);
     },
     setSpeed: (mps) => {
       this.markDebugRun();
       this.speedOverride = mps;
       if (this.run) this.run.speedOverride = mps;
+    },
+    obstacles: () => this.world.debugObstacles(),
+    manual: (on) => {
+      if (on) this.loop.stop();
+      else this.loop.start();
+    },
+    frames: (count, hz = 60) => {
+      for (let i = 0; i < count; i++) this.loop.step(1 / hz);
+    },
+    camera: () => {
+      const c = this.cam.camera;
+      return { x: c.position.x, y: c.position.y, z: c.position.z, fov: c.fov, p: this.run?.player.p ?? 0 };
     },
     stats: () => {
       const info = this.renderer.info;
@@ -615,6 +765,10 @@ class Game implements GameApi {
     if (seed !== null && Number.isFinite(Number(seed))) this.fixedSeed = Number(seed) >>> 0;
     const zone = params.get("zone");
     if (isZoneId(zone)) this.startZone = zone;
+    const at = params.get("s");
+    if (at !== null && Number.isFinite(Number(at)) && Number(at) >= 0) this.startS = Number(at);
+    const lap = params.get("lap");
+    if (lap !== null && Number(lap) >= 1) this.startLap = Math.floor(Number(lap));
     const speed = params.get("speed");
     if (speed !== null && Number(speed) > 0) this.debug.setSpeed(Number(speed));
     // Defer so the shell can subscribe first.
@@ -623,8 +777,12 @@ class Game implements GameApi {
   }
 }
 
-export function createGame(canvas: HTMLCanvasElement, options: GameOptions): GameApi {
-  const game = new Game(canvas, options);
+/**
+ * Create the engine. `world` is the real city (src/main.ts loads it first); without it the old
+ * straight stand-in course is used (dev pages, tests).
+ */
+export function createGame(canvas: HTMLCanvasElement, options: GameOptions, world: { city: CityData; track: Track } | null = null): GameApi {
+  const game = new Game(canvas, options, world);
   game.applyParams(new URLSearchParams(window.location.search));
   window.__game = { api: game, debug: game.debug };
   window.__simpaDebugRun ??= false;

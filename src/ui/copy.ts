@@ -14,6 +14,10 @@ const CRASH_LINES: Record<ObstacleKind, string> = {
   furgoneta: "Has frenado la furgoneta… con la cara",
   bus: "Te has comido el autobús",
   "camion-rampa": "La grúa te ha recogido a ti",
+  peaton: "Perdone, señora…",
+  bolardos: "Los bolardos no se apartan",
+  maceta: "Te has llevado los geranios",
+  mesa: "¿Mesa para uno?",
 };
 
 const CRASH_SUBS = [
@@ -32,6 +36,17 @@ export function gameOverHeadline(summary: RunSummary): { title: string; sub: str
 }
 
 export const PREMISE = "Te has ido sin pagar. El camarero no perdona.";
+
+/** The game's name (the only non-Spanish words the player sees) and its tagline. */
+export const GAME_TITLE = "Badajoz Surfers";
+export const SUBTITLE = "Escapa tras hacer un simpa";
+
+/** Lines of the "Créditos" panel, in order. Append new attributions here. */
+export const CREDITS: readonly string[] = [
+  "Datos del mapa © colaboradores de OpenStreetMap (ODbL)",
+  "LiDAR-PNOA, CNIG (CC BY 4.0)",
+  "Hecho en Badajoz",
+];
 
 /** Zone names as they read inside a sentence: "Estás en el Casco Antiguo", "hasta la Margen derecha". */
 const ZONE_IN_SENTENCE: Record<string, string> = {

@@ -1,25 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { OBSTACLE_DEFS, ZONES, type Lane } from "../contracts";
-import { moverEffectiveHalf } from "./patterns";
+import { OBSTACLE_DEFS, ZONES } from "../contracts";
 import { createPlayer } from "./player";
 import { solve } from "./solver";
 import type { ObstacleSpawn } from "./spawns";
-import { EMPTY_START, TrackGenerator, ZONE_MARGIN } from "./track";
+import { EMPTY_START, TrackGenerator, ZONE_MARGIN, spawnInterval as interval } from "./track";
+import { collides, lateralOverlap } from "./traffic";
+import { layoutAt } from "./lanes";
 import { LAP_LENGTH, zoneAt, zoneStartDistance } from "./tuning";
+import { useRealCourse } from "./test-course";
 
-function interval(o: ObstacleSpawn): [number, number] {
-  const half = o.k > 0 ? moverEffectiveHalf(o.kind, o.k) : OBSTACLE_DEFS[o.kind].length / 2;
-  return [o.d - half, o.d + half];
-}
-
-function lanesOf(o: ObstacleSpawn): Lane[] {
-  return OBSTACLE_DEFS[o.kind].lanes === 3 ? [-1, 0, 1] : [o.lane];
-}
+useRealCourse();
 
 function check(seed: number, from: number, length: number): { gen: TrackGenerator; ok: boolean; reached: number } {
   const gen = new TrackGenerator(seed, from);
   gen.generateUntil(from + length + 200);
-  const start = createPlayer(from + 1, 0);
+  const start = createPlayer(from + 1);
   // Inputs only every 0.25 s (a human pace, not frame-perfect play) with the game's 120 Hz physics.
   const result = solve(gen.obstacles, start, from + length, { decision: 0.25, dt: 1 / 120, maxFrontier: 200 });
   return { gen, ...result };
@@ -55,41 +50,46 @@ describe("track generator", () => {
     }
   });
 
-  it("never overlaps obstacles in the same lane", () => {
+  it("never overlaps obstacles in the same lane, and traffic never drives through anything", () => {
     for (let seed = 1; seed <= 30; seed++) {
       const gen = new TrackGenerator(seed * 7919);
       gen.generateUntil(LAP_LENGTH * 2);
       const list = gen.obstacles;
       for (let i = 0; i < list.length; i++) {
         const a = list[i]!;
-        const [a0, a1] = interval(a);
         for (let j = i + 1; j < list.length; j++) {
           const b = list[j]!;
-          if (b.d - a.d > 30) break;
-          const [b0, b1] = interval(b);
-          const shared = lanesOf(a).some((l) => lanesOf(b).includes(l));
-          if (!shared) continue;
-          const overlap = Math.min(a1, b1) - Math.max(a0, b0);
-          // Scaffolds may sit back to back; nothing may interpenetrate.
-          expect(overlap, `seed ${seed}: ${a.kind}@${a.d.toFixed(1)} vs ${b.kind}@${b.d.toFixed(1)}`).toBeLessThanOrEqual(0.01);
+          if (b.d - a.d > 500) break;
+          if (!lateralOverlap(a, b)) continue;
+          if (a.k === 0 && b.k === 0) {
+            if (b.d - a.d > 30) continue;
+            const [a0, a1] = interval(a);
+            const [b0, b1] = interval(b);
+            const overlap = Math.min(a1, b1) - Math.max(a0, b0);
+            // Scaffolds may sit back to back; nothing may interpenetrate.
+            expect(overlap, `seed ${seed}: ${a.kind}@${a.d.toFixed(1)} vs ${b.kind}@${b.d.toFixed(1)}`).toBeLessThanOrEqual(0.01);
+          } else {
+            expect(collides(a, b), `seed ${seed}: ${a.kind}@${a.d.toFixed(1)} k${a.k.toFixed(2)} vs ${b.kind}@${b.d.toFixed(1)} k${b.k.toFixed(2)}`).toBe(false);
+          }
         }
       }
     }
   });
 
-  it("spaces power-ups 250-400 m apart and spawns letters regularly", () => {
+  it("spaces power-ups 430-650 m apart and a whole BADAJOZ about once per lap", () => {
     for (let seed = 1; seed <= 10; seed++) {
       const gen = new TrackGenerator(seed);
       gen.generateUntil(LAP_LENGTH);
       const powerups = gen.pickups.filter((p) => p.kind !== "bellota" && p.kind !== "letra");
       for (let i = 1; i < powerups.length; i++) {
         const gap = powerups[i]!.d - powerups[i - 1]!.d;
-        expect(gap).toBeGreaterThan(200);
+        expect(gap).toBeGreaterThan(400);
       }
-      expect(powerups.length).toBeGreaterThan(LAP_LENGTH / 500);
+      expect(powerups.length).toBeGreaterThan(LAP_LENGTH / 900);
       const letters = gen.pickups.filter((p) => p.kind === "letra");
-      expect(letters.length).toBeGreaterThan(LAP_LENGTH / 420);
-      for (let i = 1; i < letters.length; i++) expect(letters[i]!.d - letters[i - 1]!.d).toBeGreaterThan(100);
+      expect(letters.length).toBeGreaterThanOrEqual(6);
+      expect(letters.length).toBeLessThanOrEqual(10);
+      for (let i = 1; i < letters.length; i++) expect(letters[i]!.d - letters[i - 1]!.d).toBeGreaterThan(900);
     }
   });
 
@@ -104,8 +104,9 @@ describe("track generator", () => {
   });
 
   it("the solver detects an impossible wall", () => {
-    const wall: ObstacleSpawn[] = ([-1, 0, 1] as const).map((lane, i) => ({
-      id: i + 1, kind: "bus", lane, d: 60, k: 0, seed: 0, flipped: false,
+    const offsets = layoutAt(60).offsets;
+    const wall: ObstacleSpawn[] = offsets.map((x, lane) => ({
+      id: lane + 1, kind: "bus", lane, x, d: 60, k: 0, seed: 0, flipped: false,
     }));
     expect(solve(wall, createPlayer(0), 120, { decision: 0.1, dt: 1 / 60, maxFrontier: 160 }).ok).toBe(false);
     const passable = wall.slice(0, 2);

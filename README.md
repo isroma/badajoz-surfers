@@ -1,6 +1,6 @@
-# Simpa: corre por Badajoz
+# Badajoz Surfers
 
-An endless runner through the streets of Badajoz. You left a bar terrace without paying ("un simpa") and the waiter is after you. The run starts on Puente Real and loops around the city; each loop is faster, and even loops are at night.
+An endless runner through the real streets of Badajoz ("Escapa tras hacer un simpa"). You left a bar terrace without paying ("un simpa") and the waiter is after you. The run starts on Puente Real and loops around the city; each loop is faster, and even loops are at night.
 
 Play it: https://isroma.github.io/badajoz-surfers/
 

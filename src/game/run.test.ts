@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FLIGHT_HEIGHT, OBSTACLE_DEFS, POWERUPS, ZONES, type GameEvent, type Lane, type ObstacleKind } from "../contracts";
+import { FLIGHT_HEIGHT, LANE_WIDTH, OBSTACLE_DEFS, POWERUPS, ZONES, type GameEvent, type ObstacleKind } from "../contracts";
 import { Bot } from "./bot";
 import { Run, type RunFx } from "./run";
 import { TICK } from "./tuning";
@@ -29,8 +29,10 @@ function startRunning(seed: number): { run: Run; events: GameEvent[]; fx: RunFx[
 }
 
 let ids = 100000;
-function put(run: Run, kind: ObstacleKind, lane: Lane, front: number): void {
-  run.gen.obstacles.push({ id: ids++, kind, lane, d: front + OBSTACLE_DEFS[kind].length / 2, k: 0, seed: 1, flipped: false });
+/** `lane` is relative to the centre lane (-1 left, 0 centre, 1 right). */
+function put(run: Run, kind: ObstacleKind, lane: -1 | 0 | 1, front: number): void {
+  const x = OBSTACLE_DEFS[kind].lanes === 3 ? 0 : lane * LANE_WIDTH;
+  run.gen.obstacles.push({ id: ids++, kind, lane: lane + 1, x, d: front + OBSTACLE_DEFS[kind].length / 2, k: 0, seed: 1, flipped: false });
   run.gen.obstacles.sort((a, b) => a.d - b.d);
 }
 
@@ -85,7 +87,7 @@ describe("run", () => {
     run.push("left");
     ticks(run, 0.3);
     expect(events.some((e) => e.type === "stumble")).toBe(true);
-    expect(run.player.lane).toBe(0);
+    expect(run.player.lane).toBe(1);
     expect(run.chaser.value).toBeGreaterThan(0.8);
     put(run, "bus", 1, run.player.p - 2);
     run.push("right");
@@ -111,7 +113,7 @@ describe("run", () => {
   it("collecting the seven letters completes the word", () => {
     const { run, events } = startRunning(5);
     const p = run.player.p;
-    for (let i = 0; i < 7; i++) run.gen.pickups.push({ id: 200000 + i, kind: "letra", lane: 0, d: p + 10 + i * 6, y: 1 });
+    for (let i = 0; i < 7; i++) run.gen.pickups.push({ id: 200000 + i, kind: "letra", lane: 1, x: 0, d: p + 10 + i * 6, y: 1 });
     ticks(run, 5);
     const letters = events.flatMap((e) => (e.type === "pickup" && e.kind === "letra" ? [e.letterIndex] : []));
     expect(letters).toEqual([0, 1, 2, 3, 4, 5, 6]);
@@ -162,7 +164,7 @@ describe("run", () => {
   it("stork flight: rises, flies over traffic, collects air bellotas, lands safely", () => {
     const { run, events } = startRunning(12);
     const s = run.player;
-    run.gen.pickups.push({ id: 300000, kind: "ciguena", lane: 0, d: s.p + 6, y: 1 });
+    run.gen.pickups.push({ id: 300000, kind: "ciguena", lane: 1, x: 0, d: s.p + 6, y: 1 });
     ticks(run, 0.6);
     expect(events.some((e) => e.type === "powerup-start" && e.kind === "ciguena")).toBe(true);
     expect(s.carried).toBe(true);
@@ -172,7 +174,7 @@ describe("run", () => {
     for (const lane of [-1, 0, 1] as const) put(run, "bus", lane, s.p + 15);
     run.push("left");
     ticks(run, 0.5);
-    expect(s.lane).toBe(-1);
+    expect(s.lane).toBe(0);
     const before = run.bellotas;
     // Put obstacles right where it will land: they must be cleared away.
     const landAt = s.p + s.speed * (POWERUPS.ciguena.baseDuration - 1.8);
@@ -192,7 +194,7 @@ describe("run", () => {
   it("stork flight: the autopilot steers into the air bellota lines", () => {
     const { run } = startRunning(13);
     const bot = new Bot();
-    run.gen.pickups.push({ id: 300001, kind: "ciguena", lane: 0, d: run.player.p + 6, y: 1 });
+    run.gen.pickups.push({ id: 300001, kind: "ciguena", lane: 1, x: 0, d: run.player.p + 6, y: 1 });
     const before = run.bellotas;
     for (let i = 0; i < 0.7 / TICK; i++) {
       bot.update(run);
@@ -225,8 +227,8 @@ describe("run", () => {
   it("two letters on screen at once keep their own letters", () => {
     const { run, events } = startRunning(14);
     const p = run.player.p;
-    run.gen.pickups.push({ id: 400000, kind: "letra", lane: 0, d: p + 10, y: 1 });
-    run.gen.pickups.push({ id: 400001, kind: "letra", lane: 0, d: p + 30, y: 1 });
+    run.gen.pickups.push({ id: 400000, kind: "letra", lane: 1, x: 0, d: p + 10, y: 1 });
+    run.gen.pickups.push({ id: 400001, kind: "letra", lane: 1, x: 0, d: p + 30, y: 1 });
     // Both become visible (assigned) before the first is taken.
     expect(run.letterFor(400000)).toBe(0);
     expect(run.letterFor(400001)).toBe(1);
@@ -241,8 +243,8 @@ describe("run", () => {
   it("a missed letter hands its letter to the next one", () => {
     const { run, events } = startRunning(15);
     const p = run.player.p;
-    run.gen.pickups.push({ id: 400010, kind: "letra", lane: 1, d: p + 10, y: 1 });
-    run.gen.pickups.push({ id: 400011, kind: "letra", lane: 0, d: p + 30, y: 1 });
+    run.gen.pickups.push({ id: 400010, kind: "letra", lane: 2, x: LANE_WIDTH, d: p + 10, y: 1 });
+    run.gen.pickups.push({ id: 400011, kind: "letra", lane: 1, x: 0, d: p + 30, y: 1 });
     expect(run.letterFor(400010)).toBe(0);
     expect(run.letterFor(400011)).toBe(1);
     ticks(run, 3);

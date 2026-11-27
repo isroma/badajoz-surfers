@@ -7,7 +7,8 @@ import * as THREE from "three";
 import { OBSTACLE_DEFS, type ObstacleKind } from "../contracts";
 import { Builder, T, instance, xf } from "./geom";
 import { CLOTH, GLOW, NET, PAINT, SOLID } from "./materials";
-import { buildBus, buildCar, buildMoto, buildRampTruck, buildVan } from "./vehicles";
+import { buildPedestrian } from "./pedestrians";
+import { ROLE_VARIANT_BIT, buildBus, buildCar, buildMoto, buildRampTruck, buildVan, wheelAt, wheelSink } from "./vehicles";
 
 const RED = 0xd62828;
 const WHITE = 0xf7f7f2;
@@ -187,8 +188,8 @@ function buildContenedor(b: Builder, seed: number): void {
     [-hwB, 0.18, 0.6], [hwB, 0.18, 0.6], [hwB, 0.18, -0.6], [-hwB, 0.18, -0.6],
     [-hwT, 1.4, 0.66], [hwT, 1.4, 0.66], [hwT, 1.4, -0.66], [-hwT, 1.4, -0.66],
   ], c.colour, PAINT);
-  b.span(-1.1, 1.1, 1.4, 1.5, -0.7, 0.7, c.colour, PAINT);
-  b.span(-1.08, 1.08, 1.46, 1.5, -0.68, 0.68, new THREE.Color(c.colour).multiplyScalar(0.8), PAINT);
+  b.span(-1.1, 1.1, 1.4, 1.47, -0.7, 0.7, c.colour, PAINT);
+  b.span(-1.08, 1.08, 1.44, 1.5, -0.68, 0.68, new THREE.Color(c.colour).multiplyScalar(0.8), PAINT);
   // reinforcing ribs, handles, wheels, pedal
   for (const x of [-0.7, 0, 0.7]) b.box(x, 0.8, 0.64, 0.06, 1.1, 0.04, new THREE.Color(c.colour).multiplyScalar(0.85), SOLID);
   for (const sx of [-1, 1]) {
@@ -203,6 +204,40 @@ function buildContenedor(b: Builder, seed: number): void {
   b.box(0, 1.28, 0.66, 0.7, 0.08, 0.02, 0x1a1a1a, SOLID);
   // recycling triangle
   b.tri([-0.12, 0.55, 0.665], [0.12, 0.55, 0.665], [0, 0.76, 0.665], 0xffffff, SOLID);
+}
+
+/** A row of three cast-iron bollards (the old town's "bolardos") with a chain. */
+function buildBolardos(b: Builder): void {
+  for (const x of [-0.65, 0, 0.65]) {
+    b.cyl(x, 0, 0, 0.11, 0.7, 0x24272a, 8, SOLID, 0.09);
+    b.sphere(x, 0.74, 0, 0.1, 0.08, 0.1, 0x24272a, SOLID, 8, 4);
+    b.cyl(x, 0.55, 0, 0.115, 0.05, 0xc9a23a, 8, SOLID);
+  }
+  for (const x of [-0.33, 0.33]) b.add(T.torus(Math.PI, 0.04, 4, 8), xf(x, 0.62, 0, 0.32, 0.15, 0.32, 0, 0, Math.PI), 0x1a1a1a, SOLID);
+}
+
+/** Big concrete street planter with a shrub or a small orange tree. */
+function buildMaceta(b: Builder, seed: number): void {
+  const col = [0xb8afa0, 0x8f8a82, 0xb5653a][seed % 3] ?? 0xb8afa0;
+  b.box(0, 0.32, 0, 1.25, 0.64, 1.25, col, SOLID);
+  b.box(0, 0.66, 0, 1.3, 0.06, 1.3, new THREE.Color(col).multiplyScalar(0.85).getHex(), SOLID);
+  b.box(0, 0.68, 0, 1.12, 0.02, 1.12, 0x5a4632, SOLID);
+  b.blob(0, 0.86, 0, 0.55, 0.22, 0.55, 0x3e6b2f, SOLID);
+  b.blob(0.15, 0.93, -0.1, 0.35, 0.12, 0.35, 0x4f7f38, SOLID);
+}
+
+/** A single bar table with one chair (aluminium, the brewery's colour on the backrest). */
+function buildMesa(b: Builder, seed: number): void {
+  const brand = [0xc8102e, 0x1f4f8a, 0x2e7d32, 0xf2b705][seed % 4] ?? 0xc8102e;
+  b.cyl(-0.25, 0, 0, 0.04, 0.72, 0x9aa0a6, 6, SOLID);
+  b.cyl(-0.25, 0, 0, 0.25, 0.03, 0x9aa0a6, 8, SOLID);
+  b.cyl(-0.25, 0.72, 0, 0.36, 0.04, 0xd9dcde, 14, SOLID);
+  b.box(-0.25, 0.78, 0.1, 0.07, 0.1, 0.07, 0xf3c623, SOLID);
+  // chair
+  const cx = 0.38;
+  for (const [dx, dz] of [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]] as const) b.box(cx + dx, 0.22, dz, 0.035, 0.44, 0.035, 0x9aa0a6, SOLID);
+  b.box(cx, 0.45, 0, 0.42, 0.04, 0.42, 0x9aa0a6, SOLID);
+  b.box(cx + 0.2, 0.7, 0, 0.04, 0.45, 0.42, brand, SOLID);
 }
 
 type Builders = (b: Builder, seed: number, lit: boolean) => void;
@@ -220,6 +255,10 @@ const BUILD: Record<ObstacleKind, Builders> = {
   furgoneta: (b, s, lit) => buildVan(b, s, lit),
   bus: (b, s, lit) => buildBus(b, s, lit),
   "camion-rampa": (b, s) => buildRampTruck(b, s),
+  bolardos: (b) => buildBolardos(b),
+  maceta: (b, s) => buildMaceta(b, s),
+  mesa: (b, s) => buildMesa(b, s),
+  peaton: () => undefined,
 };
 
 /** Number of visual variants per kind (seeds are folded into this range so caches stay small). */
@@ -236,6 +275,10 @@ const VARIANTS: Record<ObstacleKind, number> = {
   furgoneta: 4,
   bus: 4,
   "camion-rampa": 4,
+  bolardos: 1,
+  maceta: 3,
+  mesa: 4,
+  peaton: 8,
 };
 
 const cache = new Map<string, THREE.Group>();
@@ -247,7 +290,7 @@ const cache = new Map<string, THREE.Group>();
 function fitToBox(tpl: THREE.Group, kind: ObstacleKind): void {
   const d = OBSTACLE_DEFS[kind];
   const box = new THREE.Box3();
-  for (const m of tpl.children) if (m instanceof THREE.Mesh) box.union((m.geometry as THREE.BufferGeometry).boundingBox ?? new THREE.Box3());
+  for (const m of tpl.children) if (m instanceof THREE.Mesh) box.union(((m.geometry as THREE.BufferGeometry).boundingBox ?? new THREE.Box3()).clone().translate(m.position));
   const ext = (lo: number, hi: number): number => Math.max(Math.abs(lo), Math.abs(hi));
   const sx = Math.min(1, d.width / 2 / ext(box.min.x, box.max.x));
   const sz = Math.min(1, d.length / 2 / ext(box.min.z, box.max.z));
@@ -259,6 +302,7 @@ function fitToBox(tpl: THREE.Group, kind: ObstacleKind): void {
     g.scale(sx, sy, sz);
     g.computeBoundingBox();
     g.computeBoundingSphere();
+    m.position.multiply(new THREE.Vector3(sx, sy, sz));
   }
 }
 
@@ -266,16 +310,54 @@ function template(kind: ObstacleKind, variant: number, moving: boolean): THREE.G
   const key = `${kind}:${variant}:${moving}`;
   let tpl = cache.get(key);
   if (tpl) return tpl;
+  if (kind === "peaton") {
+    tpl = buildPedestrian(variant, moving);
+    cache.set(key, tpl);
+    return tpl;
+  }
   const b = new Builder();
+  wheelSink.list = [];
   BUILD[kind](b, variant, moving);
+  const wheels = wheelSink.list;
+  wheelSink.list = null;
   tpl = b.build(true);
+  // wheels as separate meshes, one per axle, origin on the axle: the engine spins "wheel*" about X
+  const axles = new Map<number, { x: number; z: number; r: number; w: number }[]>();
+  for (const w of wheels) {
+    const k = Math.round(w.z * 100);
+    const l = axles.get(k) ?? [];
+    l.push(w);
+    axles.set(k, l);
+  }
+  let wi = 0;
+  for (const list of axles.values()) {
+    const first = list[0];
+    if (!first) continue;
+    const wb = new Builder();
+    for (const w of list) wheelAt(wb, w.x, 0, 0, w.r, w.w);
+    const g = wb.build(true);
+    for (const c of [...g.children]) {
+      if (!(c instanceof THREE.Mesh)) continue;
+      c.name = `wheel${wi++}`;
+      c.position.set(0, first.r, first.z);
+      tpl.add(c);
+    }
+  }
   if (kind !== "pancarta") fitToBox(tpl, kind);
-  if (moving) {
+  if (moving && OBSTACLE_DEFS[kind].vehicle) {
     // a moving vehicle differs from the parked one only in its lamps (GLOW bucket): share the rest
     const parked = template(kind, variant, false);
     for (const m of tpl.children) {
       if (!(m instanceof THREE.Mesh) || m.material === GLOW) continue;
-      const twin = parked.children.find((p) => p instanceof THREE.Mesh && p.material === m.material);
+      if (m.name.startsWith("wheel")) {
+        const twinW = parked.children.find((p) => p instanceof THREE.Mesh && p.name === m.name && p.material === m.material);
+        if (twinW instanceof THREE.Mesh) {
+          (m.geometry as THREE.BufferGeometry).dispose();
+          m.geometry = twinW.geometry;
+        }
+        continue;
+      }
+      const twin = parked.children.find((p) => p instanceof THREE.Mesh && !p.name.startsWith("wheel") && p.material === m.material);
       if (twin instanceof THREE.Mesh) {
         (m.geometry as THREE.BufferGeometry).dispose();
         m.geometry = twin.geometry;
@@ -286,17 +368,21 @@ function template(kind: ObstacleKind, variant: number, moving: boolean): THREE.G
   return tpl;
 }
 
-export function createObstacle(kind: ObstacleKind, seed: number, moving = false): THREE.Object3D {
+export function createObstacle(kind: ObstacleKind, seed: number, moving = false, spanWidth?: number): THREE.Object3D {
   const def = OBSTACLE_DEFS[kind];
-  const isMoving = moving && def.vehicle;
+  const isMoving = moving && (def.vehicle || kind === "peaton");
   // any 32-bit (or odd) seed folds into a small fixed set of variants: caches stay bounded
   const n = VARIANTS[kind];
   const safe = Number.isFinite(seed) ? Math.floor(Math.abs(seed)) : 0;
-  const variant = safe % n;
+  // the role bit (vehicles.ts ROLE_VARIANT_BIT) survives the folding: bus doors open, car broken down
+  const roleBit = (kind === "coche" || kind === "bus") && (safe & ROLE_VARIANT_BIT) !== 0 ? ROLE_VARIANT_BIT : 0;
+  const variant = (safe % n) | roleBit;
   const tpl = template(kind, variant, isMoving);
   const inner = instance(tpl);
   // moving vehicles drive towards the runner: turn them so the front faces +Z
-  if (isMoving) inner.rotation.y = Math.PI;
+  if (isMoving && def.vehicle) inner.rotation.y = Math.PI;
+  // street-wide obstacles stretch to the real street's runnable width
+  if (spanWidth !== undefined && spanWidth > 0 && (kind === "valla-larga" || kind === "pancarta")) inner.scale.x = spanWidth / def.width;
   const root = new THREE.Group();
   root.name = `obstacle:${kind}`;
   root.add(inner);

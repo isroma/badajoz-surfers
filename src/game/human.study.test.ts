@@ -1,13 +1,22 @@
 /**
- * Human-like autopilot study (skipped by default: ~90 s). Un-skip to print the distribution of
- * death distances, zones and patterns over 30 lap-1 runs.
+ * Human-like autopilot study (skipped by default: ~90 s). Run with `STUDY=1 npx vitest run
+ * src/game/human.study.test.ts` to print the distribution of death distances, zones and patterns
+ * over 30 runs (vitest swallows console output of passing tests, so it writes to stdout).
  */
 import { expect, it } from "vitest";
 import { POWERUPS, type GameEvent } from "../contracts";
 import { Bot, HUMAN } from "./bot";
 import { Run } from "./run";
 import { TICK, zoneAt } from "./tuning";
-it.skip("human-like bot study over 30 seeds", () => {
+import { useRealCourse } from "./test-course";
+
+useRealCourse();
+/** Node globals (the project has no @types/node). */
+declare const process: { env: Record<string, string | undefined>; stdout: { write(s: string): boolean } };
+const study = typeof process !== "undefined" && process.env["STUDY"] === "1";
+const out = (line: string): void => void process.stdout.write(`${line}\n`);
+
+it.skipIf(!study)("human-like bot study over 30 seeds", () => {
   const rows: string[] = [];
   const dists: number[] = [];
   const byPat = new Map<string, number>();
@@ -30,10 +39,10 @@ it.skip("human-like bot study over 30 seeds", () => {
     rows.push(`seed ${seed}: ${s.p.toFixed(0)} m ${run.cause}${run.crashedOn ? ":" + run.crashedOn : ""} ${zone} pat=${pat} lane ${s.lane} y ${s.y.toFixed(2)} roll ${s.roll > 0} st ${st} v ${s.speed.toFixed(1)} near ${near.join(" ")}`);
   }
   dists.sort((a, b) => a - b);
-  console.info(rows.join("\n"));
-  console.info("MEDIAN", dists[15]?.toFixed(0), "Q1", dists[7]?.toFixed(0), "Q3", dists[22]?.toFixed(0));
-  console.info("ZONES", [...byZone].join(" | "));
-  console.info("PATS", [...byPat].sort((a, b) => b[1] - a[1]).join(" | "));
+  out(rows.join("\n"));
+  out(["MEDIAN", dists[15]?.toFixed(0), "Q1", dists[7]?.toFixed(0), "Q3", dists[22]?.toFixed(0)].join(" "));
+  out(`ZONES ${[...byZone].join(" | ")}`);
+  out(`PATS ${[...byPat].sort((a, b) => b[1] - a[1]).join(" | ")}`);
 }, 900000);
 
 it("a human-like player gets well past the opening", () => {

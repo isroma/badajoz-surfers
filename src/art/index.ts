@@ -10,9 +10,11 @@ import { createObstacle } from "./obstacles";
 import { createPickup } from "./pickups";
 import { createZoneScenery } from "./scenery";
 import { createSkyDome } from "./sky";
+import { configureRenderer, createCity } from "./city";
 
 function release(object: THREE.Object3D): void {
   object.traverse((o) => {
+    if (o instanceof THREE.SkinnedMesh) o.skeleton.dispose();
     if (o instanceof THREE.Mesh) {
       const g = o.geometry as THREE.BufferGeometry;
       if (g.userData["perInstance"] === true) g.dispose();
@@ -30,5 +32,7 @@ export const art: ArtApi = {
   createPickup,
   createZoneScenery,
   createSkyDome,
+  createCity,
+  configureRenderer,
   release,
 };

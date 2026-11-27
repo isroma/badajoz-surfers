@@ -5,6 +5,20 @@ import { POP_SCALE, h, pop, svg } from "./dom";
 import { ICON_BELLOTA, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
 import { Minimap, zoneIndexOf } from "./minimap";
 
+/** Street types that go on the small top line of a plaque ("AVENIDA" over "Sinforiano Madroñero"). */
+const STREET_TYPES = ["Avenida", "Calle", "Plaza", "Paseo", "Travesía", "Ronda", "Glorieta", "Carretera", "Camino", "Callejón", "Plazuela"];
+
+/** "Avenida Sinforiano Madroñero" → ["Avenida", "Sinforiano Madroñero"]; "Puente Real" → [null, "Puente Real"]. */
+export function splitStreet(name: string): [string | null, string] {
+  const trimmed = name.trim();
+  const sp = trimmed.indexOf(" ");
+  if (sp > 0) {
+    const first = trimmed.slice(0, sp);
+    if (STREET_TYPES.includes(first)) return [first, trimmed.slice(sp + 1)];
+  }
+  return [null, trimmed];
+}
+
 /** Names that are too long for the zone card. */
 const HUD_ZONE_NAMES: Record<string, string> = { "alcazaba-palmas": "Alcazaba y Pta. de Palmas" };
 
@@ -66,6 +80,9 @@ export class Hud {
   private comboShown = false;
   private readonly roofNum: HTMLElement;
   private readonly minimap = new Minimap({ className: "hud-map" });
+  private readonly plaque: HTMLElement;
+  private street: string | null = null;
+  private readonly hornEl: HTMLElement;
   /** Roof streak: metres since the runner got onto a roof, and when it last grew. */
   private roofStreakStart = 0;
   private roofLastGrow = -1;
@@ -78,13 +95,17 @@ export class Hud {
     this.zoneFill = h("i");
     this.lapEl = h("span", "lap");
     this.distEl = h("span", "dist");
+    this.plaque = h("div", "plaque");
+    this.plaque.hidden = true;
     const zoneCard = h(
       "div",
       "zone-card panel",
       this.zoneName,
       h("div", "bar", this.zoneFill),
       h("div", "zone-meta", this.lapEl, this.distEl),
+      this.plaque,
     );
+    this.hornEl = h("div", "horn-warn", h("span", undefined, "¡Cuidado!"));
     this.powerupsEl = h("div", "powerups");
 
     this.letterEls = [...WORD].map((ch) => h("div", "letter", ch));
@@ -117,6 +138,7 @@ export class Hud {
       this.vignette,
       this.flashEl,
       this.goldFlash,
+      this.hornEl,
       h("div", "hud-tl", zoneCard, this.powerupsEl),
       h("div", "hud-tc", this.lettersEl),
       h(
@@ -149,6 +171,9 @@ export class Hud {
     this.roofEl.classList.remove("show");
     this.comboShown = false;
     this.comboEl.classList.remove("show");
+    this.street = null;
+    this.plaque.replaceChildren();
+    this.plaque.hidden = true;
     // Danger vignette, chaser badge, flashes: back to calm.
     this.vignette.style.opacity = "0";
     this.vignette.classList.remove("hot");
@@ -314,6 +339,47 @@ export class Hud {
         this.rows.delete(kind);
       }
     }
+  }
+
+  /**
+   * The street the runner is on, as an enamel street plaque in the zone card. A new name slides
+   * in over the old one; null hides the plaque (unnamed links and roundabouts).
+   */
+  setStreet(name: string | null): void {
+    const next = name && name.trim() ? name.trim() : null;
+    if (next === this.street) return;
+    const first = this.street === null;
+    this.street = next;
+    for (const old of [...this.plaque.children]) {
+      if (old.classList.contains("out")) continue;
+      old.classList.add("out");
+      window.setTimeout(() => old.remove(), 420);
+    }
+    if (!next) {
+      this.plaque.classList.add("empty");
+      return;
+    }
+    const [type, rest] = splitStreet(next);
+    const inner = h(
+      "div",
+      `plaque-in${first ? "" : " in"}${rest.length > 22 ? " long" : ""}`,
+      type ? h("small", undefined, type) : null,
+      h("b", undefined, rest),
+    );
+    inner.title = next;
+    this.plaque.classList.remove("empty");
+    this.plaque.hidden = false;
+    this.plaque.append(inner);
+  }
+
+  /** Redraw the route map (the real map data arrived). */
+  refreshMap(): void {
+    this.minimap.update(zoneIndexOf(this.last.zone), Math.max(0, this.last.progress));
+  }
+
+  /** An oncoming vehicle honked: a quick amber flash on the top edge and "¡Cuidado!". */
+  horn(): void {
+    pop(this.hornEl, [{ opacity: 0 }, { opacity: 1, offset: 0.12 }, { opacity: 1, offset: 0.55 }, { opacity: 0 }], 900, "ease-out");
   }
 
   wordComplete(): void {

@@ -57,11 +57,16 @@ export class Loop {
       const dt = this.last < 0 ? TICK : Math.min(0.1, (now - this.last) / 1000);
       this.last = now;
       if (dt > 0) this.fps += (1 / dt - this.fps) * 0.05;
-      const n = this.clock.frame(dt, this.handlers.timeScale?.() ?? 1);
-      for (let i = 0; i < n; i++) this.handlers.tick(TICK);
-      this.handlers.render(this.clock.alpha, dt);
+      this.step(dt);
     };
     this.raf = requestAnimationFrame(frame);
+  }
+
+  /** One frame of `dt` seconds: the fixed ticks it owes, then a render (also used for manual stepping). */
+  step(dt: number): void {
+    const n = this.clock.frame(dt, this.handlers.timeScale?.() ?? 1);
+    for (let i = 0; i < n; i++) this.handlers.tick(TICK);
+    this.handlers.render(this.clock.alpha, dt);
   }
 
   stop(): void {

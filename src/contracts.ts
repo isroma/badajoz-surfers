@@ -9,6 +9,7 @@
  * All sizes are metres, all times seconds.
  */
 import type * as THREE from "three";
+import type { CityData, Track } from "./city";
 
 // ---------------------------------------------------------------------------
 // Track geometry
@@ -42,17 +43,17 @@ export interface ZoneDef {
   name: string;
   /** Spanish one-line flavour text shown under the name when the zone starts. */
   subtitle: string;
-  /** Length in metres; a multiple of SEGMENT_LENGTH. */
+  /** Nominal length in metres (the real route's; the engine takes exact zone limits from the city data). */
   length: number;
 }
 
 export const ZONES: readonly ZoneDef[] = [
-  { id: "puente-real", name: "Puente Real", subtitle: "Cruza el Guadiana sin mirar atrás", length: 480 },
-  { id: "valdepasillas", name: "Valdepasillas", subtitle: "Avenida Sinforiano Madroñero", length: 640 },
-  { id: "san-francisco", name: "San Francisco", subtitle: "Paseo de San Francisco y Avenida de Europa", length: 640 },
-  { id: "casco-antiguo", name: "Casco Antiguo", subtitle: "Plaza de España, calle San Juan y Plaza Alta", length: 720 },
-  { id: "alcazaba-palmas", name: "Alcazaba y Puerta de Palmas", subtitle: "De la muralla al Puente de Palmas", length: 720 },
-  { id: "margen-derecha", name: "Margen derecha", subtitle: "Avenida de Elvas, de vuelta al Puente Real", length: 640 },
+  { id: "puente-real", name: "Puente Real", subtitle: "Cruza el Guadiana sin mirar atrás", length: 1012 },
+  { id: "valdepasillas", name: "Valdepasillas", subtitle: "Sinforiano Madroñero y María Auxiliadora", length: 2080 },
+  { id: "san-francisco", name: "San Francisco", subtitle: "Avenida de Europa y Paseo de San Francisco", length: 1224 },
+  { id: "casco-antiguo", name: "Casco Antiguo", subtitle: "Plaza de España, calle San Juan y Plaza Alta", length: 558 },
+  { id: "alcazaba-palmas", name: "Alcazaba y Puerta de Palmas", subtitle: "De la muralla al Puente de Palmas", length: 1414 },
+  { id: "margen-derecha", name: "Margen derecha", subtitle: "Díaz Ambrona y Avenida de Elvas, de vuelta al Puente Real", length: 1882 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,12 @@ export type ObstacleKind =
   | "moto" // scooter: dodge or jump
   | "furgoneta" // delivery van: too tall for a normal jump
   | "bus" // city bus: too tall for a normal jump, long walkable roof
-  | "camion-rampa"; // tow truck with a ramp bed: run up it to reach van and bus roofs
+  | "camion-rampa" // tow truck with a ramp bed: run up it to reach van and bus roofs
+  // Narrow obstacles for sidewalks, medians and the pedestrian streets of the old town:
+  | "peaton" // a pedestrian, standing or walking slowly: dodge
+  | "bolardos" // a row of bollards: jump
+  | "maceta" // a big street planter: jump
+  | "mesa"; // a single small bar table with a chair: jump
 
 export interface ObstacleDef {
   /** How many lanes it covers. A 3-lane obstacle is always centred on lane 0. */
@@ -110,6 +116,10 @@ export const OBSTACLE_DEFS: Readonly<Record<ObstacleKind, ObstacleDef>> = {
   furgoneta: { lanes: 1, width: 2.1, yMin: 0, yMax: 2.6, length: 5.4, walkableTop: true, ramp: false, vehicle: true },
   bus: { lanes: 1, width: 2.5, yMin: 0, yMax: 3.1, length: 11, walkableTop: true, ramp: false, vehicle: true },
   "camion-rampa": { lanes: 1, width: 2.4, yMin: 0, yMax: 3.1, length: 7, walkableTop: true, ramp: true, vehicle: false },
+  peaton: { lanes: 1, width: 0.7, yMin: 0, yMax: 1.75, length: 0.6, walkableTop: false, ramp: false, vehicle: false },
+  bolardos: { lanes: 1, width: 1.6, yMin: 0, yMax: 0.8, length: 0.3, walkableTop: false, ramp: false, vehicle: false },
+  maceta: { lanes: 1, width: 1.3, yMin: 0, yMax: 1.0, length: 1.3, walkableTop: false, ramp: false, vehicle: false },
+  mesa: { lanes: 1, width: 1.4, yMin: 0, yMax: 0.95, length: 1.2, walkableTop: false, ramp: false, vehicle: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -139,8 +149,11 @@ export const POWERUPS: Readonly<Record<PowerupKind, PowerupInfo>> = {
   ciguena: { kind: "ciguena", name: "Cigüeña", description: "Una cigüeña te lleva volando sobre el tráfico", baseDuration: 7 },
 };
 
-/** Height of the runner's feet above the road while a stork carries them. Nothing on the track reaches it. */
-export const FLIGHT_HEIGHT = 6.5;
+/**
+ * Height of the runner's feet above the road while a stork carries them: over the lamp posts and
+ * traffic lights of the real streets (the flight stays over the runner's own carriageway).
+ */
+export const FLIGHT_HEIGHT = 9;
 
 // ---------------------------------------------------------------------------
 // Runner outfits (bought in the shop with bellotas; purely cosmetic)
@@ -236,12 +249,42 @@ export interface SkyDome {
   setColors(top: THREE.Color, bottom: THREE.Color): void;
 }
 
+/** The real city round the lap (src/art/city), in real-world coordinates (see src/city). */
+export interface CityScenery {
+  /** Everything, in real world coordinates. */
+  root: THREE.Group;
+  /**
+   * Stream the world round track position `s`: builds what comes into view (nearest first, within a
+   * small per-frame time budget) and drops what falls far behind. Call every frame; cheap when
+   * nothing changes. `lap` (1-based) selects day (odd) or night (even) dressing.
+   */
+  update(s: number, lap: number, camera: THREE.Camera): void;
+  /** Atmosphere at a track position and lap (the zone's; blending between zones is the engine's job). */
+  atmosphereAt(s: number, lap: number): Atmosphere;
+  /** Build synchronously everything needed round `s` (before a run starts, for the menu). */
+  preload(s: number, lap: number): void;
+  dispose(): void;
+}
+
 export interface ArtApi {
+  /** The real city from city.json and the shared track model. */
+  createCity(city: CityData, track: Track): CityScenery;
+  /**
+   * Renderer settings the city art is tuned for; the engine calls it once after creating the
+   * renderer and scene: ACES filmic tone mapping (exposure 1), PCF soft shadows, sRGB output and a
+   * sky environment map (scene.environment) for glass, water and car paint.
+   */
+  configureRenderer(renderer: THREE.WebGLRenderer, scene: THREE.Scene): void;
   /** `outfit` defaults to "clasico". */
   createRunner(outfit?: OutfitId): Actor;
   createWaiter(): Actor;
-  /** `seed` picks the variant (colour, livery, taxi or not). `moving` vehicles show lit headlights. */
-  createObstacle(kind: ObstacleKind, seed: number, moving?: boolean): THREE.Object3D;
+  /**
+   * `seed` picks the variant (colour, livery, taxi or not). `moving` vehicles show lit headlights;
+   * a moving "peaton" walks. `spanWidth` overrides the width of the obstacles that span the whole
+   * street ("valla-larga", "pancarta"), whose `OBSTACLE_DEFS` width is only the default: on the
+   * real route the runnable width varies from 4 m to 20 m.
+   */
+  createObstacle(kind: ObstacleKind, seed: number, moving?: boolean, spanWidth?: number): THREE.Object3D;
   /** For "letra", `letter` is the character to show. Origin at the centre; about 0.7 m across. */
   createPickup(kind: PickupKind, letter?: string): PickupMesh;
   createZoneScenery(zone: ZoneId): ZoneScenery;
@@ -301,10 +344,17 @@ export type GameEvent =
   | { type: "shield-break" } // the patinete absorbed a crash
   | { type: "word-complete" }
   | { type: "near-miss" }
+  /**
+   * An oncoming vehicle is about to reach the runner's lane: it flashes its headlights and honks
+   * (about 1.7 s before it would hit). `ahead` is how far ahead it is now (metres).
+   */
+  | { type: "horn"; obstacle: ObstacleKind; ahead: number }
   | { type: "stumble" } // clipped something: the waiter closes in
   | { type: "crash"; obstacle: ObstacleKind }
   | { type: "caught" }
   | { type: "zone"; zone: ZoneDef; lap: number; first: boolean } // entered a zone; `first` at run start
+  /** Entered a street with a (new) real name, e.g. "Avenida Sinforiano Madroñero". */
+  | { type: "street"; name: string }
   | { type: "gameover"; summary: RunSummary };
 
 export interface HudSnapshot {
@@ -324,6 +374,8 @@ export interface HudSnapshot {
   chaser: number;
   /** Metres run on roofs so far in this run. */
   roofMetres: number;
+  /** Real name of the street the runner is on (null on unnamed links and roundabouts). */
+  street?: string | null;
 }
 
 /** Supplied by the shell (from save data) when the game is created; read at the start of each run. */

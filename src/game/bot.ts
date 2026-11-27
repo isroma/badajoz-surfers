@@ -30,8 +30,8 @@ const HORIZON = 1.4;
 /** Replan every this many simulation ticks (exactly one planner decision). */
 const DECISION_TICKS = 12;
 const DECISION = DECISION_TICKS * TICK;
-/** The human-like planner assumes it can only act every 0.2 s. */
-const HUMAN_DECISION = 24 * TICK;
+/** The human-like planner assumes it can only act every 0.225 s (no faster than it really can: minInterval). */
+const HUMAN_DECISION = 27 * TICK;
 
 const value = (p: PickupSpawn): number => (p.kind === "bellota" ? 1 : p.kind === "letra" ? 8 : 6);
 
@@ -84,7 +84,7 @@ export class Bot {
     // What the player sees now only acts after the reaction delay: predict that moment (with the
     // inputs already on their way) and plan from there.
     const future = clonePlayer(run.player);
-    const world = new BoxSet(run.gen.obstacles, run.ignore);
+    const world = new BoxSet(run.gen.obstacles, run.ignore, 26, run.layoutFn);
     const speed = Math.max(1, future.speed);
     for (let k = 0; k < this.reactionTicks; k++) {
       const queued = this.queue.find((q) => q.at === tick + k) ?? null;
@@ -117,6 +117,7 @@ export class Bot {
       taken: run.taken,
       ignore: run.ignore,
       speed: () => speed,
+      layout: run.layoutFn,
       pickupValue: value,
     });
     if (typeof performance !== "undefined") this.lastPlanMs = performance.now() - t0;

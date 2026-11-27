@@ -1,8 +1,9 @@
 /**
  * Dev-only harness (shell-dev.html, not part of the build): mounts the shell over a painted
  * fake street with a fake GameApi. Pick a screen with ?screen=menu|hud|pause|gameover|shop|
- * missions|howto|countdown|play  (play = interactive simulation: Space/Enter to start, A/D, W, S,
- * Esc/P). Extra: &cause=caught|crash&obstacle=bus, &fresh=1 for an empty save.
+ * missions|achievements|records|credits|howto|countdown|play  (play = interactive simulation: Space/Enter to start, A/D, W, S,
+ * Esc/P). Extra: &cause=caught|crash&obstacle=bus, &fresh=1 for an empty save; for hud/pause:
+ * &zone=<id>&progress=0..1&street=<name> (empty = null), &horn=1 (hud).
  */
 import {
   WORD,
@@ -346,6 +347,7 @@ class FakeGame implements GameApi {
         }
       } else if (c === "KeyC") this.gameOver("crash", "bus");
       else if (c === "KeyV") this.emit({ type: "shield-break" });
+      else if (c === "KeyH") this.emit({ type: "horn", obstacle: "coche", ahead: 40 });
     });
   }
 }
@@ -359,7 +361,7 @@ if (root) {
   shell.attach(game);
   game.bindKeys();
   const clickButton = (label: string): void => {
-    const btn = [...root.querySelectorAll("button")].find((b) => b.textContent?.trim() === label);
+    const btn = [...root.querySelectorAll("button")].find((b) => (b.querySelector(".btn-label") ?? b).textContent?.trim() === label);
     btn?.click();
   };
   const playingHud = (): void => {
@@ -380,6 +382,12 @@ if (root) {
       letters: [true, true, true, false, true, false, false],
       chaser: Number(params.get("chaser") ?? 0.55),
     };
+    // &street=… fakes HudSnapshot.street (otherwise the shell takes the street from the map data);
+    // &progress=… moves the runner through the zone.
+    const street = params.get("street");
+    if (street !== null) Object.assign(game.hud, { street: street === "" ? null : street });
+    if (params.get("progress")) game.hud.zoneProgress = Number(params.get("progress"));
+    if (params.get("zone")) game.hud.zone = ZONES.find((z) => z.id === params.get("zone")) ?? game.hud.zone;
   };
   switch (screen) {
     case "shop":
@@ -425,6 +433,9 @@ if (root) {
     case "records":
       clickButton("Récords");
       break;
+    case "credits":
+      clickButton("Créditos");
+      break;
     case "hint": {
       // Tutorial prompt: ?action=left|right|jump|roll|done|complete
       game.hud = { ...game.hud, chaser: 0, distance: 42, zoneProgress: 0.09 };
@@ -458,6 +469,7 @@ if (root) {
         game.emit({ type: "powerup-start", kind: "iman", duration: 14 });
         game.emit({ type: "word-complete" });
         game.emit({ type: "near-miss" });
+        if (params.get("horn") === "1") game.emit({ type: "horn", obstacle: "coche", ahead: 40 });
       }, Number(params.get("delay") ?? 3000));
       break;
     case "countdown":

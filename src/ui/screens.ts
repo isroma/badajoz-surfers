@@ -3,13 +3,14 @@ import { OUTFITS, POWERUPS, ZONES, type OutfitId, type PowerupKind, type RunSumm
 import { outfitPreview } from "./outfits";
 import { shareText } from "./feel";
 
-export const APP_VERSION = "0.3";
+export const APP_VERSION = "0.4";
 import { ACHIEVEMENTS, type MetaStore, type MissionView, type RunResult } from "../meta";
 import { formatDay, zoneReached } from "../meta/progress";
 import { MAX_UPGRADE_LEVEL, powerupDuration, upgradeCost } from "../meta/economy";
 import { formatInt, formatMetres, formatSeconds } from "../meta/format";
-import { gameOverHeadline, PREMISE, zoneInSentence } from "./copy";
-import { Minimap, shortZoneName } from "./minimap";
+import { CREDITS, GAME_TITLE, gameOverHeadline, PREMISE, SUBTITLE, zoneInSentence } from "./copy";
+import { Minimap, shortZoneName, streetFromMap } from "./minimap";
+import { getCity } from "./city";
 import { button, h, svg, type Child } from "./dom";
 import {
   GLYPH_BACK,
@@ -39,7 +40,7 @@ import {
   powerupIcon,
 } from "./icons";
 
-export type PanelId = "howto" | "missions" | "shop" | "achievements" | "records";
+export type PanelId = "howto" | "missions" | "shop" | "achievements" | "records" | "credits";
 
 export interface ScreenActions {
   play(): void;
@@ -63,25 +64,45 @@ export interface ScreenCtx {
 
 // ------------------------------------------------------------------ shared pieces
 
+/**
+ * The "BADAJOZ SURFERS" wordmark: two stacked lines of heavy rounded type with a terracotta
+ * extrusion, speed lines and the acorn. Type is SVG text with fixed `textLength`, so the block
+ * keeps its proportions whatever rounded/black face the platform supplies.
+ */
 export function logo(): HTMLElement {
   const wrap = h("div", "logo-wrap");
+  // Each line: dark extrusion rim, terracotta extrusion, then the face with its ink outline.
+  const line = (text: string, attrs: string, fill: string): string => `
+      <text ${attrs} fill="#1d1020" stroke="#1d1020" stroke-width="34" transform="translate(5 15)">${text}</text>
+      <text ${attrs} fill="#b8361b" stroke="#b8361b" stroke-width="20" transform="translate(4 10)">${text}</text>
+      <text ${attrs} fill="${fill}" stroke="#1d1020" stroke-width="20" paint-order="stroke">${text}</text>`;
+  const top = 'x="26" y="142" font-size="146" textLength="566" lengthAdjust="spacingAndGlyphs" stroke-linejoin="round"';
+  const bottom = 'x="132" y="268" font-size="118" textLength="460" lengthAdjust="spacingAndGlyphs" stroke-linejoin="round"';
   wrap.innerHTML = `
-  <svg class="logo" viewBox="0 0 620 230" role="img" aria-label="Simpa">
+  <svg class="logo" viewBox="0 0 660 300" role="img" aria-label="${GAME_TITLE}">
     <defs>
-      <linearGradient id="logo-fill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#FFE9A3"/>
-        <stop offset="0.45" stop-color="#FFC53D"/>
-        <stop offset="1" stop-color="#F08A0B"/>
+      <linearGradient id="logo-gold" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#FFF5CC"/>
+        <stop offset="0.46" stop-color="#FFE08A"/>
+        <stop offset="0.47" stop-color="#FFC53D"/>
+        <stop offset="1" stop-color="#F28A0C"/>
+      </linearGradient>
+      <linearGradient id="logo-cream" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#FFFFFF"/>
+        <stop offset="0.5" stop-color="#FFF4DC"/>
+        <stop offset="0.51" stop-color="#FFE6BC"/>
+        <stop offset="1" stop-color="#F7CF95"/>
       </linearGradient>
     </defs>
-    <g transform="rotate(-5 310 120)">
-      <text x="300" y="186" text-anchor="middle" font-size="184" textLength="540" lengthAdjust="spacingAndGlyphs"
-        fill="#1d1020" stroke="#1d1020" stroke-width="30" stroke-linejoin="round" transform="translate(0 12)">SIMPA</text>
-      <text x="300" y="186" text-anchor="middle" font-size="184" textLength="540" lengthAdjust="spacingAndGlyphs"
-        fill="url(#logo-fill)" stroke="#1d1020" stroke-width="26" stroke-linejoin="round" paint-order="stroke">SIMPA</text>
-      <path d="M62 82 Q 160 52 250 64" fill="none" stroke="#fff6d8" stroke-width="9" stroke-linecap="round" opacity="0.75"/>
+    <g transform="rotate(-4 330 150)">
+      ${line("BADAJOZ", top, "url(#logo-gold)")}
+      <g stroke-linecap="round" fill="none">
+        <path d="M30 188 H98 M14 222 H90 M44 256 H100" stroke="#1d1020" stroke-width="20"/>
+        <path d="M30 188 H98 M14 222 H90 M44 256 H100" stroke="#FFF4DC" stroke-width="9"/>
+      </g>
+      ${line("SURFERS", bottom, "url(#logo-cream)")}
     </g>
-    <g transform="translate(528 6) rotate(18 40 40) scale(1.25)">${ICON_BELLOTA.replace("<svg ", '<svg width="64" height="64" ')}</g>
+    <g transform="translate(566 -18) rotate(20 40 40) scale(1.3)">${ICON_BELLOTA.replace("<svg ", '<svg width="64" height="64" ')}</g>
   </svg>`;
   return wrap;
 }
@@ -192,14 +213,20 @@ export function menuScreen(ctx: ScreenCtx): HTMLElement {
   const { store, actions } = ctx;
   const save = store.save;
   const premise = h("p", "premise");
-  premise.innerHTML = PREMISE.replace(" El camarero no perdona.", "<br><b>El camarero no perdona.</b>");
+  premise.innerHTML = PREMISE.replace(" El camarero no perdona.", " <b>El camarero no perdona.</b>");
   const firstRun = !save.tutorialDone;
 
+  const tile = (label: string, icon: string, panel: PanelId, badge?: string): HTMLButtonElement => {
+    const b = button(label, () => actions.openPanel(panel), { icon, className: "tile" });
+    if (badge) b.append(h("span", "tile-badge", badge));
+    return b;
+  };
+
+  // Everything lives in one left column: the right half belongs to the 3D runner.
   const left = h(
     "div",
     "menu-left",
-    logo(),
-    h("div", "ribbon", "Corre por Badajoz"),
+    h("div", "brand", logo(), h("div", "ribbon", SUBTITLE)),
     premise,
     h(
       "div",
@@ -208,49 +235,56 @@ export function menuScreen(ctx: ScreenCtx): HTMLElement {
       h(
         "div",
         "hint",
-        "Pulsa",
-        ...keys("Espacio"),
-        "o",
-        ...keys("Intro"),
-        firstRun ? "· la primera carrera te enseña los controles" : null,
+        h("span", undefined, "Pulsa", ...keys("Espacio"), "o", ...keys("Intro")),
+        firstRun ? h("small", undefined, "La primera carrera te enseña los controles") : null,
       ),
     ),
     h(
       "div",
       "menu-actions",
-      button("Misiones", () => actions.openPanel("missions"), { icon: GLYPH_FLAG }),
-      button("Tienda", () => actions.openPanel("shop"), { icon: GLYPH_SHOP }),
-      button("Logros", () => actions.openPanel("achievements"), { icon: GLYPH_MEDAL }),
-      button("Récords", () => actions.openPanel("records"), { icon: GLYPH_LIST }),
-      button("Cómo se juega", () => actions.openPanel("howto"), { icon: GLYPH_HELP }),
+      tile("Misiones", GLYPH_FLAG, "missions", `×${formatInt(store.multiplier)}`),
+      tile("Tienda", GLYPH_SHOP, "shop"),
+      tile("Logros", GLYPH_MEDAL, "achievements"),
+      tile("Récords", GLYPH_LIST, "records"),
+      tile("Cómo jugar", GLYPH_HELP, "howto"),
     ),
+    dailyCard(store),
+    bestLine(store),
   );
 
-  const walletValue = h("span", undefined, formatInt(save.wallet));
-  walletValue.dataset["bind"] = "wallet";
-  const best = save.lifetime.totals.runs > 0 ? zoneReached(save.lifetime.bestZones) : null;
-  const stats = h(
-    "div",
-    "stat-card panel",
-    stat("Récord", h("div", "stat-value sun", svg(GLYPH_TROPHY), formatInt(save.bestScore))),
-    stat("Bellotas", h("div", "stat-value", svg(ICON_BELLOTA), walletValue)),
-    h(
-      "div",
-      "stat wide",
-      h("div", "stat-label", "Mejor huida"),
-      h("div", "stat-value small", best ? `${best.name}, vuelta ${formatInt(best.lap)}` : "Aún no has salido corriendo"),
-    ),
-    stat("Mejor distancia", h("div", "stat-value", formatMetres(save.bestDistance))),
-    stat("Multiplicador", h("div", "stat-value", h("span", "mult-badge", `×${formatInt(store.multiplier)}`))),
-  );
-  const right = h("div", "menu-right", stats, dailyCard(store), missionsMini(ctx));
+  const credits = h("button", "link-btn", "Créditos");
+  credits.type = "button";
+  credits.tabIndex = -1;
+  credits.addEventListener("mousedown", (e) => e.preventDefault());
+  credits.addEventListener("click", () => {
+    credits.blur();
+    actions.openPanel("credits");
+  });
   return h(
     "div",
     "screen menu",
     left,
-    right,
-    h("div", "menu-top", soundToggles(ctx, false)),
-    h("div", "credit", `Hecho en Badajoz · v${APP_VERSION}`),
+    h("div", "menu-top", walletPill(store), soundToggles(ctx, false)),
+    h("div", "credit", `Hecho en Badajoz · v${APP_VERSION} · `, credits),
+  );
+}
+
+/** One line under the daily card: best score, best distance and how far the best escape got. */
+function bestLine(store: MetaStore): HTMLElement {
+  const save = store.save;
+  if (save.lifetime.totals.runs === 0) {
+    return h("div", "best-line", svg(GLYPH_TROPHY), "Aún no has salido corriendo. ¡Estrena el récord!");
+  }
+  const best = zoneReached(save.lifetime.bestZones);
+  return h(
+    "div",
+    "best-line",
+    svg(GLYPH_TROPHY),
+    h("b", undefined, formatInt(save.bestScore)),
+    h("span", "dot", "·"),
+    formatMetres(save.bestDistance),
+    h("span", "dot", "·"),
+    `Mejor huida: ${best.name}, vuelta ${formatInt(best.lap)}`,
   );
 }
 
@@ -269,20 +303,6 @@ function dailyCard(store: MetaStore): HTMLElement {
     ),
     h("div", "mini-text", h("span", undefined, d.text), h("small", undefined, d.label)),
     h("div", "bar", fill),
-  );
-}
-
-function missionsMini(ctx: ScreenCtx): HTMLElement {
-  return h(
-    "div",
-    "missions-mini panel",
-    h(
-      "div",
-      "mini-head",
-      h("div", "mini-title", "Misiones"),
-      button("Ver", () => ctx.actions.openPanel("missions"), { size: "sm", variant: "ghost" }),
-    ),
-    ...ctx.store.missionViews().map(miniMission),
   );
 }
 
@@ -563,6 +583,49 @@ export function recordsScreen(ctx: ScreenCtx): HTMLElement {
   );
 }
 
+// ------------------------------------------------------------------ credits
+
+/** Credit lines: the attribution shipped with the city data when it has loaded, else the static list. */
+export function creditLines(): readonly string[] {
+  const attribution = getCity()?.meta.attribution;
+  if (!Array.isArray(attribution) || attribution.length === 0) return CREDITS;
+  const lines = attribution.filter((l): l is string => typeof l === "string" && l.trim() !== "");
+  return [...lines, "Hecho en Badajoz"];
+}
+
+/** A credit line, with "openstreetmap.org/copyright" (and similar bare domains) as links. */
+function creditItem(line: string): HTMLElement {
+  const li = h("li");
+  const re = /\b((?:www\.)?openstreetmap\.org\/copyright|scne\.es)\b/g;
+  let last = 0;
+  for (const m of line.matchAll(re)) {
+    const at = m.index ?? 0;
+    li.append(line.slice(last, at));
+    const a = h("a", undefined, m[0]);
+    a.href = `https://${m[0]}`;
+    a.target = "_blank";
+    a.rel = "noopener";
+    li.append(a);
+    last = at + m[0].length;
+  }
+  li.append(line.slice(last));
+  return li;
+}
+
+export function creditsScreen(ctx: ScreenCtx): HTMLElement {
+  return modal(
+    "credits",
+    modalHead("Créditos", `${GAME_TITLE} · v${APP_VERSION}`),
+    h("ul", "credit-list", ...creditLines().map(creditItem)),
+    h(
+      "div",
+      "modal-foot",
+      h("div", "hint", ...keys("Esc"), "para volver"),
+      button("Volver", ctx.actions.closePanel, { icon: GLYPH_BACK, size: "lg" }),
+    ),
+  );
+}
+
 // ------------------------------------------------------------------ pause
 
 /** Where the runner is, for the maps. */
@@ -582,7 +645,12 @@ function routeCard(pos: MapPosition | null, title: string): HTMLElement {
     h("div", "mini-head", h("div", "mini-title", svg(GLYPH_MAP), title), pos ? h("div", "pill lap-pill", `Vuelta ${formatInt(pos.lap)}`) : null),
     map.el,
     zone ? h("div", "route-where", "Estás en ", h("b", undefined, zoneInSentence(zone.id, zone.name))) : null,
+    pos ? streetLine(streetFromMap(pos.zoneIndex, pos.progress)) : null,
   );
+}
+
+function streetLine(name: string | null): HTMLElement | null {
+  return name ? h("div", "route-street", name) : null;
 }
 
 export function pauseScreen(ctx: ScreenCtx, pos: MapPosition | null): HTMLElement {

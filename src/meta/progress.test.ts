@@ -1,9 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MetaStore } from "./index";
 import { emptyRunStats, getTemplate, type RunStats } from "./missions";
 import {
   ACHIEVEMENTS,
   MAX_RECORDS,
+  ROUTE_MARKS,
   addRecord,
   addRunToLifetime,
   dailyChallenge,
@@ -49,13 +51,36 @@ describe("achievements", () => {
   it("unlock from lifetime totals and single runs", () => {
     let life = emptyLifetime();
     expect(newAchievements([], life)).toEqual([]);
-    life = addRunToLifetime(life, run({ zones: 3, roofMetres: 300 }));
+    life = addRunToLifetime(life, run({ zones: 4, roofMetres: 300 }));
     const ids = newAchievements([], life).map((a) => a.id);
     expect(ids).toContain("primer-simpa");
     expect(ids).toContain("plaza-alta");
     expect(ids).not.toContain("ciguena");
     life = addRunToLifetime(life, run({ roofMetres: 250 }));
     expect(newAchievements(ids, life).map((a) => a.id)).toEqual(["ciguena"]);
+  });
+
+  it("route achievements unlock at their places on the real lap", () => {
+    const ids = (distance: number): string[] => newAchievements([], addRunToLifetime(emptyLifetime(), run({ distance }))).map((a) => a.id);
+    expect(ids(900)).not.toContain("puente-real");
+    expect(ids(970)).toContain("puente-real");
+    expect(ids(970)).not.toContain("primera-rotonda");
+    expect(ids(2400)).toEqual(expect.arrayContaining(["puente-real", "primera-rotonda", "sinforiano"]));
+    expect(ids(5000)).toContain("arco-del-peso");
+    expect(ids(6300)).toContain("puente-palmas");
+  });
+
+  it("route marks match the city data", () => {
+    interface Sec { fromS: number; toS: number; name: string | null; bridge: string | null; tunnel: boolean; roundabout: unknown }
+    const city = JSON.parse(readFileSync("public/data/city.json", "utf8")) as { sections: Sec[] };
+    const secs = city.sections;
+    const near = (a: number, b: number | undefined): void => expect(Math.abs(a - (b ?? -1e9))).toBeLessThan(15);
+    const realDeck = secs.filter((s) => s.bridge === "Puente Real").sort((a, b) => b.toS - b.fromS - (a.toS - a.fromS))[0];
+    near(ROUTE_MARKS.puenteReal, realDeck?.toS);
+    near(ROUTE_MARKS.primeraRotonda, secs.find((s) => s.roundabout)?.fromS);
+    near(ROUTE_MARKS.sinforiano, secs.filter((s) => s.name === "Avenida Sinforiano Madroñero").at(-1)?.toS);
+    near(ROUTE_MARKS.arcoDelPeso, secs.find((s) => s.tunnel)?.toS);
+    near(ROUTE_MARKS.puentePalmas, secs.filter((s) => s.bridge === "Puente de Palmas").at(-1)?.toS);
   });
 
   it("Turista needs every zone", () => {
@@ -157,7 +182,7 @@ describe("outfits", () => {
 });
 
 describe("abandoned and debug runs", () => {
-  const big = (): RunStats => ({ ...emptyRunStats(), runs: 1, bellotas: 40, score: 5000, distance: 800, jumps: 12, zones: 3 });
+  const big = (): RunStats => ({ ...emptyRunStats(), runs: 1, bellotas: 40, score: 5000, distance: 800, jumps: 12, zones: 1 });
 
   it("abandoned runs keep bellotas and totals but skip records and end-of-run achievements", () => {
     const m = new MetaStore(null, () => new Date(2026, 10, 27));

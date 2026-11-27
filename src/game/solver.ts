@@ -14,9 +14,9 @@ import {
   type PlayerAction,
   type PlayerState,
 } from "./player";
-import type { ObstacleSpawn, PickupSpawn } from "./spawns";
+import { layoutAt, type LayoutFn } from "./lanes";
+import { pickupD, type ObstacleSpawn, type PickupSpawn } from "./spawns";
 import { speedAt } from "./tuning";
-import { laneX } from "../contracts";
 
 export const SOLVER_ACTIONS: readonly (PlayerAction | null)[] = [null, "left", "right", "jump", "roll"];
 
@@ -29,6 +29,8 @@ export interface SolveOptions {
   maxFrontier: number;
   /** Speed for a state (defaults to the planned speed at its distance). */
   speed?: (p: number) => number;
+  /** Lane layout (defaults to the engine's). */
+  layout?: LayoutFn;
 }
 
 export interface SolveResult {
@@ -60,7 +62,7 @@ export function simulate(s: PlayerState, action: PlayerAction | null, ticks: num
 
 /** Can a perfect player get from `start` to distance `to`? */
 export function solve(spawns: readonly ObstacleSpawn[], start: PlayerState, to: number, opts: SolveOptions): SolveResult {
-  const world = new BoxSet(spawns);
+  const world = new BoxSet(spawns, null, 26, opts.layout);
   const speed = opts.speed ?? speedAt;
   let frontier: PlayerState[] = [clonePlayer(start)];
   let reached = start.p;
@@ -106,7 +108,7 @@ interface PlanNode {
 /** Coarse bucket so the beam keeps a variety of lanes and vertical states. */
 function bucket(s: PlayerState): number {
   const vertical = s.roll > 0 ? 0 : s.grounded ? (s.supportId >= 0 ? 1 : 2) : 3;
-  return (s.lane + 1) * 4 + vertical;
+  return s.lane * 4 + vertical;
 }
 
 /**
@@ -114,7 +116,7 @@ function bucket(s: PlayerState): number {
  * whole horizon, returns the first input of the plan that survived longest.
  */
 export function plan(spawns: readonly ObstacleSpawn[], start: PlayerState, opts: PlanOptions): PlayerAction | null | undefined {
-  const world = new BoxSet(spawns, opts.ignore ?? null);
+  const world = new BoxSet(spawns, opts.ignore ?? null, 26, opts.layout);
   const speed = opts.speed ?? speedAt;
   const ticks = Math.max(1, Math.round(opts.decision / opts.dt));
   const steps = Math.ceil(opts.horizon / opts.decision);
@@ -131,9 +133,10 @@ export function plan(spawns: readonly ObstacleSpawn[], start: PlayerState, opts:
         let got = node.got;
         // Pickups swept this decision (lane and height check, generous).
         for (const pk of opts.pickups) {
-          if (pk.d < p0 - 1 || pk.d > c.p + 1) continue;
+          const pd = pk.ride ? pickupD(pk, c.p) : pk.d;
+          if (pd < p0 - 1 || pd > c.p + 1) continue;
           if (opts.taken?.has(pk.id) || got?.has(pk.id)) continue;
-          if (Math.abs(laneX(pk.lane) - c.x) > 1.2) continue;
+          if (Math.abs(pk.x - c.x) > 1.2) continue;
           if (pk.y < c.y - 0.3 || pk.y > c.y + 2.2) continue;
           got = new Set(got ?? []);
           got.add(pk.id);
@@ -172,7 +175,11 @@ export function plan(spawns: readonly ObstacleSpawn[], start: PlayerState, opts:
   if (frontier.length === 0) return lastAlive.first;
   // Prefer plans that end in the middle lane (more options later).
   let pick = frontier[0] ?? lastAlive;
-  const bonus = (s: PlayerState): number => (s.lane === 0 ? 0.3 : 0);
+  const layoutFn = opts.layout ?? layoutAt;
+  const bonus = (s: PlayerState): number => {
+    const n = layoutFn(s.p).offsets.length;
+    return s.lane > 0 && s.lane < n - 1 ? 0.3 : 0;
+  };
   for (const n of frontier) if (n.score + bonus(n.s) > pick.score + bonus(pick.s)) pick = n;
   return pick.first;
 }

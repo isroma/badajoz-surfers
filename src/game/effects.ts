@@ -90,8 +90,8 @@ export class Effects {
     this.lineData[i * 4 + 3] = 1.5 + Math.random() * 3;
   }
 
-  /** `vz`: base Z velocity (the runner's), so the burst travels along with the runner. */
-  burst(kind: PickupKind | "crash" | "shield", x: number, y: number, z: number, vz = 0): void {
+  /** (`vx`, `vz`): base horizontal velocity (the runner's), so the burst travels along with the runner. */
+  burst(kind: PickupKind | "crash" | "shield", x: number, y: number, z: number, vx = 0, vz = 0): void {
     const palette = BURST_COLORS[kind];
     const n = BURST_COUNT[kind];
     const speed = kind === "bellota" ? 2.5 : 5;
@@ -104,7 +104,7 @@ export class Effects {
       this.positions[i * 3] = x;
       this.positions[i * 3 + 1] = y;
       this.positions[i * 3 + 2] = z;
-      this.vel[i * 3] = Math.sin(phi) * Math.cos(theta) * v;
+      this.vel[i * 3] = Math.sin(phi) * Math.cos(theta) * v + vx;
       this.vel[i * 3 + 1] = Math.abs(Math.cos(phi)) * v + 1.5;
       this.vel[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * v + vz;
       this.life[i] = 0.45 + Math.random() * 0.35;
@@ -112,6 +112,32 @@ export class Effects {
       this.colors[i * 3] = this.color.r;
       this.colors[i * 3 + 1] = this.color.g;
       this.colors[i * 3 + 2] = this.color.b;
+    }
+    this.alive = MAX_PARTICLES;
+  }
+
+  /**
+   * Ground-contact dust (foot plants on fast lane changes, landings): low, grey-beige, short-lived
+   * puffs that spread sideways. `vz` is the base Z velocity (dust stays where it was kicked up:
+   * pass 0; the runner moves on).
+   */
+  dust(x: number, y: number, z: number, count: number, spread = 1, vx = 0): void {
+    for (let k = 0; k < count; k++) {
+      const i = this.next;
+      this.next = (this.next + 1) % MAX_PARTICLES;
+      const a = Math.random() * Math.PI * 2;
+      const v = (0.8 + Math.random() * 1.6) * spread;
+      this.positions[i * 3] = x + (Math.random() - 0.5) * 0.3;
+      this.positions[i * 3 + 1] = y + 0.05;
+      this.positions[i * 3 + 2] = z + (Math.random() - 0.5) * 0.3;
+      this.vel[i * 3] = Math.cos(a) * v + vx;
+      this.vel[i * 3 + 1] = 0.6 + Math.random() * 1.2 * spread;
+      this.vel[i * 3 + 2] = Math.sin(a) * v * 0.6;
+      this.life[i] = 0.28 + Math.random() * 0.25;
+      const shade = 0.62 + Math.random() * 0.2;
+      this.colors[i * 3] = shade;
+      this.colors[i * 3 + 1] = shade * 0.94;
+      this.colors[i * 3 + 2] = shade * 0.86;
     }
     this.alive = MAX_PARTICLES;
   }
