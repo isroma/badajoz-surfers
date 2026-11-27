@@ -32,3 +32,15 @@ export function gameOverHeadline(summary: RunSummary): { title: string; sub: str
 }
 
 export const PREMISE = "Te has ido sin pagar. El camarero no perdona.";
+
+/** Zone names as they read inside a sentence: "Estás en el Casco Antiguo", "hasta la Margen derecha". */
+const ZONE_IN_SENTENCE: Record<string, string> = {
+  "puente-real": "el Puente Real",
+  valdepasillas: "Valdepasillas",
+  "san-francisco": "San Francisco",
+  "casco-antiguo": "el Casco Antiguo",
+  "alcazaba-palmas": "la Alcazaba y la Puerta de Palmas",
+  "margen-derecha": "la Margen derecha",
+};
+
+export const zoneInSentence = (id: string, fallback: string): string => ZONE_IN_SENTENCE[id] ?? fallback;

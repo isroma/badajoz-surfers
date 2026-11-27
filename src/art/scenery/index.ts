@@ -15,7 +15,7 @@ import { buildValdepasillas } from "./valdepasillas";
 const ATMOSPHERES: Record<ZoneId, Atmosphere> = {
   // bright late morning over the river
   "puente-real": {
-    skyTop: 0x2f7fd8, skyBottom: 0xc6e2f6, fogColor: 0xc6e2f6, fogNear: 70, fogFar: 250,
+    skyTop: 0x2f7fd8, skyBottom: 0xc6e2f6, fogColor: 0xc6e2f6, fogNear: 95, fogFar: 255,
     sunColor: 0xfff3dc, sunIntensity: 2.6, sunPosition: [45, 70, 35],
     ambientColor: 0xc4d8f0, ambientIntensity: 1.15,
   },

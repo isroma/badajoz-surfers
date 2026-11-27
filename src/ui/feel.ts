@@ -36,7 +36,9 @@ export const comboStep = (count: number): number => COMBO_STEPS.indexOf(count as
 export function milestonesCrossed(prev: number, next: number, step = 1000): number[] {
   if (!(next > prev) || !Number.isFinite(prev) || !Number.isFinite(next)) return [];
   const out: number[] = [];
-  for (let m = (Math.floor(Math.max(0, prev) / step) + 1) * step; m <= next; m += step) out.push(m);
+  // A warp can jump kilometres in one frame: only the last few milestones matter.
+  const first = Math.max((Math.floor(Math.max(0, prev) / step) + 1) * step, (Math.floor(next / step) - 9) * step);
+  for (let m = first; m <= next; m += step) out.push(m);
   return out;
 }
 
@@ -45,7 +47,7 @@ const QUIPS = [
   "El camarero se afloja la pajarita",
   "¡Qué piernas!",
   "El camarero ya no siente los pies",
-  "Ni con la bandeja en la cabeza te alcanza",
+  "El camarero va con la lengua fuera",
   "La cuenta sigue subiendo",
 ];
 
@@ -62,6 +64,7 @@ export function lapCaption(lap: number): string {
 
 export const SHARE_URL = "https://isroma.github.io/badajoz-surfers/";
 
-export function shareText(distance: number, zoneName: string, lap: number): string {
-  return `He corrido ${formatMetres(distance)} por Badajoz en Simpa (hasta ${zoneName}, vuelta ${formatInt(lap)}) 🏃‍♂️🍺 ¿Me pillas? ${SHARE_URL}`;
+/** `zone` reads inside a sentence, e.g. "la Margen derecha" (see copy.ts). */
+export function shareText(distance: number, zone: string, lap: number): string {
+  return `He corrido ${formatMetres(distance)} por Badajoz en Simpa (hasta ${zone}, vuelta ${formatInt(lap)}) 🏃‍♂️🍺 ¿Me pillas? ${SHARE_URL}`;
 }

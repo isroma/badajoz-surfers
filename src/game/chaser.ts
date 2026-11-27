@@ -12,6 +12,8 @@ export const CHASER_HEELS = 1.7;
 export const CHASER_INTRO = 4.5;
 /** Gap when he grabs the runner. */
 export const CHASER_GRAB = 0.55;
+/** Seconds of HUD head start after the run begins. */
+export const HEAD_START = 4;
 
 const smooth = (t: number): number => {
   const c = Math.min(1, Math.max(0, t));
@@ -39,7 +41,11 @@ export class Chaser {
     this.mode = "chase";
     this.since = 0;
     this.from = this.gap;
+    this.headStart = true;
   }
+
+  /** Right after "go" the HUD shows a head start (0.5 fading to 0 over HEAD_START s). */
+  private headStart = false;
 
   /** Jump straight to far behind (debug warp). */
   far(): void {
@@ -49,6 +55,7 @@ export class Chaser {
   }
 
   stumble(): void {
+    this.headStart = false;
     this.mode = "stumble";
     this.since = 0;
     this.from = this.gap;
@@ -107,6 +114,15 @@ export class Chaser {
   /** Gap including the extra lag. */
   get distance(): number {
     return this.gap + this.lagNow;
+  }
+
+  /** For the HUD: like `value`, but capped by the head start at the beginning of a run. */
+  get hudValue(): number {
+    const v = this.value;
+    if (this.headStart && this.mode === "chase" && this.since < HEAD_START) {
+      return Math.min(v, 0.5 * (1 - this.since / HEAD_START));
+    }
+    return v;
   }
 
   /** 0 = far behind, 1 = on your heels. */

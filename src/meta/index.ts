@@ -5,7 +5,7 @@
 import { OUTFITS, type GameOptions, type OutfitId, type PowerupKind } from "../contracts";
 import { baseMultiplier, powerupDuration, upgradeCost } from "./economy";
 import { formatInt } from "./format";
-import { commitRun, describeMission, emptyRunStats, getTemplate, updateLive, type MissionView, type RunStats } from "./missions";
+import { commitRun, describeMission, emptyRunStats, getTemplate, sanitizeStats, updateLive, type MissionView, type RunStats } from "./missions";
 import {
   ACHIEVEMENTS,
   addRecord,
@@ -58,6 +58,15 @@ export interface RunResult {
   bonus: number;
   /** Position in the top-5 records (0 = best), or -1. */
   recordRank: number;
+  /** The run was quit from the pause menu: no records, no end-of-run achievements. */
+  abandoned: boolean;
+  /** A debug run: nothing was saved. */
+  debug: boolean;
+}
+
+export interface FinishOptions {
+  /** Quit from the pause menu: bellotas, missions and totals count; records and end-of-run achievements don't. */
+  abandoned?: boolean;
 }
 
 /** Things completed while a run is in progress, for toasts. */
@@ -238,7 +247,11 @@ export class MetaStore {
     return m.active.map((a) => describeMission(a, run, m.setsCompleted));
   }
 
+  /** Save as it was when the run started, to undo a debug run. */
+  private runStart: SaveData | null = null;
+
   beginRun(): void {
+    this.runStart = this.data;
     this.runCompleted = [];
     this.runAchievements = [];
     this.runDaily = null;
@@ -246,7 +259,8 @@ export class MetaStore {
   }
 
   /** Check the run in progress; returns what just got completed (for toasts). */
-  updateRun(run: RunStats): LiveUnlocks {
+  updateRun(rawRun: RunStats): LiveUnlocks {
+    const run = sanitizeStats(rawRun);
     const out: LiveUnlocks = { missions: [], achievements: [], daily: null };
     let changed = false;
     const { state, newlyDone } = updateLive(this.data.missions, run);
@@ -280,21 +294,51 @@ export class MetaStore {
     this.data = { ...this.data, wallet: this.data.wallet + c.reward };
   }
 
+  /**
+   * A debug run ended: undo anything it changed (wallet, missions, achievements, daily) and save
+   * nothing. Settings changed meanwhile (e.g. from the pause menu) are kept.
+   */
+  discardRun(run: RunStats): RunResult {
+    if (this.runStart) {
+      this.data = { ...this.runStart, settings: this.data.settings };
+      this.persist();
+    }
+    const result: RunResult = {
+      bellotasEarned: Math.floor(sanitizeStats(run).bellotas),
+      wallet: this.data.wallet,
+      newBestScore: false,
+      newBestDistance: false,
+      completed: [],
+      setCompleted: false,
+      multiplier: this.multiplier,
+      achievements: [],
+      daily: null,
+      bonus: 0,
+      recordRank: -1,
+      abandoned: false,
+      debug: true,
+    };
+    this.beginRun();
+    return result;
+  }
+
   /** Commit a finished run. Call exactly once per run. */
-  finishRun(run: RunStats): RunResult {
+  finishRun(rawRun: RunStats, opts: FinishOptions = {}): RunResult {
+    const run = sanitizeStats(rawRun);
+    const abandoned = opts.abandoned === true;
     const before = this.missionViews(run);
     const { state, newlyDone, setCompleted } = commitRun(this.data.missions, run);
     for (const v of before) {
       if (newlyDone.includes(v.id)) this.runCompleted.push({ ...v, done: true, label: "¡Hecho!", ratio: 1 });
     }
     const earned = Math.max(0, Math.floor(run.bellotas));
-    const newBestScore = run.score > this.data.bestScore;
-    const newBestDistance = run.distance > this.data.bestDistance;
+    const newBestScore = !abandoned && run.score > this.data.bestScore;
+    const newBestDistance = !abandoned && run.distance > this.data.bestDistance;
     this.data = {
       ...this.data,
       wallet: this.data.wallet + earned,
-      bestScore: Math.max(this.data.bestScore, Math.floor(run.score)),
-      bestDistance: Math.max(this.data.bestDistance, Math.floor(run.distance)),
+      bestScore: newBestScore ? Math.floor(run.score) : this.data.bestScore,
+      bestDistance: newBestDistance ? Math.floor(run.distance) : this.data.bestDistance,
       runsPlayed: this.data.runsPlayed + 1,
       missions: state,
       seenHowTo: true,
@@ -302,10 +346,12 @@ export class MetaStore {
     const date = this.today;
     const d = dailyCommit(this.data.daily, run, date);
     if (d.completed) this.awardDaily(dailyChallenge(date));
-    const lifetime = addRunToLifetime(this.data.lifetime, run);
-    const rec = addRecord(this.data.records, { date, score: Math.floor(run.score), distance: Math.floor(run.distance), zones: run.zones });
+    const lifetime = addRunToLifetime(this.data.lifetime, run, !abandoned);
+    const rec = abandoned
+      ? { records: this.data.records, rank: -1 }
+      : addRecord(this.data.records, { date, score: Math.floor(run.score), distance: Math.floor(run.distance), zones: run.zones });
     this.data = { ...this.data, daily: d.state, lifetime, records: rec.records };
-    this.unlock(newAchievements(this.data.achievements, lifetime, this.extra));
+    if (!abandoned) this.unlock(newAchievements(this.data.achievements, lifetime, this.extra));
     this.persist();
     const result: RunResult = {
       bellotasEarned: earned,
@@ -319,6 +365,8 @@ export class MetaStore {
       daily: this.runDaily,
       bonus: this.runBonus,
       recordRank: rec.rank,
+      abandoned,
+      debug: false,
     };
     this.beginRun();
     return result;

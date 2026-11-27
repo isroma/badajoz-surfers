@@ -39,6 +39,8 @@ export interface GameDebug {
 declare global {
   interface Window {
     __game?: { api: GameApi; debug: GameDebug };
+    /** True when the current run used debug helpers (bot, invincible, speed, warp...): the shell does not save it. */
+    __simpaDebugRun?: boolean;
   }
 }
 
@@ -55,6 +57,10 @@ class Game implements GameApi {
   private readonly loop: Loop;
   private readonly bot = new Bot();
   private run: Run | null = null;
+  /** The GPU context was lost: skip rendering until it is restored. */
+  private contextLost = false;
+  /** The last run after toMenu(), for getHud() until the next run starts. */
+  private lastRun: Run | null = null;
 
   private botOn = false;
   private invincible = false;
@@ -73,8 +79,6 @@ class Game implements GameApi {
   private static readonly MENU_DISTANCE = 150;
   private readonly path = new PathRecorder();
   private readonly pathSample: PathSample = { x: 0, y: 0, rolling: false, airborne: false };
-  /** Fractional ticks owed when the simulation runs slowed (tutorial slow-mo). */
-  private slowAcc = 0;
   /** 0..1 smoothed stork flight (camera blend). */
   private flight = 0;
   private endSide = 1;
@@ -95,6 +99,14 @@ class Game implements GameApi {
     canvas.style.display = "block";
     canvas.style.zIndex = "0";
     canvas.style.touchAction = "none";
+    canvas.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      this.pause();
+    });
+    canvas.addEventListener("webglcontextrestored", () => {
+      this.contextLost = false;
+    });
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -128,7 +140,11 @@ class Game implements GameApi {
     new Input(canvas, (c) => this.onCommand(c));
 
     this.enterMenuScene();
-    this.loop = new Loop({ tick: (dt) => this.tick(dt), render: (alpha, dt) => this.render(alpha, dt) });
+    this.loop = new Loop({
+      tick: (dt) => this.tick(dt),
+      render: (alpha, dt) => this.render(alpha, dt),
+      timeScale: () => this.timeScale(),
+    });
     this.loop.start();
   }
 
@@ -141,7 +157,7 @@ class Game implements GameApi {
 
   getHud(): HudSnapshot {
     const hud = this.hud;
-    const run = this.run;
+    const run = this.run ?? this.lastRun;
     if (!run) {
       hud.score = 0;
       hud.bellotas = 0;
@@ -181,7 +197,7 @@ class Game implements GameApi {
     }
     this.hudPowerups.length = n;
     for (let i = 0; i < hud.letters.length; i++) hud.letters[i] = i < run.lettersCollected;
-    hud.chaser = run.countdown > 0 ? 0 : run.chaser.value;
+    hud.chaser = run.countdown > 0 ? 0 : run.chaser.hudValue;
     hud.roofMetres = Math.round(run.roofMetres);
     return hud;
   }
@@ -203,6 +219,9 @@ class Game implements GameApi {
   }
 
   toMenu(): void {
+    // The abandoned run stays readable through getHud() until the next run starts, so the shell
+    // can record it from its "menu" state listener.
+    if (this.run) this.lastRun = this.run;
     this.run = null;
     this.enterMenuScene();
     this.setState("menu");
@@ -211,7 +230,14 @@ class Game implements GameApi {
   // --- Internals -----------------------------------------------------------------------------
 
   private emit(event: GameEvent): void {
-    for (const l of this.listeners) l(event);
+    for (const l of this.listeners) {
+      try {
+        l(event);
+      } catch (error) {
+        // A failing listener must not leave the game stuck half-way through a state change.
+        console.error("Simpa: game event listener failed", event.type, error);
+      }
+    }
   }
 
   private setState(state: GameState): void {
@@ -220,21 +246,38 @@ class Game implements GameApi {
     this.emit({ type: "state", state });
   }
 
-  private enterMenuScene(): void {
-    this.world.setOutfit(this.options.outfit?.());
+  /** Clear every per-run visual: stork, scooter, blink, lean, camera flight/FOV blends, effects, meshes. */
+  private resetVisuals(): void {
+    const runner = this.world.runner;
+    runner.setRiding?.(false);
+    runner.setCarried?.(false);
+    runner.root.visible = true;
+    runner.root.rotation.set(0, 0, 0);
+    this.lean = 0;
+    this.flight = 0;
+    this.fovKick = 0;
+    this.groundY = 0;
+    this.wasEnd = false;
+    this.waiterX = 0;
+    this.path.clear();
     this.world.clearDynamic();
     this.effects.clear();
+    this.cam.snap();
+  }
+
+  private enterMenuScene(): void {
+    this.world.setOutfit(this.options.outfit?.());
+    this.resetVisuals();
+    this.fade = 0;
     this.world.updateSegments(Game.MENU_DISTANCE, 99, 4);
     this.world.setZone("puente-real", true);
-    this.world.runner.setRiding?.(false);
-    this.world.runner.root.visible = true;
     this.world.waiter.root.visible = false;
-    this.cam.snap();
   }
 
   private newRun(): void {
     this.world.setOutfit(this.options.outfit?.());
-    this.flight = 0;
+    this.lastRun = null;
+    window.__simpaDebugRun = this.botOn || this.invincible || this.speedOverride !== null || this.startZone !== null;
     const seed = this.fixedSeed ?? (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0;
     const run = new Run({
       seed,
@@ -247,28 +290,20 @@ class Game implements GameApi {
     run.invincible = this.invincible;
     run.speedOverride = this.speedOverride;
     this.run = run;
-    this.world.clearDynamic();
-    this.effects.clear();
+    this.resetVisuals();
     this.world.updateSegments(0, 99, 4);
     this.world.setZone("puente-real", true);
-    this.world.runner.setRiding?.(false);
-    this.world.runner.root.visible = true;
     this.world.waiter.root.visible = true;
     // Cut back to the start of the bridge through the fog colour.
     this.fade = 1;
-    this.path.clear();
-    this.slowAcc = 0;
-    this.wasEnd = false;
-    this.waiterX = 0;
-    this.groundY = 0;
-    this.cam.snap();
     this.bot.reset();
     this.setState("playing");
     run.begin(this.startZone ?? undefined);
     if (run.player.p > 1) {
-      // Debug start in another zone: build the scenery there straight away.
+      // Debug start in another zone: build the scenery there straight away, including the end
+      // of the previous zone behind the intro camera.
       this.world.clearSegments();
-      this.world.updateSegments(run.player.p, 99, 1);
+      this.world.updateSegments(run.player.p, 99, 4);
     }
   }
 
@@ -367,19 +402,21 @@ class Game implements GameApi {
     this.time += dt;
     const run = this.run;
     if (!run || this.state === "paused" || this.state === "menu") return;
-    // Slow-mo runs fewer fixed ticks per second (same deterministic step).
-    this.slowAcc += run.timeScale;
-    while (this.slowAcc >= 1) {
-      this.slowAcc -= 1;
-      if (this.botOn) this.bot.update(run);
-      run.tick(dt);
-      const s = run.player;
-      // While the runner flies, the waiter stays on the street below.
-      if (run.phase === "running") {
-        if (s.carried) this.path.record(s.p, s.x, 0, false, false);
-        else this.path.record(s.p, s.x, s.y, s.roll > 0, !s.grounded);
-      }
+    if (this.botOn) this.bot.update(run);
+    run.tick(dt);
+    const s = run.player;
+    // While the runner flies, the waiter stays on the street below.
+    if (run.phase === "running") {
+      if (s.carried) this.path.record(s.p, s.x, 0, false, false);
+      else this.path.record(s.p, s.x, s.y, s.roll > 0, !s.grounded);
     }
+  }
+
+  /** Simulation speed for the loop: tutorial slow-mo, but never during a countdown. */
+  private timeScale(): number {
+    const run = this.run;
+    if (!run || this.state !== "playing" || run.countdown > 0) return 1;
+    return run.timeScale;
   }
 
   private runnerAnim(run: Run): ActorAnim {
@@ -407,7 +444,7 @@ class Game implements GameApi {
     const runner = world.runner;
     const run = this.run;
     const frozen = this.state === "paused";
-    const animDt = frozen ? 0 : dt * (run?.timeScale ?? 1);
+    const animDt = frozen ? 0 : dt * this.timeScale();
     let mode: CameraMode = "menu";
     let px = 0;
     let py = 0;
@@ -485,7 +522,12 @@ class Game implements GameApi {
     world.updateEnvironment(dt, this.cam.camera, this.focus);
     const lines = run && run.phase === "running" && !frozen ? (patinete ? 1 : Math.max(0, (speed - 22) / 12)) : 0;
     this.effects.update(frozen ? 0 : dt, lines, speed);
-    this.renderer.render(world.scene, this.cam.camera);
+    if (!this.contextLost) this.renderer.render(world.scene, this.cam.camera);
+  }
+
+  /** A debug helper was used: if a run is under way, it must not count for the save. */
+  private markDebugRun(): void {
+    if (this.run) window.__simpaDebugRun = true;
   }
 
   /** Side (+1 right, -1 left) of the runner with fewer obstacles, for the end shot. */
@@ -507,19 +549,23 @@ class Game implements GameApi {
 
   readonly debug: GameDebug = {
     setInvincible: (on) => {
+      this.markDebugRun();
       this.invincible = on;
       if (this.run) this.run.invincible = on;
     },
     setBot: (on) => {
+      this.markDebugRun();
       this.botOn = on;
       this.bot.reset();
     },
     warp: (zone) => {
+      this.markDebugRun();
       if (!isZoneId(zone)) return;
       if (this.run && (this.run.phase === "running" || this.run.phase === "countdown")) this.run.warp(zone);
       else this.startZone = zone;
     },
     powerup: (kind) => {
+      this.markDebugRun();
       const run = this.run;
       if (!run || run.phase !== "running") return;
       const s = run.player;
@@ -527,6 +573,7 @@ class Game implements GameApi {
       run.gen.pickups.sort((a, b) => a.d - b.d);
     },
     setSpeed: (mps) => {
+      this.markDebugRun();
       this.speedOverride = mps;
       if (this.run) this.run.speedOverride = mps;
     },
@@ -580,6 +627,7 @@ export function createGame(canvas: HTMLCanvasElement, options: GameOptions): Gam
   const game = new Game(canvas, options);
   game.applyParams(new URLSearchParams(window.location.search));
   window.__game = { api: game, debug: game.debug };
+  window.__simpaDebugRun ??= false;
   return game;
 }
 

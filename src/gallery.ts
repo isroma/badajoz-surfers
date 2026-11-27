@@ -553,7 +553,39 @@ function showOutfits(): void {
   setSunAround(new THREE.Vector3(0, 0, 0));
 }
 
+/** Draw calls / triangles of every segment of every zone, laps 1 and 2. */
+function showStats(): void {
+  const lines: string[] = ["segment budgets (max over the zone): draws / triangles"];
+  for (const z of ZONES) {
+    const count = z.length / SEGMENT_LENGTH;
+    const sc = art.createZoneScenery(z.id);
+    for (const lap of [1, 2]) {
+      let md = 0;
+      let mt = 0;
+      let at = -99;
+      let sum = 0;
+      for (let i = z.id === "puente-real" ? -4 : 0; i < count; i++) {
+        const seg = sc.buildSegment(i, count, lap);
+        const st = countStats(seg);
+        art.release(seg);
+        md = Math.max(md, st.draws);
+        sum += st.tris;
+        if (st.tris > mt) {
+          mt = st.tris;
+          at = i;
+        }
+      }
+      lines.push(`${z.id.padEnd(16)} lap ${lap}: max draws ${md}, max tris ${mt} (#${at}), avg tris ${Math.round(sum / count)}`);
+    }
+  }
+  label.textContent = lines.join("\n");
+  label.style.fontSize = "15px";
+}
+
 switch (view) {
+  case "stats":
+    showStats();
+    break;
   case "outfits":
     showOutfits();
     break;

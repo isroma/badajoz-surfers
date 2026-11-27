@@ -478,6 +478,7 @@ if (root) {
       game.summary = { ...game.summary, jumps: 23, rolls: 9, nearMisses: 8, powerups: 3, wordsCompleted: 1 };
       const cause = params.get("cause") === "caught" ? "caught" : "crash";
       const obstacle = (params.get("obstacle") ?? "bus") as ObstacleKind;
+      if (params.get("debug") === "1") window.__simpaDebugRun = true;
       game.gameOver(cause, cause === "crash" ? obstacle : undefined);
       break;
     }
@@ -533,7 +534,7 @@ if (root) {
         game.hud = { ...game.hud, bellotas: 7 };
         clickButton("Salir al menú");
       });
-      step(9400, "wallet", () => log.push(`wallet=${localStorage.getItem("simpa.save.v1")?.match(/"wallet":(\d+)/)?.[1]}`));
+      step(9400, "wallet", () => log.push(`wallet=${localStorage.getItem(SAVE_KEY)?.match(/"wallet":(\d+)/)?.[1]}`));
       break;
     }
     default:

@@ -1,5 +1,5 @@
 /** In-run HUD. `render()` is called every frame and only touches the DOM when a value changed. */
-import { POWERUPS, WORD, type HudSnapshot, type PowerupKind } from "../contracts";
+import { POWERUPS, WORD, ZONES, type HudSnapshot, type PowerupKind } from "../contracts";
 import { formatInt, formatMetres } from "../meta/format";
 import { POP_SCALE, h, pop, svg } from "./dom";
 import { ICON_BELLOTA, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
@@ -22,7 +22,12 @@ interface PowerupRow {
   ending: boolean;
 }
 
+/** NaN-safe integer and 0..1 coercions: a glitchy snapshot shows zeros instead of "NaN". */
+const int = (v: number): number => (Number.isFinite(v) ? Math.floor(v) : 0);
+const unit = (v: number): number => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0);
+
 const freshLast = () => ({
+  mapZone: "",
   score: -1,
   bellotas: -1,
   distance: -1,
@@ -144,51 +149,61 @@ export class Hud {
     this.roofEl.classList.remove("show");
     this.comboShown = false;
     this.comboEl.classList.remove("show");
+    // Danger vignette, chaser badge, flashes: back to calm.
+    this.vignette.style.opacity = "0";
+    this.vignette.classList.remove("hot");
+    this.chaserEl.classList.remove("show", "hot");
+    for (const el of [this.flashEl, this.goldFlash, this.el]) el.getAnimations?.().forEach((a) => a.cancel());
   }
 
   render(hud: HudSnapshot): void {
     const L = this.last;
-    const score = Math.floor(hud.score);
+    const score = int(hud.score);
     if (score !== L.score) {
       // Pop on every 1.000 points crossed.
       if (L.score >= 0 && Math.floor(score / 1000) > Math.floor(L.score / 1000)) pop(this.scoreEl, POP_SCALE, 260);
       L.score = score;
       this.scoreEl.textContent = formatInt(score);
     }
-    const bellotas = Math.floor(hud.bellotas);
+    const bellotas = int(hud.bellotas);
     if (bellotas !== L.bellotas) {
       if (L.bellotas >= 0 && bellotas > L.bellotas) pop(this.bellotaPill, POP_SCALE, 200);
       L.bellotas = bellotas;
       this.bellotasEl.textContent = formatInt(bellotas);
     }
-    const dist = Math.floor(hud.distance);
+    const dist = int(hud.distance);
     if (dist !== L.distance) {
       L.distance = dist;
       this.distEl.textContent = formatMetres(dist);
     }
-    if (hud.multiplier !== L.multiplier) {
+    const mult = Math.max(1, int(hud.multiplier));
+    if (mult !== L.multiplier) {
       if (L.multiplier > 0) pop(this.multEl, POP_SCALE, 320);
-      L.multiplier = hud.multiplier;
-      this.multEl.textContent = `×${formatInt(hud.multiplier)}`;
+      L.multiplier = mult;
+      this.multEl.textContent = `×${formatInt(mult)}`;
     }
-    if (hud.zone.id !== L.zone) {
-      L.zone = hud.zone.id;
-      this.zoneName.textContent = HUD_ZONE_NAMES[hud.zone.id] ?? hud.zone.name;
+    const zone = hud.zone ?? ZONES[0];
+    if (zone && zone.id !== L.zone) {
+      L.zone = zone.id;
+      this.zoneName.textContent = HUD_ZONE_NAMES[zone.id] ?? zone.name;
     }
-    if (hud.lap !== L.lap) {
-      L.lap = hud.lap;
-      this.lapEl.textContent = `Vuelta ${formatInt(hud.lap)}`;
+    const lap = Math.max(1, int(hud.lap));
+    if (lap !== L.lap) {
+      L.lap = lap;
+      this.lapEl.textContent = `Vuelta ${formatInt(lap)}`;
     }
-    const progress = Math.round(Math.min(1, Math.max(0, hud.zoneProgress)) * 200) / 200;
-    if (progress !== L.progress) {
+    const progress = Math.round(unit(hud.zoneProgress) * 200) / 200;
+    if (progress !== L.progress || L.zone !== L.mapZone) {
       L.progress = progress;
+      L.mapZone = L.zone;
       this.zoneFill.style.transform = `scaleX(${progress})`;
-      this.minimap.update(zoneIndexOf(hud.zone.id), progress);
+      this.minimap.update(zoneIndexOf(L.zone), progress);
     }
-    const letters = hud.letters.map((b) => (b ? "1" : "0")).join("");
+    const flags = Array.isArray(hud.letters) ? hud.letters : [];
+    const letters = this.letterEls.map((_, i) => (flags[i] === true ? "1" : "0")).join("");
     if (letters !== L.letters) {
       this.letterEls.forEach((el, i) => {
-        const on = hud.letters[i] === true;
+        const on = flags[i] === true;
         const was = L.letters[i] === "1";
         el.classList.toggle("on", on);
         if (on && !was && L.letters !== "") pop(el, [{ transform: "scale(1.6) rotate(-8deg)" }, { transform: "scale(1)" }], 380);
@@ -197,7 +212,7 @@ export class Hud {
     }
     this.renderPowerups(hud);
     this.renderRoof(hud.roofMetres);
-    const chaser = Math.round(Math.min(1, Math.max(0, hud.chaser)) * 50) / 50;
+    const chaser = Math.round(unit(hud.chaser) * 50) / 50;
     if (chaser !== L.chaser) {
       L.chaser = chaser;
       this.vignette.style.opacity = vignetteOpacity(chaser).toFixed(3);
@@ -260,7 +275,8 @@ export class Hud {
 
   private renderPowerups(hud: HudSnapshot): void {
     const active = new Set<PowerupKind>();
-    for (const p of hud.powerups) {
+    for (const p of Array.isArray(hud.powerups) ? hud.powerups : []) {
+      if (!POWERUPS[p.kind]) continue;
       active.add(p.kind);
       let row = this.rows.get(p.kind);
       if (!row) {
@@ -279,9 +295,9 @@ export class Hud {
         row = { el, fill, secs, lastSecs: -1, ending: false };
         this.rows.set(p.kind, row);
       }
-      const ratio = p.duration > 0 ? Math.min(1, Math.max(0, p.remaining / p.duration)) : 0;
+      const ratio = p.duration > 0 ? unit(p.remaining / p.duration) : 0;
       row.fill.style.transform = `scaleX(${ratio.toFixed(3)})`;
-      const s = Math.ceil(Math.max(0, p.remaining));
+      const s = Math.ceil(Math.max(0, Number.isFinite(p.remaining) ? p.remaining : 0));
       if (s !== row.lastSecs) {
         row.lastSecs = s;
         row.secs.textContent = `${s} s`;

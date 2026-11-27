@@ -34,8 +34,13 @@ import {
 declare global {
   interface Window {
     __shell?: { resetSave(): void; addBellotas(n: number): void };
+    /** Set by the engine when debug tools (bot, invincible, speed, zone, warp, power-up) were used in this run. */
+    __simpaDebugRun?: boolean;
   }
 }
+
+const isDebugRun = (): boolean => window.__simpaDebugRun === true;
+const fin = (v: number): number => (Number.isFinite(v) ? v : 0);
 
 interface OpenPanel {
   id: PanelId;
@@ -76,6 +81,7 @@ export function createShell(root: HTMLElement): Shell {
     toasted: new Set<string>(),
   };
   let lastHud: HudSnapshot | null = null;
+  let stingTimer = 0;
   const combo = new Combo();
   let scoreRate = 0;
   /** A reward waiting a few frames so its score bonus can be measured. */
@@ -117,16 +123,20 @@ export function createShell(root: HTMLElement): Shell {
     runs: 1,
   });
 
-  /** A summary built from what the shell saw, for runs that end without a `gameover` event. */
+  /**
+   * A summary built from what the shell saw, for runs that end without a `gameover` event (quit
+   * from the pause menu). The engine may already have dropped the run and report zeros, so each
+   * value is the larger of the fresh HUD and what the frame loop last saw.
+   */
   const liveSummary = (): RunSummary => {
     try {
       const snap = game?.getHud();
       if (snap) {
-        lastHud = snap;
-        run.stats.bellotas = snap.bellotas;
-        run.stats.distance = snap.distance;
-        run.stats.score = snap.score;
-        run.stats.roofMetres = snap.roofMetres ?? run.stats.roofMetres;
+        const keep = (a: number, b: number): number => Math.max(fin(a), fin(b));
+        run.stats.bellotas = keep(snap.bellotas, run.stats.bellotas);
+        run.stats.distance = keep(snap.distance, run.stats.distance);
+        run.stats.score = keep(snap.score, run.stats.score);
+        run.stats.roofMetres = keep(snap.roofMetres, run.stats.roofMetres);
       }
     } catch {
       // keep the last values seen by the frame loop
@@ -149,14 +159,19 @@ export function createShell(root: HTMLElement): Shell {
     letters: run.stats.letters,
   });
 
-  /** Commit the run to the save. Runs exactly once per run whatever the event order. */
-  const endRun = (summary: RunSummary): void => {
+  /**
+   * Commit the run to the save. Runs exactly once per run whatever the event order.
+   * Debug runs (window.__simpaDebugRun) are discarded; quitting from the pause menu commits an
+   * "abandoned" run: bellotas, missions and totals count, records and end-of-run achievements don't.
+   */
+  const endRun = (summary: RunSummary, abandoned = false): void => {
     if (run.ended) return;
     if (!run.active) beginRun();
     run.active = false;
     run.ended = true;
     window.clearTimeout(run.gameoverTimer);
-    const result = store.finishRun(statsFromSummary(summary));
+    const stats = statsFromSummary(summary);
+    const result = isDebugRun() ? store.discardRun(stats) : store.finishRun(stats, { abandoned });
     run.result = { summary, result };
     // Achievements unlocked by the final tally (e.g. "Primer simpa") weren't toasted during the run.
     const late = result.achievements.filter((a) => !run.toasted.has(a.id));
@@ -182,7 +197,7 @@ export function createShell(root: HTMLElement): Shell {
   };
 
   const checkMissions = (): void => {
-    if (!run.active) return;
+    if (!run.active || isDebugRun()) return;
     // While running, `runs` is 0: "Juega N carreras" only counts finished runs.
     unlockToasts(store.updateRun({ ...run.stats, runs: 0 }));
   };
@@ -213,7 +228,7 @@ export function createShell(root: HTMLElement): Shell {
       audio.play("click");
       outfitChanged();
     },
-    share: (text) => void copyText(text).then((ok) => fx.toast({ title: ok ? "¡Copiado!" : "No se ha podido copiar", text: ok ? "Pégalo donde quieras presumir" : undefined, icon: GLYPH_COPY, glyph: true, color: "#7cc6f2", key: "share", duration: 2000 })),
+    share: (text) => void copyText(text).then((ok) => fx.toast({ title: ok ? "¡Copiado!" : "No se ha podido copiar", text: ok ? "Pégalo donde quieras y presume" : undefined, icon: GLYPH_COPY, glyph: true, color: "#7cc6f2", key: "share", duration: 2000 })),
     buy: (kind) => {
       if (store.buyUpgrade(kind)) {
         audio.play("purchase");
@@ -333,6 +348,8 @@ export function createShell(root: HTMLElement): Shell {
   const applyState = (next: GameState): void => {
     const prev = state;
     state = next;
+    // A pending game-over sting must never fire into the next screen or run.
+    window.clearTimeout(stingTimer);
     root.dataset["state"] = next;
     if (next !== "gameover") window.clearTimeout(run.gameoverTimer);
     hud.show(next === "playing" || next === "paused");
@@ -340,9 +357,14 @@ export function createShell(root: HTMLElement): Shell {
     if (next === "playing" || next === "paused") closePanel(false);
     switch (next) {
       case "menu":
-        if (run.active) endRun(liveSummary());
+        if (run.active) endRun(liveSummary(), true);
         fx.clear();
+        hud.reset();
+        combo.reset();
+        reward = null;
         audio.setZone(0);
+        audio.setFlight(false);
+        audio.setPowerup(false);
         audio.setMusicMode("menu");
         break;
       case "playing":
@@ -366,7 +388,16 @@ export function createShell(root: HTMLElement): Shell {
   };
 
   // ---------------------------------------------------------------- events
+  /** One failing event must never break the others (or the engine's own listeners). */
   const onEvent = (e: GameEvent): void => {
+    try {
+      handleEvent(e);
+    } catch (err) {
+      console.error("[shell] error handling event", e.type, err);
+    }
+  };
+
+  const handleEvent = (e: GameEvent): void => {
     switch (e.type) {
       case "state":
         if (e.state !== state) applyState(e.state);
@@ -477,7 +508,8 @@ export function createShell(root: HTMLElement): Shell {
           run.stats.zones++;
           const prev = ZONES[(ZONES.findIndex((z) => z.id === e.zone.id) + ZONES.length - 1) % ZONES.length];
           hud.rewardFlash();
-          measureReward(`¡${prev ? shortZoneName(ZONES.indexOf(prev)) : "Zona"} superada!`);
+          // "¡Adiós, Casco Antiguo!": no gender agreement to get wrong across zone names.
+          measureReward(prev ? `¡Adiós, ${shortZoneName(ZONES.indexOf(prev))}!` : "¡Zona superada!");
         }
         audio.setZone(Math.max(0, ZONES.findIndex((z) => z.id === e.zone.id)));
         audio.play("zone");
@@ -495,7 +527,12 @@ export function createShell(root: HTMLElement): Shell {
         endRun(e.summary);
         audio.setPowerup(false);
         if (e.summary.cause === "caught") audio.setMusicMode("off");
-        else window.setTimeout(() => audio.sting(), 350);
+        else {
+          window.clearTimeout(stingTimer);
+          stingTimer = window.setTimeout(() => {
+            if (state === "gameover") audio.sting();
+          }, 350);
+        }
         if (state !== "gameover") applyState("gameover");
         else renderBase();
         break;
@@ -506,12 +543,19 @@ export function createShell(root: HTMLElement): Shell {
   const frame = (t: number): void => {
     raf = requestAnimationFrame(frame);
     if (!game || (state !== "playing" && state !== "paused")) return;
-    let snap: HudSnapshot;
     try {
-      snap = game.getHud();
-    } catch {
-      return;
+      tick(t, game.getHud());
+    } catch (err) {
+      // A bad snapshot must never stop the loop; report it once per second at most.
+      if (t - lastFrameError > 1000) {
+        lastFrameError = t;
+        console.error("[shell] HUD frame failed", err);
+      }
     }
+  };
+  let lastFrameError = -Infinity;
+
+  const tick = (t: number, snap: HudSnapshot): void => {
     const prevHud = lastHud;
     lastHud = snap;
     hud.render(snap);
@@ -533,15 +577,17 @@ export function createShell(root: HTMLElement): Shell {
         fx.toast({ title: txt.title, text: txt.text, icon: GLYPH_RUN, glyph: true, color: "#7cc6f2", key: "milestone", duration: 2400 });
       }
     }
-    if (run.active && Number.isFinite(snap.roofMetres)) run.stats.roofMetres = snap.roofMetres;
+    if (run.active) run.stats.roofMetres = Math.max(run.stats.roofMetres, fin(snap.roofMetres));
     if (state !== "playing") return;
     audio.setSpeed(snap.speed);
-    audio.setPowerup(snap.powerups.length > 0);
-    audio.setFlight(snap.powerups.some((p) => p.kind === "ciguena"));
+    const powerups = Array.isArray(snap.powerups) ? snap.powerups : [];
+    audio.setPowerup(powerups.length > 0);
+    audio.setFlight(powerups.some((p) => p.kind === "ciguena"));
     if (run.active) {
-      run.stats.bellotas = snap.bellotas;
-      run.stats.distance = snap.distance;
-      run.stats.score = snap.score;
+      // Never let a glitchy frame (zeros, NaN) lower what this run has already reached.
+      run.stats.bellotas = Math.max(run.stats.bellotas, fin(snap.bellotas));
+      run.stats.distance = Math.max(run.stats.distance, fin(snap.distance));
+      run.stats.score = Math.max(run.stats.score, fin(snap.score));
       if (t - run.lastCheck > 300) {
         run.lastCheck = t;
         checkMissions();

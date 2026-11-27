@@ -221,4 +221,42 @@ describe("run", () => {
     expect(zones[0]).toMatchObject({ type: "zone", first: true, zone: { id: "casco-antiguo" } });
     expect(ZONES[run.zonesCompleted % ZONES.length]?.id).toBe("casco-antiguo");
   });
+
+  it("two letters on screen at once keep their own letters", () => {
+    const { run, events } = startRunning(14);
+    const p = run.player.p;
+    run.gen.pickups.push({ id: 400000, kind: "letra", lane: 0, d: p + 10, y: 1 });
+    run.gen.pickups.push({ id: 400001, kind: "letra", lane: 0, d: p + 30, y: 1 });
+    // Both become visible (assigned) before the first is taken.
+    expect(run.letterFor(400000)).toBe(0);
+    expect(run.letterFor(400001)).toBe(1);
+    ticks(run, 1.2);
+    expect(run.letterFor(400001)).toBe(1);
+    ticks(run, 2);
+    const letters = events.flatMap((e) => (e.type === "pickup" && e.kind === "letra" ? [e.letterIndex] : []));
+    expect(letters).toEqual([0, 1]);
+    expect(run.summary().letters).toBe(2);
+  });
+
+  it("a missed letter hands its letter to the next one", () => {
+    const { run, events } = startRunning(15);
+    const p = run.player.p;
+    run.gen.pickups.push({ id: 400010, kind: "letra", lane: 1, d: p + 10, y: 1 });
+    run.gen.pickups.push({ id: 400011, kind: "letra", lane: 0, d: p + 30, y: 1 });
+    expect(run.letterFor(400010)).toBe(0);
+    expect(run.letterFor(400011)).toBe(1);
+    ticks(run, 3);
+    const letters = events.flatMap((e) => (e.type === "pickup" && e.kind === "letra" ? [e.letterIndex] : []));
+    expect(letters).toEqual([0]);
+  });
+
+  it("the HUD chaser starts as a head start and fades", () => {
+    const { run } = makeRun(16);
+    for (let i = 0; i < 1.6 / TICK; i++) run.tick(TICK);
+    const start = run.chaser.hudValue;
+    expect(start).toBeLessThanOrEqual(0.5);
+    expect(start).toBeGreaterThan(0.3);
+    ticks(run, 4.2);
+    expect(run.chaser.hudValue).toBeLessThan(0.05);
+  });
 });

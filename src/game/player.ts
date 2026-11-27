@@ -215,6 +215,8 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
     s.jumpBuffer = 0;
     ev.jumped = true;
     ev.superJumped = s.superJump;
+    // A roll started earlier this very tick was cancelled by the jump: it never happened.
+    ev.rolled = false;
   }
   s.jumpBuffer = Math.max(0, s.jumpBuffer - dt);
 

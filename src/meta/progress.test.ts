@@ -155,3 +155,52 @@ describe("outfits", () => {
     expect(parseSave({ upgrades: { ciguena: 3 } }).upgrades.ciguena).toBe(3);
   });
 });
+
+describe("abandoned and debug runs", () => {
+  const big = (): RunStats => ({ ...emptyRunStats(), runs: 1, bellotas: 40, score: 5000, distance: 800, jumps: 12, zones: 3 });
+
+  it("abandoned runs keep bellotas and totals but skip records and end-of-run achievements", () => {
+    const m = new MetaStore(null, () => new Date(2026, 10, 27));
+    m.beginRun();
+    const r = m.finishRun(big(), { abandoned: true });
+    expect(r.abandoned).toBe(true);
+    expect(r.bellotasEarned).toBe(40);
+    expect(m.save.wallet).toBe(40);
+    expect(m.save.runsPlayed).toBe(1);
+    expect(m.save.lifetime.totals.runs).toBe(1);
+    expect(m.save.lifetime.totals.jumps).toBe(12);
+    expect(m.save.lifetime.bestRun.distance).toBe(0);
+    expect(m.save.records).toEqual([]);
+    expect(m.save.bestScore).toBe(0);
+    expect(r.newBestScore).toBe(false);
+    expect(r.achievements.map((a) => a.id)).not.toContain("primer-simpa");
+    expect(m.save.achievements).not.toContain("primer-simpa");
+    // Missions still move: "Salta N veces" got the jumps.
+    const jumps = m.save.missions.active.find((a) => a.id === "jumps");
+    if (jumps) expect(jumps.progress).toBeGreaterThan(0);
+  });
+
+  it("discards everything a debug run changed, but keeps settings", () => {
+    const m = new MetaStore(null, () => new Date(2026, 10, 27));
+    m.addBellotas(100);
+    const before = JSON.stringify({ ...m.save, settings: null });
+    m.beginRun();
+    m.updateRun({ ...big(), runs: 0, bellotas: 5000, roofMetres: 9999 });
+    m.updateSettings({ music: false });
+    const r = m.discardRun(big());
+    expect(r.debug).toBe(true);
+    expect(r.wallet).toBe(100);
+    expect(JSON.stringify({ ...m.save, settings: null })).toBe(before);
+    expect(m.settings.music).toBe(false);
+  });
+
+  it("sanitises NaN and negative stats", () => {
+    const m = new MetaStore(null);
+    m.beginRun();
+    const r = m.finishRun({ ...emptyRunStats(), runs: 1, bellotas: Number.NaN, score: -5, distance: Number.POSITIVE_INFINITY });
+    expect(r.bellotasEarned).toBe(0);
+    expect(m.save.wallet).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(m.save.lifetime.totals.distance)).toBe(true);
+    expect(m.save.records).toEqual([]);
+  });
+});

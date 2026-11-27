@@ -12,7 +12,7 @@ import { T, xf } from "../geom";
 import { CLOTH, FAR, SOLID, WATER } from "../materials";
 import { surfaceMat } from "../text";
 import {
-  L, RW, building, farBlock, farolillos, firework, flat, floodlit, lampClassic, lampModern, palm, pavement, person, planeTree, road, shrub, terraceSet, type Seg, type Side,
+  L, RW, building, farBlock, farolillos, flat, floodlit, lampClassic, lampModern, palm, pavement, person, planeTree, road, shrub, terraceSet, type Seg, type Side,
 } from "./common";
 
 const NOBLE = [0xf1e5c8, 0xf6f0e2, 0xf0d9a8, 0xe9d1b5, 0xf3e8d0];
@@ -45,8 +45,9 @@ function templete(s: Seg, x: number, z: number): void {
     const nz = z + Math.sin(a2) * rc;
     const mx = x + Math.cos((a + a2) / 2) * rc;
     const mz = z + Math.sin((a + a2) / 2) * rc;
-    b.beam([cx, top - 0.1, cz], [mx, top - 0.9, mz], 0.08, 0xf2f2ea, SOLID);
-    b.beam([mx, top - 0.9, mz], [nx, top - 0.1, nz], 0.08, 0xf2f2ea, SOLID);
+    // shallow white ironwork arch between the columns (two flat strips)
+    b.beam([cx, top - 0.1, cz], [mx, top - 0.7, mz], 0.06, 0xf2f2ea, SOLID);
+    b.beam([mx, top - 0.7, mz], [nx, top - 0.1, nz], 0.06, 0xf2f2ea, SOLID);
     b.beam([cx, top - 0.05, cz], [nx, top - 0.05, nz], 0.12, IRON_GREEN, SOLID);
     // low railing between columns
     b.beam([cx, 2.9, cz], [nx, 2.9, nz], 0.06, IRON_GREEN, SOLID);
@@ -60,7 +61,6 @@ function templete(s: Seg, x: number, z: number): void {
   b.cyl(x, top + 5.8, z, 0.06, 1.2, 0xd9b44a, 4, SOLID);
   b.sphere(x, top + 7.05, z, 0.22, 0.22, 0.22, 0xd9b44a, SOLID, 6, 4);
   // musicians' chairs and a music stand silhouette
-  for (let k = 0; k < 5; k++) b.boxB(x - 2 + k, 1.93, z - 1 + (k % 2), 0.4, 0.5, 0.4, 0x7a5230, SOLID);
 }
 
 /** Azulejo-tiled bench along the path, facing the road (+X when on the left). */
@@ -98,13 +98,15 @@ function park(s: Seg): void {
   // tiled benches and big shady trees along the main path
   for (const z of [-6, -26]) azulejoBench(s, -8.2, z, 4);
   const clearing = i === 4;
-  for (const z of clearing ? [-2, -38] : [-2, -14, -32]) planeTree(s, -10.5, z, r.range(1.1, 1.35), 0.12);
-  for (let k = 0; k < 3; k++) planeTree(s, -r.range(clearing ? 32 : 18, 50), -r.range(2, 38), r.range(1.2, 1.6), 0.1);
+  // keep the line of sight to the bandstand open on the approach (segment 3) and around it
+  const sight = i === 3;
+  for (const z of clearing ? [-2, -38] : sight ? [-2, -14] : [-2, -14, -32]) planeTree(s, -10.5, z, r.range(1.1, 1.35), 0.12);
+  for (let k = 0; k < 3; k++) planeTree(s, -r.range(clearing || sight ? 32 : 18, 50), -r.range(2, 38), r.range(1.2, 1.6), 0.1);
   if (i % 2 === 0 && !clearing) palm(s, -r.range(15, 25), -r.range(5, 35), r.range(10, 13), 0.1);
   if (clearing) {
     // flower beds around the bandstand
-    for (let k = 0; k < 10; k++) {
-      const a = (k / 10) * Math.PI * 2;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
       b.blob(-18 + Math.cos(a) * 9, 0.35, -20 + Math.sin(a) * 9, 1.2, 0.4, 1.2, k % 2 ? 0xd6336c : 0xf4a261, SOLID);
     }
     palm(s, -30, -8, 12, 0.1);
@@ -126,10 +128,8 @@ function park(s: Seg): void {
   }
   if (i === 4) {
     floodlit(s, "warm", () => templete(s, -18, -20));
-    firework(s, -45, 60, -110, 12, 0xff4fd8);
   }
-  farolillos(s, -10, 10.5, 5.2);
-  farolillos(s, -30, 10.5, 5.2);
+  farolillos(s, -20, 10.5, 5.2);
   if (i === 7) smallFountain(s, -20, -20, 4);
   if (i === 5 || i === 8) {
     // newspaper kiosk on the pavement edge

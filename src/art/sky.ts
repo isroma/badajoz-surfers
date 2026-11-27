@@ -105,9 +105,9 @@ export function createSkyDome(): SkyDome {
       uniforms.bottom.value.copy(bottom);
       const lumTop = top.r * 0.3 + top.g * 0.59 + top.b * 0.11;
       uniforms.night.value = Math.min(1, Math.max(0, (0.06 - lumTop) / 0.045));
-      cloudMat.color.multiplyScalar(1 - 0.55 * uniforms.night.value);
       // clouds pick up the horizon tint (pink at sunset, blue-grey at dusk)
       cloudMat.color.copy(white).lerp(bottom, 0.45);
+      cloudMat.color.multiplyScalar(1 - 0.55 * uniforms.night.value);
       const lum = bottom.r * 0.3 + bottom.g * 0.59 + bottom.b * 0.11;
       cloudMat.opacity = 0.6 + Math.min(0.32, lum * 0.4);
     },

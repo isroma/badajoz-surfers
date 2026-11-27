@@ -49,6 +49,11 @@ function gardensLeft(s: Seg, houses: boolean): void {
 function alcazabaSide(s: Seg): void {
   const b = s.b;
   const i = s.index;
+  if (i === 0) {
+    // stone retaining wall where the hill meets the crossroads (just past the junction strip)
+    b.span(7.0, 60, 0, 9.2, -10.0, -10.9, 0xc9a774, SOLID);
+    b.span(6.9, 60, 9.2, 9.5, -9.9, -11.0, 0xd8bb88, SOLID);
+  }
   pavement(s, 1, RW + 0.25, 6.5, "flagstone", 0xe2d3bb);
   // low retaining wall, then the slope up to the walls
   b.span(6.5, 7.1, 0, 1.6, 0, -L, 0xc9a774, SOLID);
