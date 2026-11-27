@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { OBSTACLE_DEFS, POWERUPS, type GameEvent } from "../contracts";
 import { PASSAGE_AFTER, PASSAGE_BEFORE } from "./course";
-import { laneMergeAhead, layoutAt, merges } from "./lanes";
+import { laneMergeAhead, laneShownAt, layoutAt, merges } from "./lanes";
 import { Run } from "./run";
 import { obstacleCentre } from "./spawns";
 import { MERGE_CLOSED, TARGET_CLEAR_AFTER, TARGET_CLEAR_BEFORE, TrackGenerator } from "./track";
@@ -21,11 +21,11 @@ const L = course.lapLength;
 describe("lane tapers, passages and guides on the real lap", () => {
   it("nothing in a tapering lane's last 80 m, its target kept clear, nothing under the arches (20 seeds × 2 laps)", () => {
     const bad: string[] = [];
-    const zones: { from: number; to: number; x: number; what: string }[] = [];
+    const zones: { from: number; to: number; x: number; what: string; target: boolean }[] = [];
     for (const m of merges(track)) {
       const lay = track.stretches[m.fromStretch]!.layout;
-      zones.push({ from: m.s1 - MERGE_CLOSED, to: m.end, x: lay.offsets[m.lane]!, what: `${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}` });
-      zones.push({ from: m.s1 - TARGET_CLEAR_BEFORE, to: Math.min(m.end, m.s1 + TARGET_CLEAR_AFTER), x: lay.offsets[m.into]!, what: `target ${lay.ids[m.into]} at ${m.end.toFixed(0)}` });
+      zones.push({ from: m.s1 - MERGE_CLOSED, to: m.end, x: lay.offsets[m.lane]!, what: `${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}`, target: false });
+      zones.push({ from: m.s1 - TARGET_CLEAR_BEFORE, to: Math.min(m.end, m.s1 + TARGET_CLEAR_AFTER), x: lay.offsets[m.into]!, what: `target ${lay.ids[m.into]} at ${m.end.toFixed(0)}`, target: true });
     }
     for (let seed = 1; seed <= 20; seed++) {
       const gen = new TrackGenerator(seed * 101);
@@ -38,7 +38,8 @@ describe("lane tapers, passages and guides on the real lap", () => {
             const half = (o.span ?? OBSTACLE_DEFS[o.kind].width) / 2;
             if (b > base + z.from && a < base + z.to && Math.abs(o.x - z.x) < half + 0.7) bad.push(`seed ${seed}: ${o.kind} in ${z.what}`);
           }
-          for (const p of gen.pickups) {
+          // (bellotas may lead into a merge target: it is only kept clear of obstacles)
+          for (const p of z.target ? [] : gen.pickups) {
             if (p.d >= base + z.from && p.d <= base + z.to && Math.abs(p.x - z.x) < 1.0) bad.push(`seed ${seed}: ${p.kind} in ${z.what}`);
           }
         }
@@ -105,6 +106,30 @@ describe("lane tapers, passages and guides on the real lap", () => {
       prevEnd = x.p + x.e.endDistance!;
     }
   }, 120_000);
+
+  it("the HUD drops a tapering lane from the midpoint of its taper; s 3132's taper starts in the stretch before", () => {
+    for (const m of merges(track)) {
+      const mid = (m.s0 + m.s1) / 2;
+      const st = track.stretches[m.fromStretch]!;
+      if (mid < st.fromS) {
+        // A lane too short for its taper: closed for its whole life, its taper runs on the lane it
+        // continues from, in the stretch before.
+        const t = track.transitions.find((x) => x.toIndex === m.fromStretch)!;
+        const pi = t.map.findIndex((j) => j === m.lane);
+        expect(laneShownAt(track, pi, mid - 1)).toBe(true);
+        expect(laneShownAt(track, pi, mid + 1)).toBe(false);
+        expect(laneShownAt(track, m.lane, st.fromS + 0.5)).toBe(false);
+        continue;
+      }
+      if (mid - 1 > st.fromS) expect(laneShownAt(track, m.lane, mid - 1)).toBe(true);
+      expect(laneShownAt(track, m.lane, Math.min(m.end - 0.1, mid + 1))).toBe(false);
+      expect(laneShownAt(track, m.into, mid + 1)).toBe(true);
+      // Every taper is at least MERGE_LENGTH long (the short ring stretch borrows the one before).
+      expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
+    }
+    const short = merges(track).find((m) => Math.abs(m.end - 3132) < 2)!;
+    expect(short.s0).toBeLessThan(track.stretches[short.fromStretch]!.fromS);
+  });
 
   it("no speed step at the lap seam: the new lap's bonus eases in", () => {
     expect(Math.abs(speedAt(L + 0.01) - speedAt(L - 0.01))).toBeLessThan(0.01);

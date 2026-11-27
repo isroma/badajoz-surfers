@@ -274,6 +274,7 @@ export class PatternBuilder {
     if (def.lanes === 1) {
       const kindL = this.laneKind(lane);
       if (def.width > this.laneWidth(lane) + 0.3) return false;
+      if (kindL === "pedestrian" && def.width > laneWidth(this.ctx.layout, lane) + 0.2) return false;
       if ((kindL === "median" || kindL === "sidewalk") && this.ctx.treeNear(this.xOf(lane), def.width / 2, front, front + def.length)) return false;
     }
     if ((def.yMax > 2 || def.yMin > 0 || def.vehicle) && this.ctx.underArch(front - 3, front + def.length + 3)) return false;
@@ -676,7 +677,8 @@ function palette(b: PatternBuilder, lane?: number): Palette {
   if ((kind === "sidewalk" || kind === "pedestrian") && ctx.barsNear(b.start - 10, b.start + 60).length > 0) {
     pal = { ...pal, low: [...pal.low, ["mesa", 4], ["terraza", 2]] };
   }
-  const width = lane === undefined ? Infinity : b.laneWidth(lane) + 0.3;
+  // (pedestrian lanes are 1.6–2.4 m: what goes there fits the lane itself + 0.2 m)
+  const width = lane === undefined ? Infinity : kind === "pedestrian" ? Math.min(b.laneWidth(lane) + 0.3, laneWidth(ctx.layout, lane) + 0.2) : b.laneWidth(lane) + 0.3;
   const arch = ctx.underArch(b.start - 10, b.start + 110);
   const ok = ([k]: readonly [ObstacleKind, number]): boolean => {
     const def = OBSTACLE_DEFS[k];

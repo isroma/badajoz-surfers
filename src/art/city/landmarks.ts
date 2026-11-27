@@ -6,6 +6,7 @@
  * de Espantaperros, the Puerta de Palmas, the Puente de Palmas (granite arches, cutwaters), the
  * Universidad and Autonomía bridges, the templete of Paseo de San Francisco, storks' nests.
  */
+import { pool as lightPool } from "./dressing";
 import * as THREE from "three";
 import type { CityLandmark } from "../../city/data";
 import { Acc } from "./acc";
@@ -887,6 +888,9 @@ function puentePalmas(ctx: CityCtx, bag: Bag, fac: Acc, ts: TS): void {
       p.cyl(q.x, q.y + 0.5, q.z, 0.06, 2.8, 0x1d2022, 6, m);
       p.cyl(q.x, q.y + 3.3, q.z, 0.17, 0.55, 0xffffff, 6, glowMaterial(), 0.24);
       p.cone(q.x, q.y + 3.85, q.z, 0.3, 0.28, 0x1d2022, 6, m);
+      // the warm light pool on the deck at night (like the street lamps)
+      const d = ts.p(s + (side > 0 ? 0 : 12), side * (half - 1.6), 0.03);
+      lightPool(bag, d.x, d.y, d.z, 3.2);
     }
   }
 }
@@ -977,6 +981,27 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
     const D = ts.p(s + 2, edge, 0.135);
     patio.quad(A, B, C, D, [0, 0], [1, 0], [1, 1], [0, 1], pc, pc, pc, pc, new THREE.Vector3(0, 1, 0));
   }
+  // the terrace sits on a stone platform whose retaining walls go down to the real ground on the
+  // three sides away from the pavement (the ground drops there: no floating slab)
+  {
+    const wall = new THREE.Color(0xc2b59c);
+    const face = (sa: number, la: number, sb: number, lb: number): void => {
+      const a = ts.p(sa, la, 0.135);
+      const b = ts.p(sb, lb, 0.135);
+      const ga = Math.min(ctx.terrainAt(a.x, a.z), a.y - 0.3) - 0.6;
+      const gb = Math.min(ctx.terrainAt(b.x, b.z), b.y - 0.3) - 0.6;
+      const A0 = new THREE.Vector3(a.x, ga, a.z);
+      const B0 = new THREE.Vector3(b.x, gb, b.z);
+      patio.quad(A0, B0, b, a, [0, 0], [1, 0], [1, 1], [0, 1], wall);
+      patio.quad(B0, A0, a, b, [0, 0], [1, 0], [1, 1], [0, 1], wall);
+    };
+    const back = b1 + 0.06; // just proud of the bar's back wall (no coplanar faces)
+    for (let s = s0 - 2; s < s1 + 2; s += 2) face(s, back, s + 2, back);
+    for (let l = edge; l < back; l += 1) {
+      face(s0 - 2, Math.min(l + 1, back), s0 - 2, l);
+      face(s1 + 2, l, s1 + 2, Math.min(l + 1, back));
+    }
+  }
   // the bar: a one-storey white pavilion with a glazed front, green awning and its sign
   const ring: P2[] = [];
   for (const [s, l] of [[s0, b0], [s0, b1], [s1, b1], [s1, b0]] as const) {
@@ -1001,7 +1026,6 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
   p.box(0, 0.3, 0.05, w, 0.6, 0.08, 0x3e7bd6, m);
   // the side walls (seen by the intro camera): tiled plinth and two windows each, on a stone base
   const dpt = b1 - b0;
-  p.box(0, -1.05, -dpt / 2, w + 0.3, 2.1, dpt + 0.3, 0xcfc6b6, m);
   for (const sx of [-1, 1]) {
     const x = sx * (w / 2 + 0.03);
     p.box(x, 0.3, -dpt / 2, 0.08, 0.6, dpt, 0x3e7bd6, m);

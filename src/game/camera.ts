@@ -58,6 +58,46 @@ export interface CameraInput {
   lookBias?: number;
   /** Street width between facades at the runner, when known: the camera stays inside it. */
   clearance?: number | null;
+  /**
+   * The building walls around the camera and the runner (track lateral, left ≤ 0 ≤ right; see
+   * course.ts `wallsBetween`) and whether the runner is in or near a passage under a building.
+   */
+  street?: { left: number; right: number; passage: boolean } | null;
+}
+
+/** The lens stays at least this far from a building wall. */
+export const WALL_GAP = 0.9;
+/** Boom in the narrowest streets and passages: shorter, lower, looking a little higher. */
+export const NARROW_BACK = 4.2;
+export const NARROW_UP = 2.6;
+const NARROW_LOOK_UP = 0.5;
+
+/** 0 (open street) .. 1 (narrow street or passage): from a street 9 m wide down to 6 m. Pure. */
+export function streetNarrowness(width: number, passage: boolean): number {
+  if (passage) return 1;
+  return smooth((9 - width) / 3);
+}
+
+/**
+ * The camera's lateral position kept ≥ WALL_GAP from both walls; in streets under ~6 m wide it
+ * is drawn to the middle of the street (fully below 6 m, from 8 m), and when even that is not
+ * possible it sits in the middle. Pure.
+ */
+export function clampToStreet(x: number, left: number, right: number): number {
+  const width = right - left;
+  const mid = (left + right) / 2;
+  const centre = smooth((8 - width) / 2);
+  const want = x + (mid - x) * centre;
+  const lo = left + WALL_GAP;
+  const hi = right - WALL_GAP;
+  if (lo > hi) return mid;
+  return Math.max(lo, Math.min(hi, want));
+}
+
+/** Boom length behind the runner, height and look-at lift for a narrowness. Pure. */
+export function boomFor(narrow: number): { back: number; up: number; lookUp: number } {
+  const n = Math.min(1, Math.max(0, narrow));
+  return { back: BACK + (NARROW_BACK - BACK) * n, up: UP + (NARROW_UP - UP) * n, lookUp: NARROW_LOOK_UP * n };
 }
 
 const BACK = 6.5;
@@ -167,6 +207,8 @@ export class ChaseCamera {
   private readonly sy: Spring = { x: 0, v: 0 };
   private readonly sLook: Spring = { x: 0, v: 0 };
   private readonly sDip: Spring = { x: 0, v: 0 };
+  /** Narrowness of the street (0..1, see streetNarrowness), through a spring. */
+  private readonly sNarrow: Spring = { x: 0, v: 0 };
   private fov = BASE_FOV;
   private punch = 0;
   private bobPhase = 0;
@@ -220,6 +262,9 @@ export class ChaseCamera {
     const camX = this.sx.x;
     const camY = this.sy.x + this.sDip.x;
     const lookX = this.sLook.x;
+    const boom = boomFor(this.sNarrow.x);
+    const BACK = boom.back;
+    const UP = boom.up;
     if (f > 0) {
       // Flying: the postcard. Higher and further back over the runner's own carriageway, looking
       // down the route so the bridges, the river and the Alcazaba open up below.
@@ -229,7 +274,7 @@ export class ChaseCamera {
       return;
     }
     pos.set(camX, camY + UP, i.z + BACK);
-    look.set(lookX, camY + 1.0, i.z - LOOK_AHEAD);
+    look.set(lookX, camY + 1.0 + boom.lookUp, i.z - LOOK_AHEAD);
   }
 
   /**
@@ -272,7 +317,10 @@ export class ChaseCamera {
     // Stay within ~2 m of the runner on wide avenues (5 lanes, 30 m kerb to kerb), drifting a
     // little towards the street's centre so both sides stay in view.
     const pull = Math.max(-2, Math.min(2, i.x * 0.4));
-    const targetX = i.x - pull + (i.laneX - i.x) * 0.12;
+    const street = i.street ?? null;
+    const narrowTarget = street ? streetNarrowness(street.right - street.left, street.passage) : 0;
+    let targetX = i.x - pull + (i.laneX - i.x) * 0.12;
+    if (street) targetX = clampToStreet(targetX, street.left, street.right);
     const lookTarget = i.x - pull * 0.9 + (i.laneX - i.x) * 0.3 + (i.lookBias ?? 0);
     const air = Math.max(0, i.y - i.groundY);
     const targetY = Math.max(0, i.groundY) * 0.8 + (i.flight > 0 ? 0 : air * JUMP_FOLLOW);
@@ -283,8 +331,11 @@ export class ChaseCamera {
       this.sy.v = 0;
       this.sLook.x = lookTarget;
       this.sLook.v = 0;
+      this.sNarrow.x = narrowTarget;
+      this.sNarrow.v = 0;
       this.push.set(0, 0, 0);
     }
+    springStep(this.sNarrow, narrowTarget, 4, dt);
     springStep(this.sx, targetX, OMEGA_X, dt);
     springStep(this.sLook, lookTarget, OMEGA_X * 1.2, dt);
     springStep(this.sy, targetY, targetY > this.sy.x ? OMEGA_Y_UP : OMEGA_Y_DOWN, dt);
@@ -309,8 +360,11 @@ export class ChaseCamera {
         // From the front/side (waiter visible behind) swinging round the runner to the chase view.
         const t = smooth(i.intro);
         this.chasePose(i, this.tmpA, this.tmpB);
-        const sx = 3.4;
-        const sz = -5.4;
+        // From the side of the street with more room, closer in a narrow street.
+        const roomy = street ? (street.right - i.x >= i.x - street.left ? 1 : -1) : 1;
+        const shrink = 1 - 0.35 * this.sNarrow.x;
+        const sx = 3.4 * roomy * shrink;
+        const sz = -5.4 * shrink;
         const sy = 1.7;
         const cdx = this.tmpA.x - i.x;
         const cdz = this.tmpA.z - i.z;
@@ -321,7 +375,7 @@ export class ChaseCamera {
         const a = aS + (aC - aS) * t;
         const r = rS + (rC - rS) * t;
         // Stay over the road: nothing solid stands there below 4 m (lamp posts and trees line the kerbs).
-        const ax = Math.max(-3.6, Math.min(3.6, i.x + Math.sin(a) * r));
+        const ax = street ? i.x + Math.sin(a) * r : Math.max(-3.6, Math.min(3.6, i.x + Math.sin(a) * r));
         pos.set(ax, sy + (this.tmpA.y - sy) * t, i.z + Math.cos(a) * r);
         look.set(i.x, 1.2, i.z + 1.5).lerp(this.tmpB, t);
         targetFov = 55 + (targetFov - 55) * t;
@@ -343,11 +397,20 @@ export class ChaseCamera {
         // Swing round to the side with free space, framing the runner and the waiter together.
         // Starts exactly where the chase camera was (no cut), then frames runner and waiter.
         const e = smooth(this.endAngle);
-        const a = e * 1.15 * (i.endSide < 0 ? -1 : 1);
+        // The side with free space (obstacles), unless the street is too tight on that side.
+        let side = i.endSide < 0 ? -1 : 1;
+        if (street) {
+          const room = side > 0 ? street.right - i.x : i.x - street.left;
+          const other = side > 0 ? i.x - street.left : street.right - i.x;
+          if (room < 2.5 && other > room) side = -side;
+        }
+        const a = e * 1.15 * side;
         const midZ = i.z + ((i.waiterZ - i.z) / 2) * e;
-        const r = BACK + (5.6 - BACK) * e;
+        const back = boomFor(this.sNarrow.x).back;
+        const r = back + (5.6 * (1 - 0.3 * this.sNarrow.x) - back) * e;
         const baseX = this.sx.x + (i.x - this.sx.x) * e;
-        const baseY = this.sy.x + UP + (i.groundY + 2.1 - this.sy.x - UP) * e;
+        const up = boomFor(this.sNarrow.x).up;
+        const baseY = this.sy.x + up + (i.groundY + 2.1 - this.sy.x - up) * e;
         pos.set(baseX + Math.sin(a) * r, baseY, midZ + Math.cos(a) * r);
         look.set(this.sLook.x + (i.x - this.sLook.x) * e, this.sy.x + 1.0 + (i.groundY - this.sy.x - 0.1) * e, midZ - LOOK_AHEAD * (1 - e));
         targetFov = 55;
@@ -369,12 +432,6 @@ export class ChaseCamera {
     } else this.push.multiplyScalar(Math.exp(-4 * dt));
     pos.add(this.push);
 
-    // Narrow old-town streets: keep the lens between the facades.
-    if (i.clearance && i.mode === "chase") {
-      const room = Math.max(0.8, i.clearance / 2 - 0.9);
-      pos.x = Math.max(-room, Math.min(room, pos.x));
-    }
-
     // Shake: trauma squared, decays.
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
     const k = this.trauma * this.trauma * 0.35;
@@ -383,6 +440,16 @@ export class ChaseCamera {
       pos.x += k * (Math.sin(t * 1.3) + Math.sin(t * 2.7) * 0.5);
       pos.y += k * (Math.sin(t * 1.9 + 1) + Math.sin(t * 3.1) * 0.5);
     }
+    // Keep the lens between the facades (WALL_GAP from the walls), whatever the mode.
+    if (street && i.mode !== "menu") {
+      const lo = street.left + WALL_GAP;
+      const hi = street.right - WALL_GAP;
+      pos.x = lo > hi ? (street.left + street.right) / 2 : Math.max(lo, Math.min(hi, pos.x));
+    } else if (i.clearance && i.mode === "chase") {
+      const room = Math.max(0.8, i.clearance / 2 - 0.9);
+      pos.x = Math.max(-room, Math.min(room, pos.x));
+    }
+
     this.local.copy(pos);
     this.toWorld(pos, look, i.mode, dt);
     if (i.bank !== 0) this.camera.rotateZ(i.bank);

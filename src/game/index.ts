@@ -18,10 +18,10 @@ import {
 import { art } from "../art";
 import { Bot } from "./bot";
 import { ChaseCamera, type CameraMode, type SolidBox } from "./camera";
-import { layoutAt } from "./lanes";
+import { laneShownAt, layoutAt, mergeOf } from "./lanes";
 import { QualityGovernor, type QualityLevel } from "./quality";
 import { MEDIAN_GAP } from "./player";
-import { buildCourse, getCourse, setCourse } from "./course";
+import { buildCourse, getCourse, inPassage, setCourse, wallsBetween } from "./course";
 import { TrackSpace } from "./space";
 import type { CityData } from "../city/data";
 import type { Track } from "../city/track";
@@ -131,6 +131,7 @@ class Game implements GameApi {
   private readonly solidPool: SolidBox[] = [];
   private readonly chest = new THREE.Vector3();
   private readonly hudPowerups: { kind: PowerupKind; remaining: number; duration: number }[] = [];
+  private readonly hudKinds: string[] = [];
   private readonly hudLanes: { count: number; index: number; kinds: readonly string[]; ending: number | null } = { count: 0, index: 0, kinds: [], ending: null };
 
   private readonly space: TrackSpace;
@@ -318,10 +319,27 @@ class Game implements GameApi {
     hud.chaser = run.countdown > 0 ? 0 : run.chaser.hudValue;
     hud.roofMetres = Math.round(run.roofMetres);
     hud.street = getCourse()?.streetNameAt(p) ?? null;
+    // The effective lanes: a lane past the midpoint of its taper is no longer shown.
     const layout = layoutAt(p);
-    this.hudLanes.count = layout.offsets.length;
-    this.hudLanes.index = Math.max(0, Math.min(layout.offsets.length - 1, run.player.lane));
-    this.hudLanes.kinds = layout.kinds ?? layout.offsets.map(() => "road");
+    const nl = layout.offsets.length;
+    const track = getCourse()?.track ?? null;
+    let lane = Math.max(0, Math.min(nl - 1, run.player.lane));
+    for (let g = 0; track && g < 8 && !laneShownAt(track, lane, p); g++) {
+      const m = mergeOf(track, lane, p);
+      if (!m) break;
+      lane = m.into;
+    }
+    const kinds = this.hudKinds;
+    kinds.length = 0;
+    let index = 0;
+    for (let i = 0; i < nl; i++) {
+      if (track && !laneShownAt(track, i, p)) continue;
+      if (i < lane) index++;
+      kinds.push(layout.kinds?.[i] ?? "road");
+    }
+    this.hudLanes.count = kinds.length;
+    this.hudLanes.index = Math.min(index, Math.max(0, kinds.length - 1));
+    this.hudLanes.kinds = kinds;
     this.hudLanes.ending = run.laneEnding;
     hud.lanes = this.hudLanes;
     return hud;
@@ -760,6 +778,7 @@ class Game implements GameApi {
       endSide: this.endSide, waiterZ: this.waiterZ, flight: run ? this.flight : 0, bank: run && this.flight > 0.05 ? this.lean * 0.35 * this.flight : 0,
       rolling: s ? s.roll > 0 : false, grounded: s ? s.grounded : false, solids: this.solids,
       clearance: getCourse()?.clearanceAt(p) ?? null,
+      street: this.streetAt(p),
       lookBias: run ? this.bendBias(p) : 0,
     });
     world.setCamera(this.cam.camera);
@@ -781,6 +800,17 @@ class Game implements GameApi {
     const lines = run && run.phase === "running" && !frozen ? (patinete ? 1 : Math.max(0, Math.min(1, (speed - 17) / 12))) : 0;
     this.effects.update(frozen ? 0 : animDt, lines, speed);
     if (!this.contextLost) this.renderer.render(world.scene, this.cam.camera);
+  }
+
+  private readonly street = { left: 0, right: 0, passage: false };
+
+  /** Walls round the camera and the runner at distance p (from the boom's far end to a little ahead). */
+  private streetAt(p: number): { left: number; right: number; passage: boolean } | null {
+    const course = getCourse();
+    if (!course) return null;
+    wallsBetween(course.walls(), course.lapLength, p - 7.5, p + 6, this.street);
+    this.street.passage = inPassage(course, p - 8, p + 4);
+    return this.street;
   }
 
   /**

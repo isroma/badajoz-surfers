@@ -96,6 +96,28 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
           }
         }
       }
+      // close façades (narrow old-town streets): doors and barred windows on the ground floor, so a
+      // wall a metre from the camera never reads as one blank plane
+      if (pb.typ !== "plazaAlta" && pb.typ !== "church" && pb.top - g > 2.8 && len > 1.8 && facing(pb, a, d) < 9) {
+        const bays = Math.max(1, Math.round(len / 3.2));
+        const bw = len / bays;
+        const acc = bag.acc(m);
+        const nn = new THREE.Vector3(nx, 0, nz);
+        const door = new THREE.Color(0x5a3f2c);
+        const win = new THREE.Color(0x46505a);
+        const sill = new THREE.Color(PAL.white);
+        for (let k = 0; k < bays; k++) {
+          const cx = a.x + ux * (k + 0.5) * bw + nx * 0.03;
+          const cz = a.z + uz * (k + 0.5) * bw + nz * 0.03;
+          const V = (du: number, y: number): THREE.Vector3 => new THREE.Vector3(cx + ux * du, g + y, cz + uz * du);
+          const q = (u0: number, u1: number, y0: number, y1: number, c: THREE.Color): void => acc.quad(V(u0, y0), V(u1, y0), V(u1, y1), V(u0, y1), [0, 0], [0, 0], [0, 0], [0, 0], c, c, c, c, nn);
+          if (hash01(pb.index * 17 + k, 5) < 0.4) q(-0.55, 0.55, 0.02, 2.4, door);
+          else {
+            q(-0.6, 0.6, 1.1, 2.3, win);
+            q(-0.7, 0.7, 1.0, 1.1, sill);
+          }
+        }
+      }
       // balconies: one slab and a dark railing band per floor along the facade
       if (st.accentKind === "balconies" && st.floors > 0) {
         for (let fl = 0; fl < Math.min(st.floors, 8); fl++) {

@@ -559,3 +559,34 @@ export function mapLanes(a: LaneLayout, b: LaneLayout): { map: (number | null)[]
   for (let j = 0; j < b.ids.length; j++) if (!taken.has(j)) begins.push(j);
   return { map, begins };
 }
+
+/**
+ * Copy of `l` with lane k moved/narrowed (newOffset, width) or dropped (newOffset null), and the
+ * pavement strips on that side clamped to the wall line `wall` (a lateral; + right, − left).
+ * Used by the wall fitting (walls.ts).
+ */
+export function relayout(l: LaneLayout, k: number, newOffset: number | null, width: number, wall: number): LaneLayout {
+  const d = toDraft(l);
+  if (newOffset === null) d.lanes.splice(k, 1);
+  else d.lanes[k] = { ...d.lanes[k]!, offset: newOffset, width };
+  d.sidewalks = d.sidewalks
+    .map((s) => (wall > 0 ? { from: s.from, to: s.to > wall && s.from < wall ? wall : s.to } : { from: s.from < wall && s.to > wall ? wall : s.from, to: s.to }))
+    .filter((s) => s.to - s.from > 0.05);
+  return finish(d);
+}
+
+/**
+ * Two-lane shared street (walls.ts fallback): ped-1 left of the centreline (width wl), ped-2 right
+ * (width wr), paved from wall to wall (clearances cl, cr).
+ */
+export function sharedStreet(wl: number, wr: number, cl: number, cr: number): LaneLayout {
+  return finish({
+    lanes: [
+      { id: "ped-1", offset: -wl / 2, width: wl, flow: 0, kind: "pedestrian" },
+      { id: "ped-2", offset: wr / 2, width: wr, flow: 0, kind: "pedestrian" },
+    ],
+    carriageways: [],
+    sidewalks: [{ from: -Math.min(cl, PED_MAX_PAVED / 2), to: Math.min(cr, PED_MAX_PAVED / 2) }],
+    median: [],
+  });
+}

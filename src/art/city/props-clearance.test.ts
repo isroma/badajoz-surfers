@@ -10,12 +10,12 @@ const ctx2d = new Proxy({}, {
 (globalThis as { document?: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx2d }) };
 
 describe("city art: props stay out of the runnable surface", () => {
-  it("no bollard, bench, planter, lamp, tree, sign or other prop stands in a runnable lane (0.25–4.5 m)", async () => {
+  it("no bollard, bench, planter, lamp, tree, sign or other prop stands in a runnable lane (0.25–4.5 m), in the river or inside a building", async () => {
     const { createTrack, validateCity } = await import("../../city");
     const { buildContext, CHUNK } = await import("./context");
     const { Bag, TS } = await import("./bag");
     const { buildRoadChunk } = await import("./road");
-    const { buildChunkDressing, allTrees } = await import("./dressing");
+    const { buildChunkDressing, allTrees, placementBlocked } = await import("./dressing");
     const { buildGuides } = await import("./guides");
     const { buildGround } = await import("./ground");
     const { buildLandmarks } = await import("./landmarks");
@@ -58,6 +58,9 @@ describe("city art: props stay out of the runnable surface", () => {
     }
     check(buildLandmarks(ctx, ground), "landmarks");
     for (const t of allTrees(ctx, ground)) {
+      const why = placementBlocked(ctx, ground, t.x, t.z);
+      if (why) bad.push(`tree ${why} at ${t.x.toFixed(0)},${t.z.toFixed(0)}`);
+      if (t.y < ctx.waterLevel + 1.0 || Math.abs(t.y - ground.heightAt(t.x, t.z)) > 1.8) bad.push(`tree in the water or floating at ${t.x.toFixed(0)},${t.z.toFixed(0)}`);
       const pr = track.project(t.x, t.z);
       const lay = track.layoutAt(pr.s);
       if (lay.offsets.some((o, k) => Math.abs(pr.lateral - o) < (lay.widths[k] ?? 0) / 2 - 0.05)) bad.push(`tree s=${pr.s.toFixed(0)} lat=${pr.lateral.toFixed(1)}`);

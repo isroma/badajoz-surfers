@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LANE_WIDTH, OBSTACLE_DEFS, POWERUPS, ZONES } from "../contracts";
 import { Bot, HUMAN } from "./bot";
 import { BoxSet } from "./collision";
-import { BLEND_LENGTH, FOUR_LANES, MERGE_LENGTH, laneOffsetAt, layoutAt, merges, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
+import { BLEND_LENGTH, BLEND_TIME, FOUR_LANES, MERGE_LENGTH, laneOffsetAt, layoutAt, merges, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
 import { createEvents, createPlayer, stepPlayer, type PlayerAction } from "./player";
 import { Run } from "./run";
 import { solve } from "./solver";
@@ -148,7 +148,9 @@ describe("lane layouts", () => {
       const L = track.lapLength;
       const near = (s: number): boolean => {
         const w = ((s % L) + L) % L;
-        if (track.transitions.some((t) => Math.abs(w - t.s) < BLEND_LENGTH / 2 + 0.5 || Math.abs(w - t.s - L) < 7)) return true;
+        // (the engine's blends last BLEND_TIME at the planned speed: ≤ 22 m/s on lap 1)
+        const half = Math.max(BLEND_LENGTH / 2, (BLEND_TIME * 22) / 2) + 0.5;
+        if (track.transitions.some((t) => Math.abs(w - t.s) < half || Math.abs(w - t.s - L) < half)) return true;
         return ms.some((m) => w > m.s0 - 0.5 && w < m.s1 + 0.5);
       };
       const failures: string[] = [];
@@ -214,13 +216,15 @@ describe("lane layouts", () => {
           }
           // Ended exactly on (the continuation of) the target lane, which is not an oncoming one.
           const after = layoutAt(s.p);
-          expect(s.x, `lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)} lap ${lap} now ${(after as { ids?: readonly string[] }).ids?.[s.lane]} at ${s.p.toFixed(1)}`).toBeCloseTo(laneOffsetAt(track, s.lane, s.p), 6);
+          expect(s.x, `lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)} lap ${lap} now ${(after as { ids?: readonly string[] }).ids?.[s.lane]} at ${s.p.toFixed(1)}`).toBeCloseTo(laneOffsetAt(track, s.lane, s.p, speedAt), 6);
           expect(after.flow[s.lane]).not.toBe(-1);
-          if (lap === 0) expect(vmax, `lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}`).toBeLessThan(2.7);
+          expect(vmax, `lap ${lap + 1}: lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}`).toBeLessThan(2.7);
+          // Carried earlier on faster laps, but still inside the lane's own width where the drawn taper starts.
+          const atDrawn = laneOffsetAt(track, m.lane, lap * L + m.s0 + (m.s0 < st.fromS ? 0 : 0), speedAt);
+          if (m.s0 >= st.fromS) expect(Math.abs(atDrawn - lay.offsets[m.lane]!)).toBeLessThan(lay.widths[m.lane]! / 2 - 0.3);
           report.push(`${lay.ids[m.lane]}@${m.end.toFixed(0)}: ${vmax.toFixed(2)}`);
         }
       }
-      // (lap-2 speeds are reported, not asserted: ~25 m/s over Puente Real's 5 m taper is ~3 m/s)
       void report;
     } finally {
       setCourse(null);

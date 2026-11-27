@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { validateCity, CityDataError, type CityData } from "./data";
-import { createTrack, createFrame, smoothPassesFor } from "./track";
+import { createTrack, createFrame, smoothPassesFor, wallClearance } from "./track";
 import { sectionLayout, type LaneLayout } from "./lanes";
 import { formatLayoutTable } from "./print-layouts";
 import {
@@ -186,7 +186,7 @@ const checkLayout = (l: LaneLayout, where: string): void => {
     expect(onMedian, where).toBe(l.kinds[i] === "median");
   }
   // Two lanes only on narrow pedestrian streets or on single-lane rings / one-lane carriageways.
-  if (n === 2) expect(l.kinds.every((k) => k === "pedestrian") || l.ids.join() === "own-1,walk-R", where).toBe(true);
+  if (n === 2) expect(l.kinds.every((k) => k === "pedestrian") || ["own-1,walk-R", "walk-L,own-1"].includes(l.ids.join()), where).toBe(true);
   expect(new Set(l.ids).size, where).toBe(n);
   for (const id of l.ids) expect(KNOWN_IDS.has(id), `${where} ${id}`).toBe(true);
   // Kinds and flows follow from the ids.
@@ -296,7 +296,7 @@ describe("lane layouts", () => {
 
   it("own lanes on every ring are exactly the approach's", () => {
     const own = (l: LaneLayout): string =>
-      l.ids.map((id, i) => (id.startsWith("own-") || id === "walk-R" ? `${id}@${l.offsets[i]!.toFixed(2)}/${l.widths[i]!.toFixed(2)}` : "")).filter(Boolean).join(" ");
+      l.ids.map((id, i) => (id.startsWith("own-") ? `${id}@${l.offsets[i]!.toFixed(2)}/${l.widths[i]!.toFixed(2)}` : "")).filter(Boolean).join(" ");
     for (const sec of city.sections) {
       if (!sec.roundabout || sec.pedestrian) continue;
       const on = track.layoutAt((sec.fromS + sec.toS) / 2);
@@ -304,6 +304,7 @@ describe("lane layouts", () => {
       const before = track.layoutAt(sec.fromS - 1);
       const after = track.layoutAt(sec.toS + 1);
       const approach = before.kinds.includes("pedestrian") ? after : before;
+      if (approach.kinds.every((k) => k === "pedestrian")) continue; // both sides pedestrian (shared street)
       expect(own(on), `ring ${sec.fromS}`).toBe(own(approach));
     }
   });
@@ -341,6 +342,30 @@ describe("lane layouts", () => {
     expect(shortLived).toBe(0);
     // A lane that continues: own-1 on Puente Real.
     expect(track.laneEndsAhead(300, track.layoutAt(300).ids.indexOf("own-1"))).toBeNull();
+  });
+
+  it("lanes fit between the real walls, except in short listed pinches", () => {
+    const w = track.walls;
+    expect(wallClearance(city, track)).toBe(w);
+    expect(w.left.length).toBe(Math.ceil(lap));
+    const inPinch = (i: number, side: "left" | "right"): boolean => track.pinches.some((p) => p.side === side && i >= p.fromS && i < p.toS);
+    let bad = 0;
+    for (const st of track.stretches) {
+      for (let i = Math.floor(st.fromS); i < Math.ceil(st.toS) && i < w.left.length; i++) {
+        const l = st.layout;
+        if (l.left < w.left[i]! + 0.2 && !inPinch(i, "left")) bad++;
+        if (l.right > w.right[i]! - 0.2 && !inPinch(i, "right")) bad++;
+      }
+    }
+    expect(bad).toBe(0);
+    const total = track.pinches.reduce((a, p) => a + p.toS - p.fromS, 0);
+    if (env?.["PRINT_LAYOUTS"]) console.log(`pinches (${total} m):`, JSON.stringify(track.pinches));
+    // Pinches caused by buildings the pipeline itself flags as reaching into the carriageway
+    // (corner cuts, data errors) cannot be solved by the layout; the rest stays within ~40 m.
+    const unflagged = track.pinches.filter((p) => !p.flagged).reduce((a, p) => a + p.toS - p.fromS, 0);
+    expect(unflagged).toBeLessThanOrEqual(40);
+    expect(total).toBeLessThanOrEqual(75);
+    for (const p of track.pinches) expect(p.toS - p.fromS).toBeLessThan(25);
   });
 
   it("turns: every roundabout is one turn; turnAhead looks 150 m ahead", () => {

@@ -14,6 +14,7 @@ import type { ObstacleSpawn } from "./spawns";
 import { obstacleCentre } from "./spawns";
 import type { PlayerWorld, SurfaceHit } from "./player";
 import {
+  speedAt,
   MARGINAL_CLIP,
   OBSTACLE_SHRINK_TOP,
   OBSTACLE_SHRINK_X,
@@ -119,7 +120,7 @@ export class BoxSet implements PlayerWorld {
 
   laneX(lane: number, p: number): number {
     const track = this.track();
-    return track ? laneOffsetAt(track, lane, p) : laneOffset(this.layoutFn(p), lane);
+    return track ? laneOffsetAt(track, lane, p, speedAt) : laneOffset(this.layoutFn(p), lane);
   }
 
   followLane(fromS: number, toS: number, lane: number): number | undefined {

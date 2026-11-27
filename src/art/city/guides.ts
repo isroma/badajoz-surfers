@@ -56,6 +56,8 @@ function board(bag: Bag, ts: TS, s: number, lat: number, dir: "left" | "right"):
 function barrier(bag: Bag, x: number, y: number, z: number, ry: number, len = 1.3, white = false): void {
   const b = bag.props;
   b.box(x, y + 0.45, z, len, 0.9, 0.35, white ? PAL.white : PAL.danger, flatMaterial(), ry);
+  // a white block seen on its own (cut by the screen edge) still reads as a barrier: red band
+  if (white) b.box(x, y + 0.5, z, len + 0.01, 0.22, 0.37, PAL.danger, flatMaterial(), ry);
 }
 
 /** A row of barriers from a to b (alternating red / white). */
