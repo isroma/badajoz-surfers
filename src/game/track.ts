@@ -67,7 +67,17 @@ export function mergeClosures(course: Course): readonly Closure[] {
   const st = track.stretches;
   for (const m of merges(track)) {
     const lay = st[m.fromStretch]!.layout;
-    out.push({ from: m.s1 - MERGE_CLOSED, to: m.end, x: lay.offsets[m.lane] ?? 0, ending: true, taper: m.s0 });
+    out.push({ from: Math.min(m.s1 - MERGE_CLOSED, m.s0 - 10), to: m.end, x: lay.offsets[m.lane] ?? 0, ending: true, taper: m.s0 });
+    if (m.s0 < st[m.fromStretch]!.fromS) {
+      // The taper starts on the lane this one continues from, in the stretch before.
+      const k = m.fromStretch;
+      const kp = (k - 1 + st.length) % st.length;
+      const t = track.transitions.find((x) => x.toIndex === k);
+      const pi = t ? t.map.findIndex((j) => j === m.lane) : m.lane;
+      const px = st[kp]!.layout.offsets[pi];
+      const shift = k === 0 ? track.lapLength : 0;
+      if (px !== undefined) out.push({ from: Math.min(m.s1 - MERGE_CLOSED, m.s0 - 10) + shift, to: st[k]!.fromS + shift, x: px, ending: true, taper: m.s0 + shift });
+    }
     const tx = lay.offsets[m.into] ?? 0;
     out.push({ from: m.s1 - TARGET_CLEAR_BEFORE, to: Math.min(m.end, m.s1 + TARGET_CLEAR_AFTER), x: tx, ending: false, taper: Infinity });
     if (m.s1 + TARGET_CLEAR_AFTER > m.end) {
@@ -495,14 +505,15 @@ export class TrackGenerator {
   }
 
   /** Would a pickup at (x, d, y) sit in a tapering lane, a merge target, or high in a passage? */
-  private blockedPickup(x: number, d: number, y: number): boolean {
+  private blockedPickup(x: number, d: number, y: number, targetsOk = false): boolean {
     const course = this.course();
     if (!course) return false;
     if (y > PASSAGE_PICKUP_Y && inPassage(course, d, d)) return true;
     const L = course.lapLength;
     const w = d - L * Math.floor(d / L);
     for (const c of mergeClosures(course)) {
-      if (Math.abs(x - c.x) >= PICKUP_CLOSURE_HALF) continue;
+      // Patterns keep out of merge targets too; gap-fill bellotas may lead along a target.
+      if ((targetsOk && !c.ending) || Math.abs(x - c.x) >= PICKUP_CLOSURE_HALF) continue;
       for (const at of [w - L, w, w + L]) if (at >= c.from - 1 && at <= c.to + 1) return true;
     }
     return false;
@@ -690,7 +701,7 @@ export class TrackGenerator {
       const layout = this.layoutFn(d);
       // The line's lane (or the nearest one), else the nearest lane no vehicle drives through.
       const order = layout.offsets.map((_, i) => i).sort((p, q) => Math.abs((layout.offsets[p] ?? 0) - this.lineX) - Math.abs((layout.offsets[q] ?? 0) - this.lineX));
-      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, []) && !this.blockedPickup(laneOffset(layout, l), d, 0.9));
+      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, []) && !this.blockedPickup(laneOffset(layout, l), d, 0.9, true));
       if (lane === undefined) continue;
       pickups.push({ id: this.nextId++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: 0.9 });
     }

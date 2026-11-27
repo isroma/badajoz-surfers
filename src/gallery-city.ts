@@ -172,6 +172,24 @@ export async function showCityView(env: Env, view: string): Promise<void> {
       });
       extra = "\n" + [...sums].sort((a, b) => b[1] - a[1]).slice(0, 18).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)}k`).join("\n");
     }
+    // &pick=px,py: name the object under that screen pixel (debugging stray geometry)
+    const pick = params.get("pick");
+    if (pick) {
+      const [px, py] = pick.split(",").map(Number);
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(new THREE.Vector2(((px ?? 0) / window.innerWidth) * 2 - 1, -((py ?? 0) / window.innerHeight) * 2 + 1), camera);
+      const hit = rc.intersectObject(cs.root, true)[0];
+      if (hit) {
+        const pr = track.project(hit.point.x, hit.point.z);
+        const o = hit.object as THREE.Mesh;
+        const geo = o.geometry as THREE.BufferGeometry;
+        const col = geo.getAttribute("color");
+        const ci = hit.face ? hit.face.a : 0;
+        const mt = o.material as THREE.MeshBasicMaterial;
+        extra += `\nMAT ${mt.name} col=${mt.color?.getHexString?.() ?? "-"} op=${mt.opacity} tr=${mt.transparent} map=${mt.map ? (mt.map.name || mt.map.uuid.slice(0, 6)) : "-"} verts=${geo.getAttribute("position").count} off=${mt.polygonOffset ? mt.polygonOffsetFactor + "/" + mt.polygonOffsetUnits : "-"}`;
+        extra += `\nPICK ${o.parent?.name ?? ""}/${o.name} ${(o.material as THREE.Material).type} d=${hit.distance.toFixed(1)} s=${pr.s.toFixed(1)} lat=${pr.lateral.toFixed(1)} y=${(hit.point.y - track.frameAt(pr.s).h).toFixed(2)} at ${hit.point.x.toFixed(1)},${hit.point.z.toFixed(1)}` + (col ? ` col=${col.getX(ci).toFixed(2)},${col.getY(ci).toFixed(2)},${col.getZ(ci).toFixed(2)}` : "");
+      }
+    }
     label.textContent = `s=${s.toFixed(0)} ${z.id} · ${track.streetNameAt(s) ?? ""}\ncalls ${info.calls} tris ${(info.triangles / 1000).toFixed(0)}k fps ${fps.toFixed(0)}\nctx ${ctxMs.toFixed(0)} ms preload ${preMs.toFixed(0)} ms chunks ${cs.stats.built}` + extra;
   });
 }

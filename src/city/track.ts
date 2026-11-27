@@ -13,6 +13,7 @@
 import type { CityData, CitySection, ZoneId } from "./data";
 import { buildStretches, mapLanes, type LaneLayout, type LaneTransition } from "./lanes";
 import { findTurns, TURN_LOOKAHEAD, type Turn } from "./turns";
+import { computeWalls, fitStretches, type Pinch, type Walls } from "./walls";
 
 export interface TrackFrame {
   /** s as passed to frameAt (not wrapped). */
@@ -80,6 +81,10 @@ export interface Track {
    * transitions; null if it continues for at least LANE_END_LOOKAHEAD m.
    */
   laneEndsAhead(s: number, laneIndex: number): number | null;
+  /** Nearest building wall per metre on each side (see walls.ts; also via wallClearance()). */
+  readonly walls: Walls;
+  /** Short places where a wall still reaches into the outer lane (the art clips that face). */
+  readonly pinches: readonly Pinch[];
   /** Bends and roundabouts worth guiding (see turns.ts), in s order. */
   readonly turns: readonly Turn[];
   /** The turn s is in, else the next one starting within TURN_LOOKAHEAD m; null if none. */
@@ -329,7 +334,11 @@ export function createTrack(city: CityData): Track {
   // Sections, stretches, zones.
   const sections = city.sections;
   const secFrom = sections.map((x) => x.fromS);
-  const stretches = buildStretches(sections, lap);
+  // Lanes are fitted between the real walls (walls.ts).
+  const walls = computeWalls(city, lap, project);
+  const fitted = fitStretches(buildStretches(sections, lap), walls, city.buildings);
+  const stretches = fitted.stretches;
+  const pinches = fitted.pinches;
   const stFrom = stretches.map((x) => x.fromS);
   const zones: TrackZone[] = city.zones.map((zn) => ({ id: zn.id, fromS: zn.fromS, toS: zn.toS }));
   const zFrom = zones.map((x) => x.fromS);
@@ -410,8 +419,24 @@ export function createTrack(city: CityData): Track {
     },
     streetNameAt,
     transitions,
+    walls,
+    pinches,
     laneEndsAhead,
     turns,
     turnAhead,
   };
 }
+
+/**
+ * Nearest building wall on each side, per metre of the lap (cached: computed once with the
+ * track). `walls.left[i]` / `walls.right[i]` are laterals (≤ 0 / ≥ 0, ±WALL_FAR when none) for
+ * s ∈ [i, i + 1).
+ */
+export function wallClearance(city: CityData, track: Track): Walls {
+  const hit = wallCache.get(track);
+  if (hit) return hit;
+  const w = city.meta.lapLength === track.lapLength ? track.walls : computeWalls(city, track.lapLength, track.project);
+  wallCache.set(track, w);
+  return w;
+}
+const wallCache = new WeakMap<Track, Walls>();

@@ -58,8 +58,10 @@ describe("traffic model", () => {
         const def = OBSTACLE_DEFS[o.kind];
         if (!def.vehicle || o.kind === "moto" || o.kind === "camion-rampa" || o.kind === "peaton") continue;
         const span = zoneAt(o.d);
-        const flow = layoutAt(o.d).flow;
-        if (flow.every((f) => f === 0)) {
+        // Only stretches with road lanes that carry traffic count (shared streets do not).
+        const here = layoutAt(o.d);
+        const flow = here.flow;
+        if (!flow.some((f, i) => f !== 0 && (here.kinds?.[i] ?? "road") === "road")) {
           expect(o.k, `${span.zone.id}: ${o.kind} must not drive`).toBe(0);
           continue;
         }

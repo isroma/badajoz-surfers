@@ -8,6 +8,7 @@ import type { CityArea } from "../../city/data";
 import { Acc } from "./acc";
 import { PAL } from "../palette";
 import { groundMaterial, terrainMaterial, waterMaterial } from "./cmats";
+import { routeRings, widthOf } from "./network";
 import type { CityCtx } from "./context";
 import { Grid, pointInFlat } from "./geo";
 import { newFrame } from "./track";
@@ -145,6 +146,43 @@ export function buildGround(ctx: CityCtx): GroundLayer {
           sum += src[j]!;
         }
         if (wet > 0 && wet < 9) H[i] = sum / 9;
+      }
+    }
+  }
+  // terrain never above a drawn surface: push the grid down under every street footprint (with its
+  // pavements) and under the roundabout rings and islands, so no terrain cell pokes through them
+  {
+    const under = new Uint8Array(nx * nz);
+    const mark = (minX: number, minZ: number, maxX: number, maxZ: number, inside: (x: number, z: number) => boolean): void => {
+      const ix0 = Math.max(0, Math.floor((minX - x0) / STEP));
+      const iz0 = Math.max(0, Math.floor((minZ - z0) / STEP));
+      const ix1 = Math.min(nx - 1, Math.ceil((maxX - x0) / STEP));
+      const iz1 = Math.min(nz - 1, Math.ceil((maxZ - z0) / STEP));
+      for (let iz = iz0; iz <= iz1; iz++) for (let ix = ix0; ix <= ix1; ix++) if (inside(x0 + ix * STEP, z0 + iz * STEP)) under[iz * nx + ix] = 1;
+    };
+    for (const st of ctx.city.streets) {
+      if (st.tunnel || st.bridge) continue;
+      const w = widthOf(st);
+      const half = w.road / 2 + w.walk + STEP * 0.5;
+      for (let i = 0; i + 3 < st.pts.length; i += 2) {
+        const ax = st.pts[i]!, az = st.pts[i + 1]!, bx = st.pts[i + 2]!, bz = st.pts[i + 3]!;
+        const dx = bx - ax, dz = bz - az;
+        const l2 = dx * dx + dz * dz || 1;
+        mark(Math.min(ax, bx) - half, Math.min(az, bz) - half, Math.max(ax, bx) + half, Math.max(az, bz) + half, (x, z) => {
+          const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+          return Math.hypot(x - ax - dx * t, z - az - dz * t) <= half;
+        });
+      }
+    }
+    for (let i = 0; i < nx * nz; i++) if (under[i] && kind[i] !== 2) H[i] = H[i]! - 0.3;
+    for (const r of routeRings(ctx)) {
+      const R = r.rc + r.hw + 3 + STEP * 0.5;
+      const ix0 = Math.max(0, Math.floor((r.cx - R - x0) / STEP));
+      const iz0 = Math.max(0, Math.floor((r.cz - R - z0) / STEP));
+      for (let iz = iz0; iz <= Math.min(nz - 1, iz0 + Math.ceil((2 * R) / STEP) + 1); iz++) {
+        for (let ix = ix0; ix <= Math.min(nx - 1, ix0 + Math.ceil((2 * R) / STEP) + 1); ix++) {
+          if (Math.hypot(x0 + ix * STEP - r.cx, z0 + iz * STEP - r.cz) <= R) H[iz * nx + ix] = Math.min(H[iz * nx + ix]!, r.y - 0.4);
+        }
       }
     }
   }

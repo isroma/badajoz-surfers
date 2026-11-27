@@ -107,10 +107,40 @@ class RoadPainter {
   }
 
   /** Paint rectangle in track space (s0..s1 along, l0..l1 across). */
-  paint(s0: number, s1: number, l0: number, l1: number, col = WHITE, y = 0.006): void {
+  /** While true, paint is clipped to the carriageways actually laid at each s (road markings never on paving). */
+  roadOnly = false;
+  /** While true, paint avoids every carriageway actually laid at each s (path colour never on a road). */
+  offRoad = false;
+
+  private cwAt(s: number, l: number): { from: number; to: number } | null {
+    return this.ts.track.layoutAt(s).carriageways.find((c) => l >= c.from - 0.01 && l <= c.to + 0.01) ?? null;
+  }
+
+  paint(s0: number, s1: number, l0In: number, l1In: number, col = WHITE, y = 0.006): void {
     const acc = this.bag.acc(paintMaterial());
     const ss = samples(s0, s1, 2);
     for (let i = 0; i + 1 < ss.length; i++) {
+      let l0 = l0In;
+      let l1 = l1In;
+      if (this.roadOnly) {
+        const mid = (l0 + l1) / 2;
+        const c0 = this.cwAt(ss[i]!, mid);
+        const c1 = this.cwAt(ss[i + 1]!, mid);
+        if (!c0 || !c1) continue;
+        l0 = Math.max(l0, c0.from, c1.from);
+        l1 = Math.min(l1, c0.to, c1.to);
+        if (l1 - l0 < 0.05) continue;
+      }
+      if (this.offRoad) {
+        // path paint never over a carriageway actually laid at either end of the piece
+        const cws = [...this.ts.track.layoutAt(ss[i]!).carriageways, ...this.ts.track.layoutAt(ss[i + 1]!).carriageways];
+        let pieces: [number, number][] = [[l0, l1]];
+        for (const c of cws) pieces = pieces.flatMap(([p0, p1]) => (c.to <= p0 || c.from >= p1 ? [[p0, p1]] : ([[p0, c.from], [c.to, p1]] as [number, number][]).filter(([q0, q1]) => q1 - q0 > 0.05)));
+        if (pieces.length !== 1 || pieces[0]![0] !== l0 || pieces[0]![1] !== l1) {
+          for (const [q0, q1] of pieces) this.paint(ss[i]!, ss[i + 1]!, q0, q1, col, y);
+          continue;
+        }
+      }
       const a = this.ts.p(ss[i]!, l0, y, this.a);
       const b = this.ts.p(ss[i]!, l1, y, this.b);
       const c = this.ts.p(ss[i + 1]!, l1, y, this.c);
@@ -121,6 +151,7 @@ class RoadPainter {
 
   /** Paint triangle (track space). */
   paintTri(p: [number, number][], col = WHITE): void {
+    if (this.roadOnly && p.some(([s, l]) => !this.cwAt(s, l))) return;
     const acc = this.bag.acc(paintMaterial());
     const v = p.map(([s, l]) => this.ts.p(s, l, 0.006));
     const [a, b, c] = v;
@@ -228,6 +259,16 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
         const w = raw.slice(Math.max(0, i - 2), i + 3).sort((p, q) => p - q);
         return w[Math.floor(w.length / 2)] ?? raw[i]!;
       });
+      // the median above used to wash out a one-sample curvature spike at a sharp corner, so the
+      // inner pavement folded over the carriageway: re-apply the limit with the window's worst curve
+      for (let i = 0; i < med.length; i++) {
+        let k = 0;
+        for (let d = -8; d <= 8; d += 1) {
+          const c = ts.f(ss[i]! + d).curvature * side;
+          if (c > k) k = c;
+        }
+        if (k > 0.002) med[i] = Math.min(med[i]!, 0.85 / k);
+      }
       for (let i = 1; i < med.length; i++) med[i] = Math.min(med[i]!, med[i - 1]! + 0.5);
       for (let i = med.length - 2; i >= 0; i--) med[i] = Math.min(med[i]!, med[i + 1]! + 0.5);
       return med;
@@ -258,6 +299,13 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
       }
       P.strip(outerMat, ss, E((l) => innerExtents(l)[1]), outerR, yWalk, GROUND_SCALE.hydraulic, C1, sh);
       P.strip(outerMat, ss, outerL, E((l) => innerExtents(l)[0]), yWalk, GROUND_SCALE.hydraulic, sh.clone(), C1);
+      // narrow old-town streets: a darker strip where the floor meets the walls, so the street floor reads
+      const narrow = (oR[Math.floor(oR.length / 2)] ?? 99) + (oL[Math.floor(oL.length / 2)] ?? 99) < 16;
+      if (!garden && narrow) {
+        const dk = new THREE.Color(0.8, 0.77, 0.72);
+        P.strip(outerMat, ss, (s) => outerR(s) - 0.45, outerR, yWalk + 0.008, GROUND_SCALE.hydraulic, dk, dk);
+        P.strip(outerMat, ss, outerL, (s) => outerL(s) + 0.45, yWalk + 0.008, GROUND_SCALE.hydraulic, dk, dk);
+      }
       // skirts so no gap shows where the terrain falls away
       P.face(groundMaterial("granite"), ss, outerR, yWalk - 4.5, yWalk, 1, new THREE.Color(0.6, 0.58, 0.55));
       P.face(groundMaterial("granite"), ss, outerL, yWalk - 4.5, yWalk, -1, new THREE.Color(0.6, 0.58, 0.55));
@@ -321,7 +369,11 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     }
 
     // --- markings -----------------------------------------------------------------------------
-    if (!ped && surf === "asphalt") markings(ctx, P, lay, sec, a, b, st);
+    if (!ped && surf === "asphalt") {
+      P.roadOnly = true;
+      markings(ctx, P, lay, sec, a, b, st);
+      P.roadOnly = false;
+    }
     legibility(P, lay, a, b, ped, ss, !bridge && (sec.medianKind === "planting" || sec.medianKind === "unmapped" || sec.medianKind === null), bridge);
 
     for (const s of ss) {
@@ -460,6 +512,7 @@ const HEDGE = PAL.trees[2];
 function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: boolean, ss: number[], planted: boolean, bridge: boolean): void {
   const lanes = lay.offsets.map((o, i) => ({ from: o - lay.widths[i]! / 2, to: o + lay.widths[i]! / 2, kind: lay.kinds[i] as string, flow: lay.flow[i]! }));
   // runnable path lanes
+  P.offRoad = true;
   for (const l of lanes) {
     if (l.kind === "road" || ped) continue;
     P.paint(a, b, l.from, l.to, RUN, KERB + 0.045);
@@ -471,6 +524,7 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
       P.paint(a, b, l.to - 0.07, l.to, RUN_EDGE, KERB + 0.05);
     }
   }
+  P.offRoad = false;
   // carriageway the runner cannot use
   for (const c of lay.carriageways) {
     const cover = lanes.filter((l) => l.kind === "road" && l.to > c.from && l.from < c.to);

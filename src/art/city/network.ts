@@ -6,7 +6,7 @@
  * two-way streets, zebras at the mapped crossings; pedestrian streets paved, footways and garden
  * paths in pavement colour with kerb-coloured edges. Pavements stop where they would cross another
  * street (junctions stay open) and nothing is drawn on the route's own surface.
- * Far field: the simplified white "map" streets on a pale casing.
+ * Far field: streets in a muted road tint, without casing (blocks read from above).
  * Z-order by polygon offset: plaza / pedestrian paving < road < markings. Permanent layer.
  */
 import * as THREE from "three";
@@ -15,7 +15,7 @@ import { Acc } from "./acc";
 import { decalMaterial, flatMaterial, paintMaterial } from "./cmats";
 import { PAL } from "../palette";
 import type { CityCtx } from "./context";
-import { Grid } from "./geo";
+import { Grid, pointInFlat } from "./geo";
 import type { GroundLayer } from "./ground";
 import { newFrame } from "./track";
 
@@ -23,14 +23,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 export const NEAR = 50;
 const KERB_H = 0.12;
 
-interface W {
-  road: number;
-  walk: number;
-  ped: boolean;
-  path: boolean;
-}
-
-function widthOf(st: CityStreet): W {
+export function widthOf(st: CityStreet): { road: number; walk: number; ped: boolean; path: boolean } {
   if (["footway", "cycleway", "steps", "path"].includes(st.highway)) return { road: st.highway === "cycleway" ? 2.4 : 2.6, walk: 0, ped: true, path: true };
   if (["pedestrian", "living_street"].includes(st.highway)) return { road: st.width ?? 6, walk: 0, ped: true, path: false };
   const lanes = st.lanes ?? (st.oneway ? 1 : 2);
@@ -74,19 +67,31 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     return t;
   };
   let farRoad = new Acc();
-  let farCasing = new Acc();
   let paving = new Acc();
   let road = new Acc();
   let raised = new Acc();
   let paint = new Acc();
   const useTile = (x: number, z: number): void => {
     const t = tileFor(x, z);
-    ({ farRoad, farCasing, paving, road, raised, paint } = t);
+    ({ farRoad, paving, road, raised, paint } = t);
   };
   const tr = ctx.track;
   const f = newFrame();
 
-  const streets = ctx.city.streets.filter((st) => !st.onRoute && !st.tunnel);
+  // the roundabouts the route uses: each whole ring is ONE smooth annulus round the real centre and
+  // radius (drawn below); the OSM ring ways off the route are not drawn as polylines (they gave
+  // polygonal arcs clipped segment by segment into a saw-tooth where they met the route's ring)
+  const rings = routeRings(ctx);
+  const isRingWay = (st: CityStreet): boolean => {
+    if (!st.roundabout) return false;
+    for (const r of rings) {
+      let all = true;
+      for (let i = 0; i + 1 < st.pts.length && all; i += 2) if (Math.abs(Math.hypot(st.pts[i]! - r.cx, st.pts[i + 1]! - r.cz) - r.rc) > r.hw + 4) all = false;
+      if (all) return true;
+    }
+    return false;
+  };
+  const streets = ctx.city.streets.filter((st) => !st.onRoute && !st.tunnel && !isRingWay(st));
   // index the near vehicle streets' centrelines (pavements must not cross another street)
   const segGrid = new Grid<Seg>(30);
   streets.forEach((st, id) => {
@@ -150,8 +155,7 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
   const cPave = new THREE.Color(PAL.pavement);
   const cKerb = new THREE.Color(PAL.kerb);
   const cWhite = new THREE.Color(PAL.marking);
-  const cStreet = new THREE.Color(PAL.street);
-  const cCasing = new THREE.Color(PAL.streetCasing);
+  const cFar = new THREE.Color(PAL.road).lerp(new THREE.Color(PAL.land), 0.45);
 
   streets.forEach((st, id) => {
     const raw: { x: number; z: number }[] = [];
@@ -197,12 +201,10 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
       }
       const h = w.road / 2;
       if (!near) {
-        // far field: white map street on a pale casing
+        // far field: a muted road tint (lighter than the route's road, darker than the land), no
+        // casing, so the city reads as blocks from above rather than as white map strips
         if (w.ped) band(paving, A, B, na, nb, -h, h, 0.02, cPave);
-        else {
-          band(farCasing, A, B, na, nb, -h - Math.max(0.6, w.walk), h + Math.max(0.6, w.walk), 0.03, cCasing);
-          band(farRoad, A, B, na, nb, -h, h, 0.05, cStreet);
-        }
+        else band(farRoad, A, B, na, nb, -h - w.walk * 0.5, h + w.walk * 0.5, 0.05, cFar);
         along += len;
         continue;
       }
@@ -232,6 +234,50 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     }
   });
 
+  // the rings: the arcs the route does not travel, as smooth annulus sectors under the route's own
+  // ring (overlapping it a little), an inner kerb line and an outer raised pavement with openings
+  for (const r of rings) {
+    useTile(r.cx, r.cz);
+    const n = Math.max(48, Math.ceil((2 * Math.PI * r.rc) / 1.5));
+    const P = (a: number, rad: number, dy: number): THREE.Vector3 => new THREE.Vector3(r.cx + Math.cos(a) * rad, r.y + dy, r.cz + Math.sin(a) * rad);
+    const covered: boolean[] = [];
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2;
+      covered.push(onRoute(r.cx + Math.cos(a) * r.rc, r.cz + Math.sin(a) * r.rc, -0.5));
+    }
+    // grow the free arcs by two samples so they tuck under the route's ring
+    const draw = covered.map((_, k) => [-2, -1, 0, 1, 2].some((d) => !covered[(k + d + n) % n]));
+    const cKerbD = new THREE.Color(PAL.kerb);
+    for (let k = 0; k < n; k++) {
+      if (!draw[k]) continue;
+      const a0 = (k / n) * Math.PI * 2;
+      const a1 = ((k + 1) / n) * Math.PI * 2;
+      const quad = (acc: Acc, r0: number, r1: number, dy: number, c: THREE.Color): void => {
+        // same winding rule as band(): facing up
+        const A0 = P(a0, r0, dy), A1 = P(a0, r1, dy), B1 = P(a1, r1, dy), B0 = P(a1, r0, dy);
+        const cy = (A1.z - A0.z) * (B0.x - A0.x) - (A1.x - A0.x) * (B0.z - A0.z);
+        if (cy < 0) acc.quad(A0, B0, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], c, c, c, c, UP);
+        else acc.quad(A0, A1, B1, B0, [0, 0], [0, 0], [0, 0], [0, 0], c, c, c, c, UP);
+      };
+      quad(road, r.rc - r.hw, r.rc + r.hw, -0.03, cRoad);
+      if (covered[k]) continue;
+      quad(paint, r.rc - r.hw - 0.05, r.rc - r.hw + 0.12, -0.02, cWhite);
+      const am = (a0 + a1) / 2;
+      const ox = r.cx + Math.cos(am) * (r.rc + r.hw + 1.2);
+      const oz = r.cz + Math.sin(am) * (r.rc + r.hw + 1.2);
+      if (inOtherStreet(ox, oz, -1, 0.3) || onRoute(ox, oz, 0.3)) continue;
+      quad(raised, r.rc + r.hw, r.rc + r.hw + 2.4, KERB_H + 0.01, cPave);
+      {
+        // kerb face looking in at the carriageway
+        const A0 = P(a0, r.rc + r.hw, -0.03), B0 = P(a1, r.rc + r.hw, -0.03);
+        const A1 = P(a0, r.rc + r.hw, KERB_H + 0.01), B1 = P(a1, r.rc + r.hw, KERB_H + 0.01);
+        const n = new THREE.Vector3().subVectors(B0, A0).cross(UP);
+        if (n.dot(new THREE.Vector3(r.cx - A0.x, 0, r.cz - A0.z)) > 0) raised.quad(A0, B0, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], cKerbD);
+        else raised.quad(B0, A0, A1, B1, [0, 0], [0, 0], [0, 0], [0, 0], cKerbD);
+      }
+    }
+  }
+
   // zebra crossings mapped on the near side streets
   for (const fu of ctx.city.furniture) {
     if (fu.type !== "crossing" || Math.abs(fu.lateral) > NEAR || onRoute(fu.x, fu.z, 1)) continue;
@@ -255,6 +301,8 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     const yy = Math.abs(pr.lateral) < 25 ? f.h : y;
     for (let l = -half + 0.4; l < half - 0.3; l += 1.0) {
       const cx = fu.x - tz * l, cz = fu.z + tx * l;
+      // stripes only on this street's drawn carriageway: never on the route's paving or a plaza
+      if (onRoute(cx, cz, 0.3) || ctx.city.squares.some((q) => pointInFlat(cx, cz, q.ring))) continue;
       const A = new THREE.Vector3(cx - tx * 2, yy + 0.05, cz - tz * 2);
       const B = new THREE.Vector3(cx + tx * 2, yy + 0.05, cz + tz * 2);
       const n = new THREE.Vector2(-tz, tx);
@@ -292,18 +340,72 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
       tr.frameAt(pr.s, f);
       return Math.abs(pr.lateral) < 12 ? f.h + 0.01 : Math.max(f.h + 0.01, ground.heightAt(p.x, p.y) + 0.25);
     };
-    const ys = contour.map(yOf);
-    for (const t of tris) {
-      const P = (k: number): THREE.Vector3 => new THREE.Vector3(contour[k]!.x, ys[k]!, contour[k]!.y);
-      const p0 = P(t[0]!);
-      let p1 = P(t[1]!);
-      let p2 = P(t[2]!);
+    // a plaza triangle spanning the route used to lie over its carriageway (its far corners are
+    // higher than the road): near the route, split the triangles down to ~4 m and drop the pieces on
+    // the route's own surface, each vertex at its own height
+    const latAbs = (x: number, z: number): number => Math.abs(tr.project(x, z).lateral);
+    const emit = (a: THREE.Vector2, b: THREE.Vector2, c: THREE.Vector2, depth: number): void => {
+      const big = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a));
+      const mx = (a.x + b.x + c.x) / 3;
+      const mz = (a.y + b.y + c.y) / 3;
+      if (big > 4 && depth < 7 && Math.min(latAbs(a.x, a.y), latAbs(b.x, b.y), latAbs(c.x, c.y), latAbs(mx, mz)) < big + 12) {
+        const ab = a.clone().add(b).multiplyScalar(0.5);
+        const bc = b.clone().add(c).multiplyScalar(0.5);
+        const ca = c.clone().add(a).multiplyScalar(0.5);
+        emit(a, ab, ca, depth + 1);
+        emit(ab, b, bc, depth + 1);
+        emit(ca, bc, c, depth + 1);
+        emit(ab, bc, ca, depth + 1);
+        return;
+      }
+      if (onRoute(mx, mz, 0.2)) return;
+      const p0 = new THREE.Vector3(a.x, yOf(a), a.y);
+      let p1 = new THREE.Vector3(b.x, yOf(b), b.y);
+      let p2 = new THREE.Vector3(c.x, yOf(c), c.y);
       const cy = (p1.z - p0.z) * (p2.x - p0.x) - (p1.x - p0.x) * (p2.z - p0.z);
       if (cy < 0) [p1, p2] = [p2, p1];
       sq.tri(p0, p1, p2, [0, 0], [0, 0], [0, 0], cPave, UP);
-    }
+    };
+    for (const t of tris) emit(contour[t[0]!]!, contour[t[1]!]!, contour[t[2]!]!, 0);
   }
   const sm = sq.mesh(decalMaterial(1), "plazas");
   if (sm) g.add(sm);
   return g;
+}
+
+export interface RouteRing {
+  cx: number;
+  cz: number;
+  /** centreline radius of the carriageway */
+  rc: number;
+  /** half width of the carriageway */
+  hw: number;
+  /** mean height of the route round the ring */
+  y: number;
+}
+
+/** The roundabouts the route goes round: real centre and radius, the route's ring width and height. */
+export function routeRings(ctx: CityCtx): RouteRing[] {
+  const out: RouteRing[] = [];
+  const f = newFrame();
+  for (const st of ctx.track.stretches) {
+    const rb = st.section.roundabout;
+    if (!rb || out.some((o) => Math.hypot(o.cx - rb.cx, o.cz - rb.cz) < 1)) continue;
+    const lay = ctx.track.layoutAt((st.fromS + st.toS) / 2);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const c of lay.carriageways) {
+      lo = Math.min(lo, c.from);
+      hi = Math.max(hi, c.to);
+    }
+    const hw = Number.isFinite(lo) ? (hi - lo) / 2 : (st.section.width ?? 7) / 2;
+    let h = 0;
+    let n = 0;
+    for (let s = st.fromS; s <= st.toS; s += 2) {
+      h += ctx.track.frameAt(s, f).h;
+      n++;
+    }
+    out.push({ cx: rb.cx, cz: rb.cz, rc: rb.r, hw, y: h / Math.max(1, n) });
+  }
+  return out;
 }

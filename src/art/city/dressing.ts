@@ -16,6 +16,7 @@ import { KERB } from "./road";
 import { hash01 } from "./shared";
 import { emitTree, type Species, type TreeSpec } from "./trees";
 import { buildRelief } from "./relief";
+import { pointInRing } from "./geo";
 import { buildCar } from "../vehicles";
 
 const T_SPHERE = new THREE.SphereGeometry(1, 6, 4);
@@ -26,6 +27,35 @@ const T_SPHERE = new THREE.SphereGeometry(1, 6, 4);
 
 const LAMP_DAY = new THREE.Color(0.75, 0.74, 0.7);
 const LAMP_NIGHT = new THREE.Color(2.2, 1.75, 1.15);
+
+/**
+ * The one placement rule for every standing prop (trees from the data and added ones, lamps, benches,
+ * bins, bollards, shelters, signals): never in the river (by the final ground height), never inside
+ * a building footprint, never on a runnable lane. Route decks (bridges) are exempt from the water test.
+ */
+export function placementBlocked(ctx: CityCtx, ground: GroundLayer, x: number, z: number): string | null {
+  const pr = ctx.track.project(x, z);
+  const lay = ctx.wideLayout(pr.s);
+  if (Math.abs(pr.lateral) < 40 && lay.offsets.some((o, k) => Math.abs(pr.lateral - o) < (lay.widths[k] ?? 0) / 2 - 0.05)) return "lane";
+  let lo = lay.left;
+  let hi = lay.right;
+  for (const w of lay.sidewalks) {
+    lo = Math.min(lo, w.from);
+    hi = Math.max(hi, w.to);
+  }
+  for (const c of lay.carriageways) {
+    lo = Math.min(lo, c.from);
+    hi = Math.max(hi, c.to);
+  }
+  const onDeck = Math.abs(pr.lateral) < 40 && pr.lateral > lo - 0.5 && pr.lateral < hi + 0.5;
+  if (!onDeck && (ground.river.at(x, z) || ground.heightAt(x, z) < ctx.waterLevel + 1.0)) return "water";
+  for (const pb of ctx.buildingGrid.query(x, z, x, z)) if (!pb.upperRing && pointInRing(x, z, pb.ring)) return "building";
+  return null;
+}
+
+/** Set while a chunk is dressed: the primitives below refuse blocked spots. */
+let guard: ((x: number, z: number) => boolean) | null = null;
+const blockedAt = (x: number, z: number): boolean => guard !== null && guard(x, z);
 
 export function lampGlowMaterial(): THREE.MeshBasicMaterial {
   return glowMaterial();
@@ -101,8 +131,11 @@ export function allTrees(ctx: CityCtx, ground: GroundLayer): TreeSpec[] {
     const zone = ctx.track.zoneAt(pr.s).id;
     const sp = speciesFor(ctx, ground, x, z, h, palm, pr.s, lat, zone, seed);
     ctx.track.frameAt(pr.s, f);
-    const onPavement = Math.abs(lat) < 25;
-    const y = onPavement ? f.h + KERB : ground.heightAt(x, z);
+    // on the route's pavement only when the ground there really is at the route's level: beside a
+    // bridge the deck height used to float trees ten metres above the river
+    const gy = ground.heightAt(x, z);
+    const onPavement = Math.abs(lat) < 25 && Math.abs(gy - f.h) < 1.5;
+    const y = onPavement ? f.h + KERB : gy;
     const near = Math.abs(lat) < 70;
     out.push({ x, z, y, h: Math.max(3, h), r: Math.max(1, r), sp, seed, chunk: near ? ctx.chunkOf(pr.s) : -1 });
   }
@@ -125,9 +158,9 @@ export function allTrees(ctx: CityCtx, ground: GroundLayer): TreeSpec[] {
       out.push({ x: rb.cx + Math.cos(a) * d, z: rb.cz + Math.sin(a) * d, y: fr.h + 0.3, h: 7 + hash01(k, 3) * 4, r: 3, sp: "palm", seed: hash01(k, Math.round(rb.cx)), chunk: ctx.chunkOf(mid) });
     }
   }
-  treeCache = out;
+  treeCache = out.filter((t) => !placementBlocked(ctx, ground, t.x, t.z));
   treeCacheCtx = ctx;
-  return out;
+  return treeCache;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -146,11 +179,44 @@ export function buildPermanentDressing(ctx: CityCtx, ground: GroundLayer): THREE
     const jx = p.x + (hash01(k, 3) - 0.5) * 16;
     const jz = p.z + (hash01(k, 5) - 0.5) * 16;
     const y = ground.heightAt(jx, jz);
-    if (y < ctx.waterLevel + 0.2) continue;
+    if (y < ctx.waterLevel + 0.2 || placementBlocked(ctx, ground, jx, jz)) continue;
     if (p.sand) extra.push({ x: jx, z: jz, y, h: 1.6 + r * 1.2, r: 1.6, sp: "shrub", seed: r, chunk: -1 });
     else if (r < 0.55) extra.push({ x: jx, z: jz, y, h: 3 + r * 3, r: 2.2, sp: "shrub", seed: r, chunk: -1 });
     else if (r < 0.85) extra.push({ x: jx, z: jz, y, h: 12 + r * 10, r: 3, sp: "poplar", seed: r, chunk: -1 });
     else extra.push({ x: jx, z: jz, y, h: 2 + r * 2, r: 2, sp: "shrub", seed: r, chunk: -1 });
+  }
+  // empty verges: where nothing stands within 30 m of the route on one side, dress what is really
+  // there, sparingly: mapped green → a few park trees; bare plots (dry grass) → scattered shrubs
+  {
+    const trees = allTrees(ctx, ground);
+    const near = new Map<string, number>();
+    const cell = (x: number, z: number): string => `${Math.floor(x / 30)},${Math.floor(z / 30)}`;
+    for (const t of trees) near.set(cell(t.x, t.z), (near.get(cell(t.x, t.z)) ?? 0) + 1);
+    const occupied = (x: number, z: number): boolean => {
+      for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) if (near.get(`${Math.floor(x / 30) + dx},${Math.floor(z / 30) + dz}`)) return true;
+      return ctx.buildingGrid.query(x - 22, z - 22, x + 22, z + 22).size > 0;
+    };
+    const f = ctx.frame(0);
+    for (let s = 0; s < ctx.track.lapLength; s += 12) {
+      ctx.track.frameAt(s, f);
+      const lay = ctx.wideLayout(s);
+      for (const side of [1, -1] as const) {
+        const edge = side > 0 ? Math.max(lay.right, ...lay.sidewalks.map((w) => w.to)) : Math.min(lay.left, ...lay.sidewalks.map((w) => w.from));
+        const k = Math.round(s / 12) * 2 + (side > 0 ? 1 : 0);
+        const lat = edge + side * (7 + hash01(k, 41) * 20);
+        const x = f.x + f.nx * lat + f.tx * (hash01(k, 43) - 0.5) * 8;
+        const z = f.z + f.nz * lat + f.tz * (hash01(k, 43) - 0.5) * 8;
+        if (occupied(x, z) || placementBlocked(ctx, ground, x, z)) continue;
+        const y = ground.heightAt(x, z);
+        if (Math.abs(y - f.h) > 6) continue; // under a bridge deck or across a cutting
+        const seed = hash01(k, 47);
+        if (ground.green.at(x, z)) {
+          if (seed < 0.55) extra.push({ x, z, y, h: 6 + seed * 6, r: 3, sp: speciesFor(ctx, ground, x, z, 8, false, s, lat, ctx.track.zoneAt(s).id, seed), seed, chunk: -1 });
+        } else if (seed < 0.45) {
+          extra.push({ x, z, y, h: 1.2 + seed * 1.6, r: 1.5, sp: "shrub", seed, chunk: -1 });
+        }
+      }
+    }
   }
   for (const t of [...allTrees(ctx, ground), ...extra]) {
     const key = `${Math.floor(t.x / 400)},${Math.floor(t.z / 400)}`;
@@ -187,6 +253,7 @@ const IRON = new THREE.Color(0x1d2022);
 
 /** Tall avenue lamp: grey pole with one or two arms. `ry` turns the arm towards the road. */
 function lampAvenue(b: Bag, x: number, y: number, z: number, ry: number, double: boolean, h = 9): void {
+  if (blockedAt(x, z)) return;
   const p = b.props;
   const metal = metalMaterial();
   p.cyl(x, y, z, 0.12, h, POLE, 8, metal, 0.07);
@@ -203,6 +270,7 @@ function lampAvenue(b: Bag, x: number, y: number, z: number, ry: number, double:
 }
 
 function lampClassic(b: Bag, x: number, y: number, z: number, h = 4.4): void {
+  if (blockedAt(x, z)) return;
   const p = b.props;
   const m = propMaterial(true);
   p.cyl(x, y, z, 0.2, 0.7, IRON, 8, m, 0.13);
@@ -228,7 +296,7 @@ function lampWall(b: Bag, x: number, y: number, z: number, ry: number): void {
   pool(b, lx, y + 0.02 - 0.0, lz, 4);
 }
 
-function pool(b: Bag, x: number, y: number, z: number, r: number): void {
+export function pool(b: Bag, x: number, y: number, z: number, r: number): void {
   const acc = b.acc(lightPoolMaterial());
   const c = new THREE.Color(1.0, 0.72, 0.4).multiplyScalar(0.55);
   const A = new THREE.Vector3(x - r, y, z - r);
@@ -239,6 +307,7 @@ function pool(b: Bag, x: number, y: number, z: number, r: number): void {
 }
 
 function trafficLight(b: Bag, x: number, y: number, z: number, ry: number): void {
+  if (blockedAt(x, z)) return;
   const p = b.props;
   const m = metalMaterial();
   p.cyl(x, y, z, 0.07, 3.2, 0x2b2f33, 6, m);
@@ -253,6 +322,7 @@ function trafficLight(b: Bag, x: number, y: number, z: number, ry: number): void
 }
 
 function bench(b: Bag, x: number, y: number, z: number, ry: number): void {
+  if (blockedAt(x, z)) return;
   const p = b.props;
   const m = propMaterial(true);
   const wood = 0x7a5232;
@@ -266,6 +336,7 @@ function bench(b: Bag, x: number, y: number, z: number, ry: number): void {
 }
 
 function bin(b: Bag, x: number, y: number, z: number): void {
+  if (blockedAt(x, z)) return;
   const m = propMaterial(true);
   b.props.cyl(x, y, z, 0.22, 0.85, 0x3d5a3a, 8, m);
   b.props.cyl(x, y + 0.85, z, 0.24, 0.06, 0x2b2b2b, 8, m);
@@ -273,6 +344,7 @@ function bin(b: Bag, x: number, y: number, z: number): void {
 
 /** Recycling containers in a row at the kerb (yellow, blue, green igloo, grey). */
 function containers(b: Bag, x: number, y: number, z: number, ry: number): void {
+  if (blockedAt(x, z)) return;
   const m = propMaterial(true);
   const cols = [0x6b6e70, 0xe3b81f, 0x2b62a8, 0x3c7a3a];
   b.props.push(new THREE.Matrix4().makeRotationY(ry).setPosition(x, y, z));
@@ -288,6 +360,7 @@ function containers(b: Bag, x: number, y: number, z: number, ry: number): void {
 }
 
 function busShelter(b: Bag, x: number, y: number, z: number, ry: number, name: string): void {
+  if (blockedAt(x, z)) return;
   const p = b.props;
   const m = metalMaterial();
   p.push(new THREE.Matrix4().makeRotationY(ry).setPosition(x, y, z));
@@ -306,6 +379,7 @@ function busShelter(b: Bag, x: number, y: number, z: number, ry: number, name: s
 }
 
 function bollard(b: Bag, x: number, y: number, z: number): void {
+  if (blockedAt(x, z)) return;
   b.props.cyl(x, y, z, 0.09, 0.9, 0x2a2c2e, 6, propMaterial(true));
   b.props.cyl(x, y + 0.75, z, 0.095, 0.05, 0xd9b24a, 6, propMaterial(true));
 }
@@ -341,7 +415,12 @@ export type DressingPass = "road" | "trees" | "furniture" | "relief" | "relief2"
 export function buildChunkDressing(ctx: CityCtx, bag: Bag, ts: TS, chunk: number, s0: number, s1: number, edges: EdgeSample[], ground: GroundLayer, pass: DressingPass): void {
   if (pass === "trees") return; // trees are one permanent, single-LOD layer in the flat style
   if (pass === "furniture") {
-    chunkDetail(ctx, bag, ts, chunk, s0, s1, edges, ground);
+    guard = (x, z) => placementBlocked(ctx, ground, x, z) !== null;
+    try {
+      chunkDetail(ctx, bag, ts, chunk, s0, s1, edges, ground);
+    } finally {
+      guard = null;
+    }
     return;
   }
   if (pass === "relief" || pass === "relief2") {

@@ -72,7 +72,26 @@ export interface Course {
   readonly turns: readonly Turn[];
   /** The underlying track model (the engine maps track space to the world with it). */
   readonly track: Track;
+  /**
+   * Building walls beside the route, per metre of the lap (built on first use, then free): see
+   * `wallsBetween`.
+   */
+  walls(): Walls;
 }
+
+/**
+ * The nearest building wall on each side of the route centreline, per metre of the lap (bin i
+ * covers [i, i + 1) m): `left[i]` ≤ 0 (lateral of the nearest wall on the runner's left), `right[i]`
+ * ≥ 0; ±WALL_FAR when there is none within WALL_FAR. Inside passages (tunnels, arches) the
+ * section's clearance stands in for the walls of the building the route runs through.
+ */
+export interface Walls {
+  readonly left: Float32Array;
+  readonly right: Float32Array;
+}
+
+/** Walls further than this from the centreline are ignored. */
+export const WALL_FAR = 30;
 
 /** Shapes the reworked city core may provide (read defensively: older cores lack them). */
 interface CoreExtras {
@@ -208,6 +227,7 @@ export function buildCourse(city: CityData, track: Track): Course {
     if (!list) grid.set(key, (list = []));
     list.push(i);
   }
+  let walls: Walls | null = null;
   const trees: { s: number; lateral: number; r: number }[] = [];
   const T = city.trees;
   for (let i = 0; i + 4 < T.length; i += 5) {
@@ -275,7 +295,66 @@ export function buildCourse(city: CityData, track: Track): Course {
     transitions: buildTransitions(track),
     turns: buildTurns(track),
     track,
+    walls: () => (walls ??= buildWalls(city, track)),
   };
+}
+
+/**
+ * The city core's building walls (track.walls, src/city/walls.ts); inside tunnel sections the
+ * section's clearance stands in for the building the route runs through.
+ */
+function buildWalls(city: CityData, track: Track): Walls {
+  const left = Float32Array.from(track.walls.left);
+  const right = Float32Array.from(track.walls.right);
+  const n = left.length;
+  // Buildings the route runs through or under (arcades, overhangs: meta.passesThrough) are not
+  // walls for the camera: such a bin takes the nearest ordinary wall within 15 m on that side.
+  const through = new Set(city.meta.passesThrough.map((p) => p.id));
+  const fill = (out: Float32Array, src: Float32Array, who: Int32Array, far: number): void => {
+    const flagged = (i: number): boolean => {
+      const b = who[i] ?? -1;
+      return b >= 0 && through.has(city.buildings[b]?.id ?? "");
+    };
+    for (let i = 0; i < n; i++) {
+      if (!flagged(i)) continue;
+      let v = far;
+      for (let d = 1; d <= 15; d++) {
+        for (const j of [i - d, i + d]) {
+          const k = ((j % n) + n) % n;
+          if (!flagged(k)) v = far < 0 ? Math.max(v, src[k] ?? far) : Math.min(v, src[k] ?? far);
+        }
+        if (v !== far) break;
+      }
+      out[i] = v;
+    }
+  };
+  fill(left, track.walls.left, track.walls.leftBuilding, -WALL_FAR);
+  fill(right, track.walls.right, track.walls.rightBuilding, WALL_FAR);
+  for (const sec of city.sections) {
+    if (!sec.tunnel) continue;
+    const half = (sec.clearance ?? sec.facadeWidth ?? sec.width) / 2;
+    for (let i = Math.floor(sec.fromS); i < Math.ceil(sec.toS) && i < n; i++) {
+      left[i] = Math.max(left[i] ?? -WALL_FAR, -half);
+      right[i] = Math.min(right[i] ?? WALL_FAR, half);
+    }
+  }
+  return { left, right };
+}
+
+/** The tightest walls (left ≤ 0 ≤ right, track lateral) over the route between s0 and s1 (any lap). */
+export function wallsBetween(walls: Walls, lapLength: number, s0: number, s1: number, out: { left: number; right: number }): { left: number; right: number } {
+  let l = -WALL_FAR;
+  let r = WALL_FAR;
+  const n = walls.left.length;
+  for (let s = Math.floor(s0); s <= Math.floor(s1); s++) {
+    const i = ((s % lapLength) + lapLength) % lapLength;
+    const bin = Math.min(n - 1, Math.floor(i));
+    l = Math.max(l, walls.left[bin] ?? -WALL_FAR);
+    r = Math.min(r, walls.right[bin] ?? WALL_FAR);
+  }
+  out.left = l;
+  out.right = r;
+  return out;
 }
 
 let current: Course | null = null;
