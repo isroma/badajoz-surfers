@@ -1,11 +1,13 @@
 /**
- * Pickups: the golden "bellota" (acorn) coin, the four power-ups inside glowing halos, and the
- * letter tiles of BADAJOZ. Geometry and materials are shared; each pickup is 1-4 draw calls.
+ * Pickups: the golden "bellota" (acorn) coin, the power-ups inside glowing halos (the "ciguena"
+ * one is the skinned stork from ./characters/stork in miniature, flapping), and the letter tiles of
+ * BADAJOZ. Geometry and materials are shared; each pickup is 1-4 draw calls.
  */
 import * as THREE from "three";
 import type { PickupKind, PickupMesh } from "../contracts";
 import { Builder, T, xf } from "./geom";
 import { glowTexture, letterMat, sparkleTexture } from "./text";
+import { storkIcon } from "./characters/stork";
 
 const GOLD = new THREE.MeshPhongMaterial({
   vertexColors: true,
@@ -110,30 +112,7 @@ function scooter(b: Builder): void {
   b.box(0, 0.2, -0.32, 0.05, 0.04, 0.03, 0xfff6d8, ITEM);
 }
 
-/** White stork standing on one red leg, wings with black tips, long red beak: the flight power-up. */
-function stork(b: Builder): void {
-  const white = 0xfbfbf8;
-  b.add(T.sphere(10, 7), xf(0, 0.02, 0.02, 0.15, 0.13, 0.24, -0.25, 0, 0), white, ITEM);
-  // folded wings with black flight feathers
-  for (const sx of [-1, 1]) {
-    b.add(T.sphere(8, 5), xf(sx * 0.1, 0.04, 0.06, 0.07, 0.1, 0.22, -0.2, 0, 0), white, ITEM);
-    b.add(T.box, xf(sx * 0.11, 0.0, 0.25, 0.05, 0.08, 0.2, -0.35, 0, 0), 0x111111, ITEM);
-  }
-  // neck, head, long red beak
-  b.beam([0, 0.08, -0.15], [0, 0.32, -0.2], 0.06, white, ITEM, 6);
-  b.sphere(0, 0.35, -0.21, 0.06, 0.06, 0.07, white, ITEM, 7, 5);
-  b.add(T.cone(6), xf(0, 0.33, -0.38, 0.025, 0.24, 0.025, -Math.PI / 2 - 0.2, 0, 0), 0xe8402a, ITEM);
-  b.sphere(0.035, 0.37, -0.25, 0.012, 0.012, 0.012, 0x111111, ITEM, 4, 3);
-  b.sphere(-0.035, 0.37, -0.25, 0.012, 0.012, 0.012, 0x111111, ITEM, 4, 3);
-  // long red legs
-  b.beam([0.04, -0.08, 0.02], [0.04, -0.36, 0.02], 0.022, 0xe8402a, ITEM, 4);
-  b.beam([-0.04, -0.08, 0.02], [-0.06, -0.22, -0.06], 0.022, 0xe8402a, ITEM, 4);
-  b.beam([-0.06, -0.22, -0.06], [-0.04, -0.3, 0.02], 0.022, 0xe8402a, ITEM, 4);
-  b.box(0.04, -0.37, -0.02, 0.06, 0.01, 0.1, 0xe8402a, ITEM);
-}
-
-const ITEM_BUILD: Record<"iman" | "zapatillas" | "jamon" | "patinete" | "ciguena", (b: Builder) => void> = {
-  ciguena: stork,
+const ITEM_BUILD: Record<"iman" | "zapatillas" | "jamon" | "patinete", (b: Builder) => void> = {
   iman: magnet,
   zapatillas: trainer,
   jamon: ham,
@@ -187,6 +166,7 @@ export function createPickup(kind: PickupKind, letter?: string): PickupMesh {
   root.add(spinner);
   let ring: THREE.Mesh | null = null;
   let sprite: THREE.Sprite | null = null;
+  let stork: ReturnType<typeof storkIcon> | null = null;
 
   if (kind === "bellota") {
     const mesh = new THREE.Mesh(cachedGeo("bellota", acorn), GOLD);
@@ -213,10 +193,15 @@ export function createPickup(kind: PickupKind, letter?: string): PickupMesh {
         b.quad(xf(0, 0, -0.071, 0.6, 0.6, 1, 0, Math.PI, 0), 0xffffff, ITEM);
       }), letterMat(ch));
       spinner.add(edge, faces);
+    } else if (kind === "ciguena") {
+      // the real (skinned) stork in miniature, flapping inside its halo
+      stork = storkIcon();
+      stork.mesh.scale.setScalar(0.47);
+      stork.mesh.position.set(0, -0.02, 0.06);
+      spinner.add(stork.mesh);
     } else {
       const mesh = new THREE.Mesh(cachedGeo(kind, ITEM_BUILD[kind]), ITEM);
       mesh.castShadow = true;
-      if (kind === "ciguena") mesh.scale.setScalar(1.3);
       spinner.add(mesh);
     }
     const h = halo(kind);
@@ -231,7 +216,8 @@ export function createPickup(kind: PickupKind, letter?: string): PickupMesh {
   return {
     root,
     update(dt, t) {
-      spinner.rotation.y += dt * (kind === "letra" ? 1.6 : 2.6);
+      spinner.rotation.y += dt * (kind === "letra" ? 1.6 : kind === "ciguena" ? 1.4 : 2.6);
+      if (stork) stork.update(t);
       spinner.position.y = Math.sin(t * 3 + phase) * 0.07;
       if (ring) {
         ring.rotation.y += dt * 1.3;

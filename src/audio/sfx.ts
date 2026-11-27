@@ -30,7 +30,8 @@ export type SfxName =
   | "flight"
   | "flightEnd"
   | "combo"
-  | "reward";
+  | "reward"
+  | "horn";
 
 type Ctx = BaseAudioContext;
 type Player = (ctx: Ctx, out: AudioNode, t: number, arg: number) => void;
@@ -91,6 +92,15 @@ export const SFX: Record<SfxName, Player> = {
       tone(c, o, t + 0.42, { type: "sawtooth", freq: n(m), gain: 0.03, hold: 0.25, decay: 0.5, lowpass: 3000 });
     }
     noise(c, o, t + 0.42, { gain: 0.05, decay: 0.5, filter: "highpass", freq: 6000 });
+  },
+  // An oncoming car's horn: two short "meep"s, each a buzzy major third through a car-horn lowpass.
+  horn: (c, o, t) => {
+    for (const [at, hold] of [[0, 0.11], [0.19, 0.2]] as const) {
+      for (const f of [415, 523]) {
+        tone(c, o, t + at, { type: "square", freq: f, gain: 0.05, attack: 0.008, hold, decay: 0.05, lowpass: 1900 });
+        tone(c, o, t + at, { type: "sawtooth", freq: f * 1.005, gain: 0.03, attack: 0.008, hold, decay: 0.05, lowpass: 1400 });
+      }
+    }
   },
   nearMiss: (c, o, t) => {
     noise(c, o, t, { gain: 0.1, attack: 0.01, decay: 0.16, filter: "bandpass", freq: 900, freqEnd: 4500, q: 3 });

@@ -66,5 +66,5 @@ export const SHARE_URL = "https://isroma.github.io/badajoz-surfers/";
 
 /** `zone` reads inside a sentence, e.g. "la Margen derecha" (see copy.ts). */
 export function shareText(distance: number, zone: string, lap: number): string {
-  return `He corrido ${formatMetres(distance)} por Badajoz en Simpa (hasta ${zone}, vuelta ${formatInt(lap)}) 🏃‍♂️🍺 ¿Me pillas? ${SHARE_URL}`;
+  return `He corrido ${formatMetres(distance)} en Badajoz Surfers (hasta ${zone}, vuelta ${formatInt(lap)}) 🏃‍♂️🍺 ¿Me pillas? ${SHARE_URL}`;
 }

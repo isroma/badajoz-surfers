@@ -12,11 +12,13 @@ import { button, h, setUiSound } from "./dom";
 import { Fx } from "./fx";
 import { Combo, comboStep, lapCaption, milestoneText, milestonesCrossed } from "./feel";
 import { Hud } from "./hud";
-import { shortZoneName } from "./minimap";
+import { shortZoneName, streetFromMap, zoneIndexOf } from "./minimap";
+import { loadShellCity, onCity } from "./city";
 import { copyText } from "./clipboard";
 import { GLYPH_CHECK, GLYPH_COPY, GLYPH_FLAG, GLYPH_MEDAL, GLYPH_RUN, GLYPH_SHIRT, ICON_BELLOTA, GLYPH_PAUSE, GLYPH_SOUND_OFF, GLYPH_SOUND_ON, ICON_PATINETE, ICON_WAITER, POWERUP_COLORS, powerupIcon } from "./icons";
 import {
   achievementsScreen,
+  creditsScreen,
   gameoverScreen,
   recordsScreen,
   howtoScreen,
@@ -54,6 +56,8 @@ interface OpenPanel {
 const SWALLOW = new Set(["Space", "Enter", "NumpadEnter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD", "KeyP", "Escape"]);
 
 export function createShell(root: HTMLElement): Shell {
+  // Real map, street names and credits; the shell works without it (stylised map, static credits).
+  void loadShellCity();
   const store = new MetaStore();
   const audio = new AudioEngine(store.settings);
   setUiSound((k) => audio.play(k));
@@ -82,6 +86,9 @@ export function createShell(root: HTMLElement): Shell {
   };
   let lastHud: HudSnapshot | null = null;
   let stingTimer = 0;
+  let lastHorn = -Infinity;
+  /** Street from the engine's `street` events (until HudSnapshot.street exists). */
+  let streetFromEvent: string | null | undefined;
   const combo = new Combo();
   let scoreRate = 0;
   /** A reward waiting a few frames so its score bonus can be measured. */
@@ -106,6 +113,7 @@ export function createShell(root: HTMLElement): Shell {
     store.beginRun();
     hud.reset();
     fx.clear();
+    streetFromEvent = undefined;
   };
 
   const statsFromSummary = (s: RunSummary): RunStats => ({
@@ -302,6 +310,8 @@ export function createShell(root: HTMLElement): Shell {
       panel = { id, el: achievementsScreen(ctx) };
     } else if (id === "records") {
       panel = { id, el: recordsScreen(ctx) };
+    } else if (id === "credits") {
+      panel = { id, el: creditsScreen(ctx) };
     } else {
       const done = (): void => closePanel();
       panel = { id, el: howtoScreen(done), done };
@@ -398,6 +408,13 @@ export function createShell(root: HTMLElement): Shell {
   };
 
   const handleEvent = (e: GameEvent): void => {
+    // Events newer than this shell's contracts: `street` ({ type: "street"; name: string }).
+    const loose = e as { type: string; name?: unknown };
+    if (loose.type === "street") {
+      streetFromEvent = typeof loose.name === "string" ? loose.name : null;
+      hud.setStreet(streetFromEvent);
+      return;
+    }
     switch (e.type) {
       case "state":
         if (e.state !== state) applyState(e.state);
@@ -491,6 +508,16 @@ export function createShell(root: HTMLElement): Shell {
         checkMissions();
         break;
       }
+      case "horn": {
+        // One honk per oncoming vehicle is plenty; a queue of them would be noise.
+        const now = performance.now();
+        if (now - lastHorn > 1400) {
+          lastHorn = now;
+          audio.play("horn");
+          hud.horn();
+        }
+        break;
+      }
       case "stumble":
         audio.play("stumble");
         hud.stumble();
@@ -555,10 +582,19 @@ export function createShell(root: HTMLElement): Shell {
   };
   let lastFrameError = -Infinity;
 
+  /** HudSnapshot.street when the engine has it, else the last `street` event, else the map data. */
+  const currentStreet = (snap: HudSnapshot): string | null => {
+    const fromHud = (snap as { street?: unknown }).street;
+    if (typeof fromHud === "string" || fromHud === null) return fromHud;
+    if (streetFromEvent !== undefined) return streetFromEvent;
+    return streetFromMap(zoneIndexOf(snap.zone?.id ?? ""), fin(snap.zoneProgress));
+  };
+
   const tick = (t: number, snap: HudSnapshot): void => {
     const prevHud = lastHud;
     lastHud = snap;
     hud.render(snap);
+    hud.setStreet(currentStreet(snap));
     hud.comboAlive(combo.alive(performance.now()));
     if (prevHud && state === "playing") {
       // Typical score per frame, so a reward can be told apart from normal running.
@@ -570,7 +606,7 @@ export function createShell(root: HTMLElement): Shell {
         audio.play("reward");
         reward = null;
       }
-      const ms = run.active ? milestonesCrossed(prevHud.distance, snap.distance) : [];
+      const ms = run.active ? milestonesCrossed(prevHud.distance, snap.distance, 2000) : [];
       const m = ms[ms.length - 1];
       if (m !== undefined) {
         const txt = milestoneText(m);
@@ -633,6 +669,12 @@ export function createShell(root: HTMLElement): Shell {
   };
 
   applyState("menu");
+  // The real map arrives after the first screens: redraw what shows a map.
+  onCity(() => {
+    hud.refreshMap();
+    if (state === "paused" || state === "gameover") renderBase();
+    if (panel?.id === "credits") openPanel("credits");
+  });
 
   return {
     gameOptions: store.gameOptions,

@@ -105,13 +105,37 @@ export interface AchievementDef {
   check(life: Lifetime, extra: AchievementExtra): boolean;
 }
 
+/**
+ * Places on the real lap, as distances from the start of a run (s on lap 1; runs start at s = 0
+ * on the right bank of Puente Real). From public/data/city.json; progress.test.ts checks them.
+ */
+export const ROUTE_MARKS = {
+  /** End of the Puente Real deck. */
+  puenteReal: 966,
+  /** The roundabout at the south-east end of Puente Real: the lap's first. */
+  primeraRotonda: 1012,
+  /** End of Avenida Sinforiano Madroñero. */
+  sinforiano: 2330,
+  /** Through the Arco del Peso passage at Plaza Alta. */
+  arcoDelPeso: 4914,
+  /** Right-bank end of the Puente de Palmas. */
+  puentePalmas: 6287,
+} as const;
+
+const reached = (mark: number) => (l: Lifetime): boolean => l.bestRun.distance >= mark;
+
 export const ACHIEVEMENTS: readonly AchievementDef[] = [
   { id: "primer-simpa", name: "Primer simpa", description: "Termina tu primera carrera", reward: 50, check: (l) => l.totals.runs >= 1 },
-  { id: "plaza-alta", name: "Subiendo a la Plaza Alta", description: "Llega al Casco Antiguo", reward: 100, check: (l) => l.bestZones >= 3 },
-  { id: "turista", name: "Turista", description: "Llega a cada una de las seis zonas", reward: 200, check: (l) => (l.zonesSeen & ALL_ZONES_MASK) === ALL_ZONES_MASK },
-  { id: "vuelta-al-ruedo", name: "Vuelta al ruedo", description: "Completa una vuelta a Badajoz", reward: 300, check: (l) => l.bestZones >= 6 },
-  { id: "ni-el-camarero", name: "Ni el camarero te sigue", description: "Da dos vueltas en una sola carrera", reward: 600, check: (l) => l.bestZones >= 12 },
-  { id: "simpa-profesional", name: "Simpa profesional", description: `Corre ${formatMetres(10000)} en una carrera`, reward: 1000, check: (l) => l.bestRun.distance >= 10000 },
+  { id: "puente-real", name: "Adiós, Puente Real", description: "Cruza el Puente Real", reward: 75, check: reached(ROUTE_MARKS.puenteReal) },
+  { id: "primera-rotonda", name: "La primera rotonda", description: "Llega a la primera rotonda", reward: 75, check: reached(ROUTE_MARKS.primeraRotonda) },
+  { id: "sinforiano", name: "Sinforiano de punta a punta", description: "Recorre Sinforiano Madroñero entera", reward: 200, check: reached(ROUTE_MARKS.sinforiano) },
+  { id: "plaza-alta", name: "Subiendo a la Plaza Alta", description: "Sube hasta la Plaza Alta", reward: 300, check: (l) => l.bestZones >= 4 },
+  { id: "arco-del-peso", name: "Bajo el Arco del Peso", description: "Pasa bajo el Arco del Peso", reward: 300, check: reached(ROUTE_MARKS.arcoDelPeso) },
+  { id: "puente-palmas", name: "Por el Puente de Palmas", description: "Cruza el Puente de Palmas", reward: 400, check: reached(ROUTE_MARKS.puentePalmas) },
+  { id: "turista", name: "Turista", description: "Llega a cada una de las seis zonas", reward: 400, check: (l) => (l.zonesSeen & ALL_ZONES_MASK) === ALL_ZONES_MASK },
+  { id: "vuelta-al-ruedo", name: "Vuelta al ruedo", description: `Da una vuelta completa a Badajoz (${formatMetres(8169)})`, reward: 1500, check: (l) => l.bestZones >= 6 },
+  { id: "ni-el-camarero", name: "Ni el camarero te sigue", description: "Da dos vueltas en una sola carrera", reward: 4000, check: (l) => l.bestZones >= 12 },
+  { id: "simpa-profesional", name: "Simpa profesional", description: `Corre ${formatMetres(5000)} en una carrera`, reward: 800, check: (l) => l.bestRun.distance >= 5000 },
   { id: "maraton", name: "Maratón del Guadiana", description: `Corre ${formatMetres(42195)} en total`, reward: 500, check: (l) => l.totals.distance >= 42195 },
   { id: "ciguena", name: "Cigüeña", description: `Corre ${formatMetres(500)} por los techos en total`, reward: 250, check: (l) => l.totals.roofMetres >= 500 },
   { id: "pacense-de-pro", name: "Pacense de pro", description: "Completa BADAJOZ 5 veces", reward: 400, check: (l) => l.totals.words >= 5 },
@@ -162,8 +186,7 @@ const DAILY_POOL: readonly { id: string; tier: number; reward: number }[] = [
   { id: "roofs", tier: 1, reward: 400 },
   { id: "near-misses", tier: 1, reward: 350 },
   { id: "words", tier: 1, reward: 350 },
-  { id: "zone-reach", tier: 2, reward: 450 },
-  { id: "laps", tier: 0, reward: 600 },
+  { id: "zone-reach", tier: 1, reward: 450 },
   { id: "powerups", tier: 1, reward: 300 },
   { id: "score-run", tier: 2, reward: 500 },
   { id: "letters", tier: 1, reward: 300 },

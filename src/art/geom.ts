@@ -420,6 +420,8 @@ export function instance(template: THREE.Group): THREE.Group {
   for (const child of template.children) {
     if (child instanceof THREE.Mesh) {
       const m = new THREE.Mesh(child.geometry, child.material);
+      m.name = child.name;
+      m.onBeforeRender = child.onBeforeRender;
       m.castShadow = child.castShadow;
       m.receiveShadow = child.receiveShadow;
       m.position.copy(child.position);

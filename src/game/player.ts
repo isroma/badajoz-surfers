@@ -1,16 +1,21 @@
 /**
  * Runner physics and control state. Pure, no three.js: the same code drives the game, the
  * solvability tests and the autopilot's look-ahead.
+ *
+ * Lanes are indices into the lane layout at the runner's distance (see lanes.ts). When the layout
+ * changes under the runner (a street with more or fewer lanes), the runner eases to the nearest
+ * lane of the new layout.
  */
-import { laneX, type Lane } from "../contracts";
+import { TRANSITION_LENGTH } from "../city/lanes";
 import type { Aabb } from "./collision";
+import { centreLane, laneKind, laneOffset, layoutAt, remapLane, type Flow, type LaneKind, type LaneLayout } from "./lanes";
 import {
   COYOTE_TIME,
   FAST_FALL_SPEED,
-  GRAVITY,
   JUMP_BUFFER_TIME,
   JUMP_VELOCITY,
   LANE_CHANGE_TIME,
+  LANE_OVERSHOOT,
   MAX_FALL_SPEED,
   ROLL_HEIGHT,
   ROLL_TIME,
@@ -18,6 +23,7 @@ import {
   RUNNER_HALF_WIDTH,
   STAND_HEIGHT,
   SUPER_JUMP_VELOCITY,
+  gravityFor,
 } from "./tuning";
 
 export type PlayerAction = "left" | "right" | "jump" | "roll";
@@ -30,6 +36,8 @@ export interface SurfaceHit {
 
 /** What the physics needs to know about the world (implemented by BoxSet). */
 export interface PlayerWorld {
+  /** Lane layout at a distance. */
+  layout(p: number): LaneLayout;
   /** Called after the runner moved forward from `pPrev` to `p` this tick. */
   prepare(pPrev: number, p: number): void;
   surface(x: number, p: number, feetY: number): SurfaceHit;
@@ -41,13 +49,20 @@ export interface PlayerState {
   p: number;
   speed: number;
   x: number;
-  /** Target lane. */
-  lane: Lane;
+  /** Target lane (index into the layout). */
+  lane: number;
+  /** Lateral centre of the target lane when it was chosen (detects layout changes). */
+  targetX: number;
   /** Lane before the current/last lane change (a side stumble bounces back to it). */
-  prevLane: Lane;
+  prevLane: number;
   fromX: number;
   /** Lane change progress 0..1 (1 = done). */
   laneT: number;
+  /** Duration (s) of the current lane change (longer across wide gaps and layout changes). */
+  laneDur: number;
+  /** Kind and flow of the target lane (to stay on the same side when the street changes). */
+  laneKind: LaneKind;
+  laneFlow: Flow;
   /** One queued lane change: -1, 0 or 1. */
   queuedDir: number;
   y: number;
@@ -68,6 +83,8 @@ export interface PlayerState {
    */
   carried: boolean;
   flightY: number;
+  /** Seconds since the feet left a surface (0 while grounded). */
+  air: number;
   /** Previous tick values for swept collision. */
   pp: number;
   px: number;
@@ -79,18 +96,24 @@ export interface StepEvents {
   jumped: boolean;
   superJumped: boolean;
   landed: boolean;
+  /** Landing speed (m/s, positive) when `landed`. */
+  impact: number;
   rolled: boolean;
   laneChanged: boolean;
   /** Tried to change lanes past the edge of the road. */
   edgeBump: boolean;
+  /** The lane layout changed and the runner is easing to the nearest lane. */
+  laneRemapped: boolean;
 }
 
-export function createPlayer(p = 0, lane: Lane = 0): PlayerState {
-  const x = laneX(lane);
+export function createPlayer(p = 0, lane?: number, layout: LaneLayout = layoutAt(p)): PlayerState {
+  const l = lane ?? centreLane(layout);
+  const x = laneOffset(layout, l);
   return {
-    p, speed: 0, x, lane, prevLane: lane, fromX: x, laneT: 1, queuedDir: 0,
+    p, speed: 0, x, lane: l, targetX: x, prevLane: l, fromX: x, laneT: 1, laneDur: LANE_CHANGE_TIME, queuedDir: 0,
+    laneKind: laneKind(layout, l), laneFlow: layout.flow[l] ?? 0,
     y: 0, vy: 0, grounded: true, supportId: -1, coyote: 0, jumpBuffer: 0, roll: 0, rollQueued: false,
-    superJump: false, carried: false, flightY: 0, pp: p, px: x, py: 0, prolling: false,
+    superJump: false, carried: false, flightY: 0, air: 0, pp: p, px: x, py: 0, prolling: false,
   };
 }
 
@@ -103,23 +126,47 @@ export function copyPlayer(into: PlayerState, from: PlayerState): PlayerState {
 }
 
 export function createEvents(): StepEvents {
-  return { jumped: false, superJumped: false, landed: false, rolled: false, laneChanged: false, edgeBump: false };
+  return {
+    jumped: false, superJumped: false, landed: false, impact: 0, rolled: false, laneChanged: false, edgeBump: false,
+    laneRemapped: false,
+  };
 }
 
-const clampLane = (lane: number): Lane => (lane <= -1 ? -1 : lane >= 1 ? 1 : 0);
-/** Ease-out cubic: snappy start, soft arrival. */
-const ease = (t: number): number => 1 - (1 - t) * (1 - t) * (1 - t);
+/** Ease-out-back: fast start, a tiny overshoot, settles exactly on 1. */
+export function laneEase(t: number): number {
+  const u = 1 - t;
+  return 1 - (LANE_OVERSHOOT + 1) * u * u * u + LANE_OVERSHOOT * u * u;
+}
 
-function startLaneChange(s: PlayerState, dir: number, ev: StepEvents): void {
-  const target = clampLane(s.lane + dir);
-  if (target === s.lane) {
+/** Lane-change duration for a lateral distance: 0.125 s up to 3.5 m, ~0.2 s across a 6.3 m gap. */
+export function laneChangeTime(distance: number): number {
+  return LANE_CHANGE_TIME + Math.min(0.09, Math.max(0, (Math.abs(distance) - 3.5) * (0.075 / 2.8)));
+}
+
+/** Gap (m) wider than this between neighbouring lanes is a non-runnable median (a vault across it). */
+export const MEDIAN_GAP = 4.2;
+
+function setTarget(s: PlayerState, layout: LaneLayout, lane: number): void {
+  s.lane = lane;
+  s.targetX = laneOffset(layout, lane);
+  s.laneKind = laneKind(layout, lane);
+  s.laneFlow = layout.flow[lane] ?? 0;
+}
+
+function startLaneChange(s: PlayerState, dir: number, layout: LaneLayout, ev: StepEvents): void {
+  const n = layout.offsets.length;
+  const target = Math.max(0, Math.min(n - 1, s.lane + dir));
+  // Carried by the stork, no hops across a non-runnable median (bridge cables live there).
+  const across = Math.abs(laneOffset(layout, target) - laneOffset(layout, s.lane)) > MEDIAN_GAP;
+  if (target === s.lane || (s.carried && across)) {
     ev.edgeBump = true;
     return;
   }
   s.prevLane = s.lane;
-  s.lane = target;
+  setTarget(s, layout, target);
   s.fromX = s.x;
   s.laneT = 0;
+  s.laneDur = laneChangeTime(s.targetX - s.x);
   ev.laneChanged = true;
 }
 
@@ -139,12 +186,13 @@ export function isChangingLane(s: PlayerState): boolean {
 }
 
 /** A side stumble: go back to the lane we came from. */
-export function bounceBack(s: PlayerState): void {
-  const back = s.prevLane;
+export function bounceBack(s: PlayerState, layout: LaneLayout = layoutAt(s.p)): void {
+  const back = Math.max(0, Math.min(layout.offsets.length - 1, s.prevLane));
   s.prevLane = s.lane;
-  s.lane = back;
+  setTarget(s, layout, back);
   s.fromX = s.x;
   s.laneT = 0;
+  s.laneDur = laneChangeTime(s.targetX - s.x);
   s.queuedDir = 0;
 }
 
@@ -168,16 +216,39 @@ export function prevRunnerBox(s: PlayerState, out: Aabb): Aabb {
   return out;
 }
 
+/** Integrate one tick of the asymmetric jump gravity (exact for the gravity at the tick start). */
+function fall(s: PlayerState, dt: number): void {
+  const g = gravityFor(s.vy);
+  s.y += s.vy * dt - 0.5 * g * dt * dt;
+  s.vy = Math.max(s.vy - g * dt, -MAX_FALL_SPEED);
+}
+
 /**
  * Advance the runner by one fixed tick. `s.speed` must be set by the caller. Applies `actions`
  * (key presses since the last tick, in order). Fills `ev` (reset first).
  */
 export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt: number, world: PlayerWorld, ev: StepEvents): void {
-  ev.jumped = ev.superJumped = ev.landed = ev.rolled = ev.laneChanged = ev.edgeBump = false;
+  ev.jumped = ev.superJumped = ev.landed = ev.rolled = ev.laneChanged = ev.edgeBump = ev.laneRemapped = false;
+  ev.impact = 0;
   s.pp = s.p;
   s.px = s.x;
   s.py = s.y;
   s.prolling = s.roll > 0;
+
+  // The street changed under us (more or fewer lanes, other widths): ease to the nearest lane of
+  // the same kind and flow, over the layout transition (TRANSITION_LENGTH of running).
+  const layout = world.layout(s.p);
+  const n = layout.offsets.length;
+  if (s.lane >= n || laneOffset(layout, s.lane) !== s.targetX || laneKind(layout, s.lane) !== s.laneKind) {
+    const lane = remapLane(layout, s.targetX, s.laneKind, s.laneFlow);
+    s.prevLane = lane;
+    setTarget(s, layout, lane);
+    s.fromX = s.x;
+    s.laneT = Math.abs(s.targetX - s.x) < 1e-6 ? 1 : 0;
+    s.laneDur = Math.max(laneChangeTime(s.targetX - s.x), TRANSITION_LENGTH / Math.max(4, s.speed));
+    s.queuedDir = 0;
+    ev.laneRemapped = true;
+  }
 
   for (const action of actions) {
     switch (action) {
@@ -185,7 +256,7 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
       case "right": {
         const dir = action === "left" ? -1 : 1;
         if (s.laneT < 1) s.queuedDir = dir;
-        else startLaneChange(s, dir, ev);
+        else startLaneChange(s, dir, layout, ev);
         break;
       }
       case "jump":
@@ -222,13 +293,15 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
 
   // Lanes.
   if (s.laneT < 1) {
-    s.laneT = Math.min(1, s.laneT + dt / LANE_CHANGE_TIME);
-    const target = laneX(s.lane);
-    s.x = s.fromX + (target - s.fromX) * ease(s.laneT);
-    if (s.laneT >= 1 && s.queuedDir !== 0) {
-      const dir = s.queuedDir;
-      s.queuedDir = 0;
-      startLaneChange(s, dir, ev);
+    s.laneT = Math.min(1, s.laneT + dt / s.laneDur);
+    s.x = s.fromX + (s.targetX - s.fromX) * laneEase(s.laneT);
+    if (s.laneT >= 1) {
+      s.x = s.targetX;
+      if (s.queuedDir !== 0) {
+        const dir = s.queuedDir;
+        s.queuedDir = 0;
+        startLaneChange(s, dir, layout, ev);
+      }
     }
   }
 
@@ -245,21 +318,24 @@ export function stepPlayer(s: PlayerState, actions: readonly PlayerAction[], dt:
     s.roll = 0;
     s.rollQueued = false;
     s.coyote = 0;
+    s.air = 0;
     return;
   }
   if (!s.grounded) {
-    s.vy = Math.max(s.vy - GRAVITY * dt, -MAX_FALL_SPEED);
     const prevY = s.y;
-    s.y += s.vy * dt;
+    fall(s, dt);
+    s.air += dt;
     s.coyote = Math.max(0, s.coyote - dt);
     const hit = world.surface(s.x, s.p, Math.max(prevY, s.y));
     if (s.y <= hit.height) {
       if (s.vy <= 0) {
+        ev.impact = -s.vy;
         s.y = hit.height;
         s.vy = 0;
         s.grounded = true;
         s.supportId = hit.id;
         s.coyote = 0;
+        s.air = 0;
         ev.landed = true;
         if (s.rollQueued) startRoll(s, ev);
       } else {

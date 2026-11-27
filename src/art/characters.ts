@@ -1,640 +1,462 @@
 /**
  * The two characters: the runner (who left without paying) and the angry waiter.
- * Chunky stylised figures with a joint hierarchy animated in code. Each body part is one merged,
- * vertex-coloured mesh whose geometry is shared by every instance of that character.
+ *
+ * Each is one SkinnedMesh (smooth sculpted body and clothes on a 31-bone rig, procedural skin
+ * weights) plus a small face mesh on the head bone whose expressions are morph targets. Geometry is
+ * shared by every instance of a look; bones, springs and blend state are per instance.
+ * Animation: authored procedural clips cross-faded in `update`, feet planted by solving the pelvis
+ * height, a landing absorb, blinking/saccades and spring-driven secondary motion (hood, strings,
+ * apron, scarf, plumes). The runner also owns the patinete and the carrying stork.
  */
 import * as THREE from "three";
 import type { Actor, ActorAnim, OutfitId } from "../contracts";
-import { buildOutfitPart, type BodyPart } from "./outfits";
-import { buildStorkBody, buildStorkWing } from "./stork";
-import { Builder, T, instance, xf } from "./geom";
-import { GLOW, SKIN } from "./materials";
+import { runnerLook, waiterLook, type Look, type SpringDef } from "./outfits";
+import { CHAR } from "./characters/material";
+import { B, instantiate } from "./characters/rig";
+import { FACE_CHANNELS, FX, faceGeometry } from "./characters/face";
+import {
+  FACE, GMASK, GROUND, HX, HY, HZ, LIFT, NCH, ROLLK, SPIN, addLanding, evalClip, smooth, type Clip, type ClipCtx,
+} from "./characters/anim";
+import { StorkRig, createStork } from "./characters/stork";
+import { HUMAN_BONES } from "./outfits";
+import { P, STORK } from "./proportions";
+import { SkinBuilder, ellipsoid, loft, tube, v3, type Ring } from "./characters/skin";
 
-// ---------------------------------------------------------------------------
-// Proportions (metres)
-// ---------------------------------------------------------------------------
-
-import { FOREARM, HIP_X, HIP_Y, SHIN, SHOULDER_X, SPIN_Y, THIGH, TORSO, UPPER_ARM } from "./proportions";
+export { createStork };
 
 type Kind = "runner" | "waiter";
 
-interface Palette {
-  skin: number;
-  top: number;
-  topDark: number;
-  sleeve: number;
-  bottom: number;
-  shoe: number;
-  sole: number;
-  hair: number;
+/** Dev-only hooks (gallery contact sheets): reset an actor to a deterministic state. */
+export interface ActorDebug {
+  reset(time: number, phase: number): void;
+  triangles(): number;
 }
-
-const RUNNER: Palette = {
-  skin: 0xe0a77c,
-  top: 0xff6a13,
-  topDark: 0xd14f05,
-  sleeve: 0xff6a13,
-  bottom: 0x2f5d9b,
-  shoe: 0xf4f4f4,
-  sole: 0xf4f4f4,
-  hair: 0x3a2416,
-};
-
-const WAITER: Palette = {
-  skin: 0xe8b28e,
-  top: 0x1c1c22,
-  topDark: 0x111114,
-  sleeve: 0xfbfbf8,
-  bottom: 0x1b1b20,
-  shoe: 0x111111,
-  sole: 0x2a2a2a,
-  hair: 0x2b2420,
-};
+export const actorDebug = new WeakMap<Actor, ActorDebug>();
 
 // ---------------------------------------------------------------------------
-// Part geometry (cached per character kind)
+// shared geometry
 // ---------------------------------------------------------------------------
 
-type PartName = BodyPart | "apron" | "apronLow" | "scooter" | "storkBody" | "storkWing";
-const BODY: readonly string[] = ["pelvis", "torso", "head", "upperArmL", "upperArmR", "forearmL", "forearmR", "thigh", "shin"];
-
-const partCache = new Map<string, THREE.Group>();
-
-function part(kind: Kind, name: PartName, outfit: OutfitId = "clasico"): THREE.Group {
-  const dressed = kind === "runner" && outfit !== "clasico" && BODY.includes(name);
-  const key = `${kind}:${dressed ? outfit : "base"}:${name}`;
-  let tpl = partCache.get(key);
-  if (!tpl) {
-    const b = new Builder();
-    if (dressed) buildOutfitPart(b, outfit, name as BodyPart);
-    else if (name === "storkBody") buildStorkBody(b);
-    else if (name === "storkWing") buildStorkWing(b);
-    else buildPart(b, kind, name);
-    tpl = b.build(true);
-    partCache.set(key, tpl);
+const faceCache = new Map<Look, THREE.BufferGeometry>();
+function faceFor(look: Look): THREE.BufferGeometry {
+  let g = faceCache.get(look);
+  if (!g) {
+    g = faceGeometry(look.head);
+    faceCache.set(look, g);
   }
-  return instance(tpl);
-}
-
-function buildPart(b: Builder, kind: Kind, name: PartName): void {
-  const p = kind === "runner" ? RUNNER : WAITER;
-  const waiter = kind === "waiter";
-  switch (name) {
-    case "pelvis": {
-      // shorts / trousers seat, slightly wider than the hips
-      b.sphere(0, 0.02, 0, 0.21, 0.15, 0.15, p.bottom, SKIN, 10, 6);
-      if (!waiter) {
-        b.box(0, 0.1, 0, 0.36, 0.05, 0.25, 0x222222, SKIN); // waistband
-      } else {
-        b.box(0, 0.1, 0, 0.38, 0.06, 0.27, 0xf4f1ea, SKIN); // apron string
-      }
-      break;
-    }
-    case "torso": {
-      if (!waiter) {
-        // hoodie body
-        b.add(T.capsule(0.9, 4, 10), xf(0, 0.27, 0, 0.21, 0.17, 0.15), p.top, SKIN);
-        b.box(0, 0.08, -0.14, 0.24, 0.12, 0.04, p.topDark, SKIN); // kangaroo pocket
-        b.box(0, 0.03, 0, 0.4, 0.06, 0.29, p.topDark, SKIN); // hem
-        // hood bundled on the back: very readable from the chase cam
-        b.sphere(0, 0.47, 0.11, 0.15, 0.1, 0.09, p.topDark, SKIN, 10, 6);
-        // white back print: stripes
-        b.box(0, 0.3, 0.155, 0.3, 0.05, 0.01, 0xffffff, SKIN);
-        b.box(0, 0.22, 0.155, 0.3, 0.05, 0.01, 0x1e88e5, SKIN);
-        // drawstrings
-        b.box(-0.04, 0.38, -0.155, 0.015, 0.1, 0.01, 0xffffff, SKIN);
-        b.box(0.04, 0.38, -0.155, 0.015, 0.1, 0.01, 0xffffff, SKIN);
-      } else {
-        // white shirt under black waistcoat, slight belly
-        b.add(T.capsule(0.8, 4, 10), xf(0, 0.27, 0, 0.22, 0.18, 0.165), p.sleeve, SKIN);
-        b.add(T.capsule(0.75, 4, 10), xf(0, 0.24, 0.005, 0.227, 0.17, 0.168), p.top, SKIN);
-        b.sphere(0, 0.12, -0.04, 0.2, 0.15, 0.16, p.top, SKIN, 10, 6); // belly
-        // shirt V and buttons
-        b.add(T.box, xf(0, 0.4, -0.165, 0.07, 0.12, 0.02, 0, 0, Math.PI / 4), p.sleeve, SKIN);
-        for (let i = 0; i < 3; i++) b.box(0.035, 0.22 - i * 0.07, -0.2, 0.025, 0.025, 0.02, 0xd8c070, SKIN);
-        // bow tie
-        b.add(T.cone(4), xf(-0.045, 0.47, -0.17, 0.045, 0.06, 0.02, 0, 0, Math.PI / 2), 0x111111, SKIN);
-        b.add(T.cone(4), xf(0.045, 0.47, -0.17, 0.045, 0.06, 0.02, 0, 0, -Math.PI / 2), 0x111111, SKIN);
-        b.box(0, 0.47, -0.175, 0.03, 0.03, 0.02, 0x222222, SKIN);
-        // shirt collar
-        b.cyl(0, 0.46, 0, 0.09, 0.06, p.sleeve, 10, SKIN);
-      }
-      // neck
-      b.cyl(0, 0.46, 0, 0.065, 0.1, p.skin, 8, SKIN);
-      break;
-    }
-    case "head": {
-      // head centre at y = 0.2 above the neck joint
-      b.sphere(0, 0.2, 0, 0.19, 0.2, 0.185, p.skin, SKIN, 14, 10);
-      b.sphere(-0.185, 0.2, 0, 0.035, 0.05, 0.03, p.skin, SKIN, 6, 4);
-      b.sphere(0.185, 0.2, 0, 0.035, 0.05, 0.03, p.skin, SKIN, 6, 4);
-      // eyes and nose (face looks towards -Z)
-      b.sphere(-0.065, 0.22, -0.168, 0.028, 0.036, 0.015, 0x1a1a1a, SKIN, 6, 4);
-      b.sphere(0.065, 0.22, -0.168, 0.028, 0.036, 0.015, 0x1a1a1a, SKIN, 6, 4);
-      b.sphere(0, 0.17, -0.19, 0.03, 0.04, 0.03, p.skin, SKIN, 6, 4);
-      if (!waiter) {
-        // hair + cap (blue, peak forward)
-        b.add(T.dome(12, 5), xf(0, 0.22, 0.015, 0.2, 0.19, 0.2), p.hair, SKIN);
-        b.add(T.dome(12, 5), xf(0, 0.25, 0, 0.205, 0.16, 0.205), 0x1e88e5, SKIN);
-        b.box(0, 0.255, -0.24, 0.24, 0.025, 0.14, 0x1565c0, SKIN, 0); // peak
-        b.box(0, 0.26, 0.19, 0.1, 0.03, 0.03, 0xffffff, SKIN); // strap gap
-        b.sphere(0, 0.41, 0, 0.03, 0.02, 0.03, 0xffffff, SKIN, 6, 3);
-        // smile
-        b.box(0, 0.11, -0.172, 0.07, 0.015, 0.01, 0x8a3b2a, SKIN);
-        // eyebrows (worried)
-        b.add(T.box, xf(-0.065, 0.275, -0.17, 0.06, 0.014, 0.01, 0, 0, -0.25), p.hair, SKIN);
-        b.add(T.box, xf(0.065, 0.275, -0.17, 0.06, 0.014, 0.01, 0, 0, 0.25), p.hair, SKIN);
-      } else {
-        // bald crown, dark hair at the sides and back
-        b.add(T.sphere(12, 8), xf(0, 0.19, 0.03, 0.195, 0.14, 0.17), p.hair, SKIN);
-        b.sphere(0, 0.28, -0.01, 0.17, 0.13, 0.165, p.skin, SKIN, 12, 8);
-        // big moustache
-        b.add(T.capsule(1.2, 3, 8), xf(-0.05, 0.12, -0.185, 0.03, 0.03, 0.025, 0, 0, 1.25), 0x1d1712, SKIN);
-        b.add(T.capsule(1.2, 3, 8), xf(0.05, 0.12, -0.185, 0.03, 0.03, 0.025, 0, 0, -1.25), 0x1d1712, SKIN);
-        // angry eyebrows (V shape) and frown
-        b.add(T.box, xf(-0.065, 0.27, -0.172, 0.085, 0.028, 0.02, 0, 0, -0.45), 0x1d1712, SKIN);
-        b.add(T.box, xf(0.065, 0.27, -0.172, 0.085, 0.028, 0.02, 0, 0, 0.45), 0x1d1712, SKIN);
-        b.box(0, 0.07, -0.172, 0.06, 0.016, 0.01, 0x6b2a20, SKIN);
-        // red angry cheeks
-        b.sphere(-0.11, 0.16, -0.14, 0.035, 0.025, 0.02, 0xe0705a, SKIN, 6, 4);
-        b.sphere(0.11, 0.16, -0.14, 0.035, 0.025, 0.02, 0xe0705a, SKIN, 6, 4);
-      }
-      break;
-    }
-    case "upperArmL":
-    case "upperArmR": {
-      const sleeve = waiter ? p.sleeve : p.sleeve;
-      b.limb(0, 0.04, 0, 0.068, UPPER_ARM + 0.06, sleeve, SKIN);
-      if (!waiter) b.box(0, -0.06, 0.065, 0.02, 0.18, 0.01, 0xffffff, SKIN); // sleeve stripe
-      break;
-    }
-    case "forearmL":
-    case "forearmR": {
-      const left = name === "forearmL";
-      if (waiter) {
-        // rolled-up white sleeve then forearm skin
-        b.cyl(0, -0.09, 0, 0.068, 0.09, p.sleeve, 8, SKIN);
-        b.limb(0, 0, 0, 0.055, FOREARM - 0.05, p.skin, SKIN);
-      } else {
-        b.limb(0, 0.02, 0, 0.062, FOREARM - 0.05, p.sleeve, SKIN);
-        b.cyl(0, -FOREARM + 0.07, 0, 0.066, 0.05, p.topDark, 8, SKIN); // cuff
-      }
-      // hand (mitt)
-      b.sphere(0, -FOREARM, 0, 0.06, 0.075, 0.05, p.skin, SKIN, 8, 6);
-      if (waiter && !left) {
-        // the unpaid bill ("la cuenta"): a long white paper strip with printed lines
-        b.add(T.box, xf(0, -FOREARM - 0.13, -0.05, 0.12, 0.26, 0.008, 0.15, 0, 0), 0xfffdf2, SKIN);
-        for (let i = 0; i < 6; i++) {
-          b.add(T.box, xf(0, -FOREARM - 0.04 - i * 0.032, -0.06, 0.08, 0.008, 0.006, 0.15, 0, 0), 0x666666, SKIN);
-        }
-        b.add(T.box, xf(0.02, -FOREARM - 0.24, -0.07, 0.06, 0.016, 0.006, 0.15, 0, 0), 0xc62828, SKIN);
-      }
-      if (waiter && left) {
-        // tea towel draped over the forearm
-        b.add(T.box, xf(0, -0.12, 0, 0.16, 0.06, 0.16), 0xf6f1e6, SKIN);
-        b.add(T.box, xf(0.085, -0.24, 0, 0.012, 0.24, 0.15), 0xf6f1e6, SKIN);
-        b.add(T.box, xf(0.087, -0.27, 0, 0.012, 0.025, 0.152), 0xc62828, SKIN);
-        b.add(T.box, xf(0.087, -0.32, 0, 0.012, 0.025, 0.152), 0xc62828, SKIN);
-      }
-      break;
-    }
-    case "thigh": {
-      if (waiter) {
-        b.limb(0, 0.06, 0, 0.095, THIGH + 0.08, p.bottom, SKIN);
-      } else {
-        b.limb(0, 0.05, 0, 0.1, THIGH * 0.72, p.bottom, SKIN); // shorts leg
-        b.limb(0, -THIGH * 0.5, 0, 0.075, THIGH * 0.55, p.skin, SKIN);
-      }
-      break;
-    }
-    case "shin": {
-      if (waiter) {
-        b.limb(0, 0.03, 0, 0.082, SHIN - 0.08, p.bottom, SKIN);
-      } else {
-        b.limb(0, 0.03, 0, 0.068, SHIN - 0.12, p.skin, SKIN);
-        b.cyl(0, -SHIN + 0.09, 0, 0.066, 0.08, 0xffffff, 8, SKIN); // sock
-      }
-      // shoe: sole at y = -SHIN
-      b.add(T.capsule(1.4, 3, 8), xf(0, -SHIN + 0.06, -0.06, 0.075, 0.06, 0.065, Math.PI / 2, 0, 0), p.shoe, SKIN);
-      b.box(0, -SHIN + 0.015, -0.06, 0.13, 0.03, 0.26, p.sole, SKIN);
-      if (!waiter) b.box(0.076, -SHIN + 0.07, -0.05, 0.01, 0.04, 0.14, 0xe53935, SKIN); // swoosh-ish stripe
-      break;
-    }
-    case "apron": {
-      // long white bistro apron, upper panel (pivot at the waist front), slightly rounded
-      b.add(T.box, xf(0, -0.16, -0.02, 0.42, 0.34, 0.022), 0xf8f6ef, SKIN);
-      b.add(T.box, xf(0.1, -0.2, -0.035, 0.12, 0.1, 0.01), 0xeeeae0, SKIN); // pocket
-      break;
-    }
-    case "apronLow": {
-      // lower panel, hinged at the upper panel's hem; flares a little as it swings
-      b.add(T.box, xf(0, -0.15, -0.02, 0.44, 0.3, 0.02), 0xf8f6ef, SKIN);
-      b.box(0, -0.29, -0.02, 0.44, 0.025, 0.028, 0xe6e1d3, SKIN);
-      break;
-    }
-    case "scooter": {
-      // electric scooter (patinete), deck top at 0.18, stem at the front (-Z)
-      b.box(0, 0.12, 0.02, 0.2, 0.06, 0.86, 0x1d1f24, SKIN);
-      b.box(0, 0.155, 0.02, 0.17, 0.012, 0.8, 0x2e3138, SKIN); // grip tape
-      b.box(0.101, 0.12, 0.02, 0.005, 0.03, 0.7, 0x18c29c, SKIN);
-      b.box(-0.101, 0.12, 0.02, 0.005, 0.03, 0.7, 0x18c29c, SKIN);
-      b.add(T.cyl(10), xf(0, 0.1, -0.44, 0.1, 0.06, 0.1, 0, 0, Math.PI / 2), 0x111111, SKIN);
-      b.add(T.cyl(10), xf(0, 0.1, 0.46, 0.1, 0.06, 0.1, 0, 0, Math.PI / 2), 0x111111, SKIN);
-      b.add(T.cyl(8), xf(0, 0.1, -0.44, 0.05, 0.065, 0.05, 0, 0, Math.PI / 2), 0x18c29c, SKIN);
-      b.add(T.cyl(8), xf(0, 0.1, 0.46, 0.05, 0.065, 0.05, 0, 0, Math.PI / 2), 0x18c29c, SKIN);
-      b.beam([0, 0.12, -0.4], [0, 1.05, -0.5], 0.045, 0x2e3138, SKIN, 8);
-      b.beam([-0.26, 1.05, -0.5], [0.26, 1.05, -0.5], 0.035, 0x1d1f24, SKIN, 8);
-      b.add(T.cyl(8), xf(-0.27, 1.05, -0.5, 0.03, 0.12, 0.03, 0, 0, Math.PI / 2), 0x18c29c, SKIN);
-      b.add(T.cyl(8), xf(0.27, 1.05, -0.5, 0.03, 0.12, 0.03, 0, 0, Math.PI / 2), 0x18c29c, SKIN);
-      b.box(0, 0.88, -0.5, 0.08, 0.06, 0.05, 0xffffff, GLOW); // headlight
-      b.box(0, 0.2, 0.48, 0.12, 0.03, 0.04, 0xff2a2a, GLOW); // rear light
-      break;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Poses
-// ---------------------------------------------------------------------------
-
-const POSE_KEYS = [
-  "hipY", "hipZ", "lean", "twist", "spine", "spineZ", "headX", "headY",
-  "shLX", "shLZ", "shRX", "shRZ", "elL", "elR", "thLX", "thLZ", "thRX", "thRZ", "knL", "knR", "scale",
-] as const;
-type PoseKey = (typeof POSE_KEYS)[number];
-type Pose = Record<PoseKey, number>;
-
-function basePose(): Pose {
-  return {
-    hipY: HIP_Y, hipZ: 0, lean: 0, twist: 0, spine: 0, spineZ: 0, headX: 0, headY: 0,
-    shLX: 0, shLZ: 0.12, shRX: 0, shRZ: 0.12, elL: 0.2, elR: 0.2, thLX: 0, thLZ: 0.03, thRX: 0, thRZ: 0.03,
-    knL: 0.05, knR: 0.05, scale: 1,
-  };
-}
-
-const smooth = (x: number): number => {
-  const c = Math.min(1, Math.max(0, x));
-  return c * c * (3 - 2 * c);
-};
-
-function targetPose(kind: Kind, anim: ActorAnim | "ride" | "carried", t: number, phase: number, p: Pose): void {
-  Object.assign(p, basePose());
-  const waiter = kind === "waiter";
-  switch (anim) {
-    case "idle": {
-      const breath = Math.sin(t * 2.2);
-      p.spine = 0.04 + breath * 0.025;
-      p.hipY = HIP_Y - 0.02;
-      p.knL = p.knR = 0.12;
-      p.thLX = p.thRX = 0.06;
-      if (!waiter) {
-        // nervously looking back over the shoulder every few seconds
-        const cyc = t % 4.2;
-        const look = smooth((cyc - 1.6) / 0.35) * (1 - smooth((cyc - 3.0) / 0.4));
-        const side = Math.floor(t / 4.2) % 2 ? 1 : -1;
-        p.headY = side * 1.25 * look;
-        p.twist = side * 0.35 * look;
-        p.headX = -0.1 * look;
-        p.shLZ = p.shRZ = 0.16;
-        p.elL = p.elR = 0.35;
-        p.hipY += Math.sin(t * 5) * 0.004; // fidget bounce
-      } else {
-        // hands on hips, foot tapping, head shaking
-        p.shLZ = p.shRZ = 0.75;
-        p.shLX = p.shRX = -0.25;
-        p.elL = p.elR = 1.9;
-        p.headY = Math.sin(t * 3) * 0.25;
-        p.thRX = 0.15;
-        p.knR = 0.2 + Math.max(0, Math.sin(t * 7)) * 0.25;
-      }
-      break;
-    }
-    case "run":
-    case "stumble": {
-      const s = Math.sin(phase);
-      const c = Math.cos(phase);
-      p.thLX = 0.8 * s + 0.12;
-      p.thRX = -0.8 * s + 0.12;
-      p.knL = 0.35 + 1.15 * (0.5 + 0.5 * Math.cos(phase - 0.9));
-      p.knR = 0.35 + 1.15 * (0.5 - 0.5 * Math.cos(phase - 0.9));
-      p.hipY = HIP_Y - 0.06 + 0.07 * Math.abs(c);
-      p.lean = 0.16;
-      p.spine = 0.1;
-      p.twist = 0.14 * s;
-      p.headX = -0.1;
-      p.headY = -0.12 * s;
-      p.shLX = -0.85 * s + 0.1;
-      p.shRX = 0.85 * s + 0.1;
-      p.shLZ = p.shRZ = 0.16;
-      p.elL = 1.35 + 0.25 * s;
-      p.elR = 1.35 - 0.25 * s;
-      if (waiter) {
-        // the right arm is raised, shaking the bill
-        p.shRX = 2.75 + 0.18 * Math.sin(t * 17);
-        p.shRZ = 0.32 + 0.12 * Math.sin(t * 13);
-        p.elR = 0.35 + 0.2 * Math.sin(t * 17 + 1);
-        p.lean = 0.22;
-      }
-      if (anim === "stumble") {
-        p.spine = 0.55;
-        p.lean = 0.25;
-        p.headX = -0.35;
-        p.shLX = 1.6 + 1.1 * Math.sin(t * 14);
-        p.shRX = 1.6 + 1.1 * Math.sin(t * 14 + 2.4);
-        p.shLZ = 0.7 + 0.4 * Math.sin(t * 11);
-        p.shRZ = 0.7 + 0.4 * Math.sin(t * 11 + 1.3);
-        p.elL = p.elR = 0.5;
-        p.thLX = 0.5 * Math.sin(t * 12) + 0.2;
-        p.thRX = -0.5 * Math.sin(t * 12) + 0.2;
-        p.knL = p.knR = 0.7;
-        p.twist = 0.3 * Math.sin(t * 6);
-      }
-      break;
-    }
-    case "jump": {
-      p.thLX = 1.25;
-      p.knL = 1.9;
-      p.thRX = 0.35;
-      p.knR = 1.5;
-      p.shLX = 2.5;
-      p.shRX = waiter ? 2.9 : 2.3;
-      p.shLZ = p.shRZ = 0.45;
-      p.elL = p.elR = 0.35;
-      p.spine = 0.05;
-      p.headX = 0.15;
-      break;
-    }
-    case "fall": {
-      p.thLX = 0.45;
-      p.knL = 0.5;
-      p.thRX = -0.15;
-      p.knR = 0.7;
-      p.shLX = p.shRX = 0.6;
-      p.shLZ = p.shRZ = 1.25 + Math.sin(t * 9) * 0.12;
-      p.elL = p.elR = 0.4;
-      p.spine = -0.08;
-      p.headX = -0.2;
-      break;
-    }
-    case "roll": {
-      // tight forward tuck; the spin is applied separately around the ball centre
-      p.hipY = SPIN_Y - 0.05;
-      p.hipZ = 0.32;
-      p.lean = 0.5;
-      p.spine = 0.85;
-      p.headX = 0.7;
-      p.thLX = p.thRX = 2.35;
-      p.thLZ = p.thRZ = 0.15;
-      p.knL = p.knR = 2.55;
-      p.shLX = p.shRX = 1.25;
-      p.shLZ = p.shRZ = 0.25;
-      p.elL = p.elR = 1.9;
-      p.scale = 0.72;
-      break;
-    }
-    case "caught": {
-      p.shLX = p.shRX = 2.95;
-      p.shLZ = p.shRZ = 0.35;
-      p.elL = p.elR = 0.25;
-      p.headX = 0.35;
-      p.spine = 0.2;
-      p.knL = p.knR = 0.25;
-      p.thLX = p.thRX = 0.15;
-      p.hipY = HIP_Y - 0.05;
-      if (waiter) {
-        // waiter version: grabbing forward
-        p.shLX = p.shRX = 1.5;
-        p.shLZ = p.shRZ = 0.1;
-        p.elL = p.elR = 0.4;
-        p.headX = -0.1;
-        p.spine = 0.3;
-      }
-      break;
-    }
-    case "celebrate": {
-      const hop = Math.abs(Math.sin(t * 5.5));
-      p.hipY = HIP_Y + hop * 0.16;
-      p.knL = p.knR = 0.3 + (1 - hop) * 0.3;
-      p.thLX = p.thRX = 0.2 + (1 - hop) * 0.15;
-      p.headX = -0.25;
-      if (!waiter) {
-        p.shLX = 2.8 + Math.sin(t * 11) * 0.25;
-        p.shRX = 2.8 - Math.sin(t * 11) * 0.25;
-        p.shLZ = p.shRZ = 0.5;
-        p.elL = p.elR = 0.4;
-      } else {
-        // triumphant bill waving, left fist on the hip
-        p.shRX = 2.95;
-        p.shRZ = 0.35 + 0.45 * Math.sin(t * 9);
-        p.elR = 0.3;
-        p.shLZ = 0.8;
-        p.shLX = -0.25;
-        p.elL = 1.9;
-      }
-      break;
-    }
-    case "carried": {
-      // dangling under the stork: hands up gripping its legs, legs swinging happily
-      const w = t * 2.6;
-      p.shLX = 2.85 + Math.sin(w * 0.7) * 0.08;
-      p.shRX = 2.85 - Math.sin(w * 0.7) * 0.08;
-      p.shLZ = p.shRZ = 0.22;
-      p.elL = p.elR = 0.25;
-      p.thLX = 0.45 * Math.sin(w);
-      p.thRX = 0.45 * Math.sin(w + 2.4);
-      p.thLZ = p.thRZ = 0.08;
-      p.knL = 0.35 + 0.35 * (1 + Math.sin(w + 1));
-      p.knR = 0.35 + 0.35 * (1 + Math.sin(w + 3.4));
-      p.spine = -0.05;
-      p.headX = -0.25;
-      p.headY = Math.sin(t * 0.9) * 0.4;
-      p.twist = Math.sin(t * 1.3) * 0.12;
-      break;
-    }
-    case "ride": {
-      const sway = Math.sin(t * 2.5);
-      p.thLX = 0.22;
-      p.thRX = -0.25;
-      p.knL = 0.3;
-      p.knR = 0.35;
-      p.lean = 0.12;
-      p.spine = 0.08;
-      p.shLX = p.shRX = 1.05;
-      p.shLZ = p.shRZ = 0.2;
-      p.elL = p.elR = 0.55;
-      p.headX = -0.05;
-      p.twist = sway * 0.05;
-      p.spineZ = sway * 0.04;
-      p.hipY = HIP_Y - 0.03;
-      break;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Actor assembly
-// ---------------------------------------------------------------------------
-
-interface Rig {
-  lift: THREE.Group;
-  spin: THREE.Group;
-  hips: THREE.Group;
-  torso: THREE.Group;
-  head: THREE.Group;
-  shL: THREE.Group;
-  shR: THREE.Group;
-  elL: THREE.Group;
-  elR: THREE.Group;
-  thL: THREE.Group;
-  thR: THREE.Group;
-  knL: THREE.Group;
-  knR: THREE.Group;
-  apron: THREE.Group | null;
-  apronLow: THREE.Group | null;
-}
-
-function joint(parent: THREE.Object3D, x: number, y: number, z: number, ...meshes: THREE.Object3D[]): THREE.Group {
-  const g = new THREE.Group();
-  g.position.set(x, y, z);
-  for (const m of meshes) g.add(m);
-  parent.add(g);
   return g;
 }
 
-function buildRig(kind: Kind, root: THREE.Group, outfit: OutfitId): Rig {
-  const lift = joint(root, 0, 0, 0);
-  const spin = joint(lift, 0, SPIN_Y, 0);
-  const hips = joint(spin, 0, HIP_Y - SPIN_Y, 0, part(kind, "pelvis", outfit));
-  const torso = joint(hips, 0, 0.05, 0, part(kind, "torso", outfit));
-  const head = joint(torso, 0, TORSO + 0.02, 0, part(kind, "head", outfit));
-  const shL = joint(torso, -SHOULDER_X, TORSO - 0.08, 0, part(kind, "upperArmL", outfit));
-  const shR = joint(torso, SHOULDER_X, TORSO - 0.08, 0, part(kind, "upperArmR", outfit));
-  const elL = joint(shL, 0, -UPPER_ARM, 0, part(kind, "forearmL", outfit));
-  const elR = joint(shR, 0, -UPPER_ARM, 0, part(kind, "forearmR", outfit));
-  const thL = joint(hips, -HIP_X, 0, 0, part(kind, "thigh", outfit));
-  const thR = joint(hips, HIP_X, 0, 0, part(kind, "thigh", outfit));
-  const knL = joint(thL, 0, -THIGH, 0, part(kind, "shin", outfit));
-  const knR = joint(thR, 0, -THIGH, 0, part(kind, "shin", outfit));
-  const apron = kind === "waiter" ? joint(hips, 0, 0.08, -0.17, part(kind, "apron")) : null;
-  const apronLow = apron ? joint(apron, 0, -0.33, 0, part(kind, "apronLow")) : null;
-  return { lift, spin, hips, torso, head, shL, shR, elL, elR, thL, thR, knL, knR, apron, apronLow };
-}
-
-function applyPose(r: Rig, p: Pose): void {
-  r.spin.scale.setScalar(p.scale);
-  r.hips.position.set(0, p.hipY - SPIN_Y, p.hipZ);
-  r.hips.rotation.set(-p.lean, p.twist, 0, "YXZ");
-  r.torso.rotation.set(-p.spine, -p.twist * 0.6, p.spineZ, "YXZ");
-  r.head.rotation.set(-p.headX, p.headY, 0, "YXZ");
-  r.shL.rotation.set(p.shLX, 0, -p.shLZ, "XYZ");
-  r.shR.rotation.set(p.shRX, 0, p.shRZ, "XYZ");
-  r.elL.rotation.set(p.elL, 0, 0);
-  r.elR.rotation.set(p.elR, 0, 0);
-  r.thL.rotation.set(p.thLX, 0, -p.thLZ, "XYZ");
-  r.thR.rotation.set(p.thRX, 0, p.thRZ, "XYZ");
-  r.knL.rotation.set(-p.knL, 0, 0);
-  r.knR.rotation.set(-p.knR, 0, 0);
-  if (r.apron) {
-    const fwd = Math.max(0, p.thLX, p.thRX);
-    r.apron.rotation.x = fwd * 0.7;
-    // the hem lags behind and folds back over the shin as the knee comes up
-    if (r.apronLow) r.apronLow.rotation.x = fwd * 0.3 - 0.1 - Math.max(0, p.knL, p.knR) * 0.15;
-  }
-}
-
-function shadows(root: THREE.Object3D): void {
-  root.traverse((o) => {
-    if (o instanceof THREE.Mesh) {
-      o.castShadow = true;
-      o.receiveShadow = false;
+/** Deck top height of the patinete. */
+const DECK = 0.15;
+let SCOOTER: THREE.BufferGeometry | null = null;
+function scooterGeometry(): THREE.BufferGeometry {
+  if (SCOOTER) return SCOOTER;
+  const b = new SkinBuilder(null);
+  const GRAPHITE = 0x262a31;
+  const TEAL = 0x18c29c;
+  const zr = (z: number, y: number, w: number, up: number, down: number, e = 4): Ring => ({ c: v3(0, y, z), x: v3(1, 0, 0), y: v3(0, 1, 0), rx: w, ryP: up, ryN: down, e });
+  b.add(loft([zr(0.42, 0.125, 0.07, 0.018, 0.018), zr(0.36, 0.127, 0.088, 0.022, 0.022), zr(-0.3, 0.127, 0.088, 0.022, 0.022), zr(-0.37, 0.13, 0.07, 0.024, 0.02)], 20, 0.4, 0.5), (p, out) => {
+    if (p.y > DECK - 0.006) out.set(0x14161a);
+    else if (Math.abs(p.y - 0.127) < 0.006) out.set(TEAL);
+    else out.set(GRAPHITE);
+  }, null, { rough: 0.45 });
+  for (const z of [-0.43, 0.45]) {
+    const ring: THREE.Vector3[] = [];
+    for (let i = 0; i <= 20; i++) {
+      const a = (i / 20) * Math.PI * 2;
+      ring.push(v3(0, 0.085 + Math.cos(a) * 0.058, z + Math.sin(a) * 0.058));
     }
-  });
+    b.add(tube(ring, [[0, 0.03, 0.026], [1, 0.03, 0.026]], 10, 20, { up: v3(1, 0, 0), capA: -1, capB: -1 }), 0x151515, null, { rough: 0.85 });
+    b.add(ellipsoid(v3(0, 0.085, z), 0.034, 0.045, 0.045, 12, 8), z < 0 ? TEAL : 0x8a9099, null, { rough: 0.3 });
+  }
+  // rear mudguard with the tail light
+  b.add(tube([v3(0, 0.15, 0.36), v3(0, 0.17, 0.44), v3(0, 0.15, 0.52)], [[0, 0.04, 0.006], [1, 0.035, 0.006]], 8, 8, { up: v3(0, 1, 0), capA: 0.3, capB: 0.3 }), GRAPHITE, null, { rough: 0.5 });
+  b.add(ellipsoid(v3(0, 0.155, 0.53), 0.025, 0.012, 0.01, 8, 5), 0xff2a2a, null, { rough: 0.15, shade: 0 });
+  // stem, fork, handlebar, grips, lamp
+  b.add(tube([v3(0, 0.085, -0.43), v3(0, 0.2, -0.4), v3(0, 0.6, -0.41), v3(0, 1.0, -0.43)], [[0, 0.018], [0.15, 0.024], [1, 0.019]], 10, 10, { capA: 0.5, capB: 0.5 }), GRAPHITE, null, { rough: 0.4 });
+  b.add(tube([v3(-0.25, 1.0, -0.43), v3(0, 1.005, -0.43), v3(0.25, 1.0, -0.43)], [[0, 0.013], [1, 0.013]], 8, 8, { capA: 0.5, capB: 0.5 }), GRAPHITE, null, { rough: 0.4 });
+  for (const s of [-1, 1]) {
+    b.add(tube([v3(s * 0.16, 1.0, -0.43), v3(s * 0.27, 1.0, -0.43)], [[0, 0.02], [1, 0.02]], 10, 3, { capA: 0.6, capB: 0.8 }), 0x111214, null, { rough: 0.8 });
+  }
+  b.add(ellipsoid(v3(0, 0.93, -0.455), 0.035, 0.028, 0.02, 10, 6), 0xfff6d8, null, { rough: 0.1, shade: 0 });
+  b.add(ellipsoid(v3(0, 1.02, -0.42), 0.04, 0.012, 0.03, 10, 5), 0x0c2b2a, null, { rough: 0.15 });
+  SCOOTER = b.build(false);
+  return SCOOTER;
+}
+
+// ---------------------------------------------------------------------------
+// actor
+// ---------------------------------------------------------------------------
+
+interface Spring {
+  def: SpringDef;
+  bone: THREE.Bone;
+  ax: number;
+  az: number;
+  vx: number;
+  vz: number;
+  prev: THREE.Vector3;
+  vel: THREE.Vector3;
+  acc: THREE.Vector3;
+  init: boolean;
+}
+
+const _m1 = new THREE.Matrix4();
+const _m2 = new THREE.Matrix4();
+const _m3 = new THREE.Matrix4();
+const _m4 = new THREE.Matrix4();
+const _p = new THREE.Vector3();
+const _v = new THREE.Vector3();
+const _a = new THREE.Vector3();
+const _g = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const _s = new THREE.Vector3();
+const _w = new THREE.Vector3();
+const _c0 = new THREE.Vector3();
+const wind = new THREE.Vector3();
+let curSpeed = 0;
+let tuckK = 0;
+
+const GROUNDED: ReadonlySet<Clip> = new Set<Clip>(["idle", "run", "stumble", "caught", "celebrate", "ride"]);
+
+function fadeTime(from: Clip, to: Clip): number {
+  if (to === "jump") return 0.13;
+  if (to === "roll") return 0.1;
+  if (from === "roll") return 0.15;
+  if (to === "carried" || from === "carried") return 0.35;
+  return 0.18;
 }
 
 function createActor(kind: Kind, outfit: OutfitId = "clasico"): Actor {
+  const look = kind === "runner" ? runnerLook(outfit) : waiterLook();
+  const waiter = kind === "waiter";
   const root = new THREE.Group();
   root.name = kind;
-  const rig = buildRig(kind, root, outfit);
-  let scooter: THREE.Group | null = null;
-  if (kind === "runner") {
-    scooter = part("runner", "scooter");
+  const bodyGroup = new THREE.Group();
+  const spin = new THREE.Group();
+  spin.position.y = P.rollPivot;
+  const inner = new THREE.Group();
+  inner.position.y = -P.rollPivot;
+  root.add(bodyGroup);
+  bodyGroup.add(spin);
+  spin.add(inner);
+
+  const sk = instantiate(HUMAN_BONES);
+  const bones = sk.bones;
+  const bone = (i: number): THREE.Bone => {
+    const b = bones[i];
+    if (!b) throw new Error(`missing bone ${i}`);
+    return b;
+  };
+  const mesh = new THREE.SkinnedMesh(look.geometry, CHAR);
+  mesh.castShadow = true;
+  mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 1.5);
+  inner.add(sk.root);
+  inner.add(mesh);
+  mesh.bind(sk.skeleton, new THREE.Matrix4());
+  const face = new THREE.Mesh(faceFor(look), CHAR);
+  face.castShadow = false;
+  bone(B.head).add(face);
+  const morph = face.morphTargetInfluences ?? [];
+  const hips = bone(B.hips);
+  const hipsRest = hips.position.clone();
+  const legChain = [B.hips, B.thighL, B.shinL, B.footL, B.toeL, B.thighR, B.shinR, B.footR, B.toeR].map(bone);
+
+  // patinete
+  let scooter: THREE.Mesh | null = null;
+  if (!waiter) {
+    scooter = new THREE.Mesh(scooterGeometry(), CHAR);
+    scooter.castShadow = true;
     scooter.visible = false;
+    // the rider stands over the front half of the deck, hands on the bar
+    scooter.position.z = 0.16;
     root.add(scooter);
   }
-  // the carrying stork: body + two wings, hidden until setCarried(true)
-  let stork: THREE.Group | null = null;
-  let wingL: THREE.Group | null = null;
-  let wingR: THREE.Group | null = null;
-  if (kind === "runner") {
-    stork = new THREE.Group();
-    stork.add(part("runner", "storkBody"));
-    wingR = joint(stork, 0.2, 0.1, -0.05, part("runner", "storkWing"));
-    wingL = joint(stork, -0.2, 0.1, -0.05, part("runner", "storkWing"));
-    wingL.scale.x = -1;
-    stork.position.set(0, 2.35, 0.02);
-    stork.visible = false;
-    rig.lift.add(stork);
-  }
-  shadows(root);
 
-  const current = basePose();
-  const target = basePose();
+  // springs
+  const springs: Spring[] = look.springs.map((def) => ({
+    def, bone: bone(def.bone), ax: 0, az: 0, vx: 0, vz: 0,
+    prev: new THREE.Vector3(), vel: new THREE.Vector3(), acc: new THREE.Vector3(), init: false,
+  }));
+
+  // blend state
+  const pose = new Float32Array(NCH);
+  const from = new Float32Array(NCH);
+  const tgt = new Float32Array(NCH);
+  let clip: Clip = "idle";
+  let clipT = 0;
+  let fade = 1;
+  let fadeDur = 0.18;
+  let time = Math.random() * 10;
+  let phase = Math.random() * Math.PI * 2;
+  let lead: 1 | -1 = 1;
+  let fromJump = false;
+  let landT = 9;
+  let landK = 1;
+  let blinkT = 1 + Math.random() * 3;
+  let blink = 0;
+  let sacT = 0.5;
+  const sac = { x: 0, y: 0, tx: 0, ty: 0 };
   let riding = false;
-  let t = Math.random() * 10;
-  let phase = 0;
-  let spinAngle = 0;
-  let lastAnim: ActorAnim = "idle";
   let carried = false;
-  let leaving = 0; // seconds left of the stork's flap-away
-  // the roll ball must stay under 0.8 m even with tall hats / hoods
-  const rollScale = outfit === "carnaval" ? 0.62 : outfit === "clasico" ? 0.71 : 0.66;
+  let first = true;
+  const ctx: ClipCtx = { t: 0, time: 0, phase: 0, speed: 0, waiter, lead: 1, fromJump: false };
+  const mood = new Float32Array(FACE_CHANNELS);
+  if (look.mood) for (const [k, v] of Object.entries(look.mood)) mood[FX[k as keyof typeof FX]] = v ?? 0;
+
+  // the carrying stork
+  let stork: StorkRig | null = null;
+  let storkState: "off" | "arrive" | "carry" | "leave" = "off";
+  let storkT = 0;
+  let beat = 0;
+  const GRIP = new THREE.Vector3(0, 2.18, 0.08);
+  if (!waiter) {
+    stork = new StorkRig();
+    stork.root.scale.setScalar(STORK.carryScale);
+    stork.root.visible = false;
+    root.add(stork.root);
+  }
+
+  const rollChain = [B.hips, B.spine, B.chest, B.neck, B.head, B.thighL, B.shinL, B.footL, B.thighR, B.shinR, B.footR].map(bone);
+  /** Mean of a few landmarks of the body (inner-group space). */
+  function ballCentre(out: THREE.Vector3): void {
+    out.set(0, 0, 0);
+    _m1.copy(hips.matrix);
+    out.add(_p.set(0, 0, 0).applyMatrix4(_m1));
+    _m2.multiplyMatrices(_m1, bone(B.spine).matrix);
+    _m3.multiplyMatrices(_m2, bone(B.chest).matrix);
+    out.add(_p.set(0, 0.1, 0).applyMatrix4(_m3));
+    _m4.multiplyMatrices(_m3, bone(B.neck).matrix);
+    _m2.multiplyMatrices(_m4, bone(B.head).matrix);
+    out.add(_p.set(0, 0.1, -0.01).applyMatrix4(_m2));
+    for (let k = 0; k < 2; k++) {
+      _m2.multiplyMatrices(_m1, bone(k === 0 ? B.thighL : B.thighR).matrix);
+      _m3.multiplyMatrices(_m2, bone(k === 0 ? B.shinL : B.shinR).matrix);
+      out.add(_p.set(0, 0, 0).applyMatrix4(_m3));
+      out.add(_p.set(0, -0.42, 0).applyMatrix4(_m3));
+    }
+    out.multiplyScalar(1 / 7);
+  }
+
+  function footMin(side: -1 | 1): number {
+    const o = side < 0 ? 1 : 5;
+    const th = legChain[o] as THREE.Bone;
+    const sh = legChain[o + 1] as THREE.Bone;
+    const ft = legChain[o + 2] as THREE.Bone;
+    const toe = legChain[o + 3] as THREE.Bone;
+    _m1.multiplyMatrices(hips.matrix, th.matrix);
+    _m2.multiplyMatrices(_m1, sh.matrix);
+    _m3.multiplyMatrices(_m2, ft.matrix);
+    _m4.multiplyMatrices(_m3, toe.matrix);
+    let y = _p.set(0, -0.083, 0.058).applyMatrix4(_m3).y;
+    y = Math.min(y, _p.set(0, -0.028, 0.0).applyMatrix4(_m4).y);
+    y = Math.min(y, _p.set(0, -0.02, -0.08).applyMatrix4(_m4).y);
+    return y;
+  }
+
+  function apply(dt: number): void {
+    for (let i = 0; i < 21; i++) {
+      bone(i).rotation.set(pose[i * 3] ?? 0, pose[i * 3 + 1] ?? 0, pose[i * 3 + 2] ?? 0);
+    }
+    hips.position.set(hipsRest.x + (pose[HX] ?? 0), hipsRest.y + (pose[HY] ?? 0), hipsRest.z + (pose[HZ] ?? 0));
+    const g = Math.min(1, Math.max(0, pose[GROUND] ?? 0));
+    if (g > 1e-3) {
+      for (const b of legChain) b.updateMatrix();
+      const mask = Math.round(pose[GMASK] ?? 0);
+      const yl = mask > 0 ? Infinity : footMin(-1);
+      const yr = mask < 0 ? Infinity : footMin(1);
+      const minY = Math.min(yl, yr);
+      hips.position.y += g * (-minY + (pose[LIFT] ?? 0));
+    }
+    // roll: centre the tucked ball on the spin pivot so it rolls round its own middle
+    const rk = Math.min(1, Math.max(0, pose[ROLLK] ?? 0));
+    tuckK = rk;
+    if (rk > 1e-3) {
+      for (const b of rollChain) b.updateMatrix();
+      ballCentre(_c0);
+      hips.position.x += (0 - _c0.x) * rk;
+      hips.position.y += (P.rollPivot - _c0.y) * rk;
+      hips.position.z += (0 - _c0.z) * rk;
+    }
+    spin.rotation.x = pose[SPIN] ?? 0;
+    spin.scale.setScalar(1 + (look.rollScale - 1) * Math.min(1, Math.max(0, pose[ROLLK] ?? 0)));
+    // face
+    for (let k = 0; k < FACE_CHANNELS; k++) {
+      const v = pose[FACE + k] ?? 0;
+      morph[k] = k === FX.lookX || k === FX.lookY ? Math.max(-1.1, Math.min(1.1, v)) : Math.max(0, Math.min(1.15, v));
+    }
+    // springs (secondary motion) need world matrices
+    if (springs.length && dt > 1e-5) {
+      root.updateMatrixWorld(true);
+      // running into still air: a head wind presses cloth back against the body
+      root.matrixWorld.decompose(_p, _q, _s);
+      wind.set(0, 0, 1).applyQuaternion(_q).multiplyScalar(Math.min(12, curSpeed * 0.55));
+      for (const s of springs) step(s, dt);
+    }
+  }
+
+  function step(s: Spring, dt: number): void {
+    const parent = s.bone.parent;
+    if (!parent) return;
+    _w.copy(s.bone.position).applyMatrix4(parent.matrixWorld);
+    if (!s.init) {
+      s.prev.copy(_w);
+      s.vel.set(0, 0, 0);
+      s.acc.set(0, 0, 0);
+      s.init = true;
+    }
+    _v.subVectors(_w, s.prev).divideScalar(dt);
+    _a.subVectors(_v, s.vel).divideScalar(dt);
+    s.vel.copy(_v);
+    s.prev.copy(_w);
+    // low-passed body acceleration: cloth lags behind lunges, but stride bounce must not fling it
+    s.acc.lerp(_a, Math.min(1, dt * 6));
+    if (s.acc.length() > 14) s.acc.setLength(14);
+    _g.set(0, -9.81, 0).addScaledVector(s.acc, -0.35).add(wind);
+    parent.matrixWorld.decompose(_p, _q, _s);
+    _q.invert();
+    _g.applyQuaternion(_q).normalize();
+    const d = s.def;
+    let minX = d.minX;
+    if (d.push) {
+      const fwd = Math.max(pose[B.thighL * 3] ?? 0, pose[B.thighR * 3] ?? 0);
+      minX = Math.max(minX, fwd * 0.8 - 0.32);
+    }
+    // while tucked in a roll, cloth and plumes are held tight to the ball
+    const flex = d.flex * (1 - tuckK);
+    const free = Math.max(minX, Math.min(d.maxX, Math.atan2(-_g.z, -_g.y) * flex));
+    const tx = free * (1 - tuckK) + (d.tuck ?? 0) * tuckK;
+    const tz = Math.max(-d.maxZ, Math.min(d.maxZ, Math.atan2(_g.x, -_g.y) * flex));
+    if (tuckK > 0.2) {
+      s.ax += (tx - s.ax) * tuckK * 0.5;
+      s.az *= 1 - tuckK * 0.5;
+      s.vx *= 0.5;
+      s.vz *= 0.5;
+    }
+    const n = Math.max(1, Math.ceil(dt / (1 / 90)));
+    const h = dt / n;
+    for (let i = 0; i < n; i++) {
+      s.vx += (d.stiff * (tx - s.ax) - d.damp * s.vx) * h;
+      s.vz += (d.stiff * (tz - s.az) - d.damp * s.vz) * h;
+      s.ax += s.vx * h;
+      s.az += s.vz * h;
+    }
+    if (s.ax < minX * (1 - tuckK) && tuckK < 0.05) {
+      s.ax = minX * (1 - tuckK);
+      s.vx = Math.max(0, s.vx);
+    }
+    s.ax = Math.min(Math.max(d.maxX, d.tuck ?? 0) + 0.2, s.ax);
+    s.az = Math.max(-d.maxZ - 0.2, Math.min(d.maxZ + 0.2, s.az));
+    s.bone.rotation.set(s.ax, 0, s.az);
+    s.bone.updateMatrixWorld(true);
+  }
+
+  function updateStork(dt: number): void {
+    if (!stork || storkState === "off") return;
+    storkT += dt;
+    const r = stork.root;
+    if (storkState === "arrive") {
+      // swoops in from above and behind, braking hard to grab the shoulders
+      const k = smooth(0, 0.65, storkT);
+      const e = 1 - (1 - k) ** 3;
+      beat += dt * 1.6;
+      r.position.set(0, GRIP.y + 4.5 * (1 - e), GRIP.z + 4 * (1 - e) * (1 - e));
+      stork.flare(1 - k * 0.5, beat);
+      r.rotation.set(-0.25 * (1 - k), 0, 0);
+      if (storkT >= 0.65) storkState = "carry";
+    } else if (storkState === "carry") {
+      beat += dt * 1.25;
+      stork.fly(beat, 1, 1, 0.48);
+      r.position.set(0, GRIP.y + 0.04 * Math.sin(beat * Math.PI * 2 + 1.4), GRIP.z);
+      r.rotation.set(0, 0, 0);
+    } else {
+      // lets go, a couple of hard beats and climbs away ahead
+      const k = storkT / 1.4;
+      beat += dt * 1.9;
+      stork.fly(beat, 1, Math.max(0, 1 - storkT / 0.35), 0.48 - 0.4 * Math.min(1, k * 2));
+      r.position.set(0, GRIP.y + 6 * k * k + 0.6 * k, GRIP.z - 11 * k * k);
+      r.rotation.set(-0.3 * Math.min(1, k * 2), 0, 0);
+      if (storkT >= 1.4) {
+        storkState = "off";
+        r.visible = false;
+      }
+    }
+  }
 
   const actor: Actor = {
     root,
-    update(dt, anim, speed) {
-      const step = Math.min(dt, 0.1);
-      t += step;
-      const freq = 1.25 + Math.max(0, speed) * 0.075;
-      phase += step * Math.PI * 2 * freq;
-      const effective = carried ? "carried" : riding && (anim === "run" || anim === "idle") ? "ride" : anim;
-      targetPose(kind, effective, t, phase, target);
-      if (effective === "roll") target.scale = rollScale;
-      // snappier blending into and within fast cycles
-      const rate = carried ? 8 : anim === "run" || anim === "stumble" ? 22 : anim === "roll" ? 18 : 11;
-      const k = anim !== lastAnim && lastAnim === "roll" ? 1 - Math.exp(-step * 14) : 1 - Math.exp(-step * rate);
-      for (const key of POSE_KEYS) current[key] += (target[key] - current[key]) * k;
-      lastAnim = anim;
-      // the roll spin: keep spinning while rolling, finish the turn smoothly afterwards
-      const TAU = Math.PI * 2;
-      if (anim === "roll" && !carried) {
-        spinAngle -= step * TAU * 1.9;
-      } else if (spinAngle !== 0) {
-        const target2 = Math.floor(spinAngle / TAU) * TAU; // next full turn in the roll direction
-        spinAngle = Math.max(target2, spinAngle - step * TAU * 2.2);
-        if (spinAngle <= target2 + 1e-4) spinAngle = 0;
-      }
-      rig.spin.rotation.x = spinAngle;
-      applyPose(rig, current);
-      rig.lift.position.y = riding && !carried ? 0.17 : 0;
-      rig.lift.scale.setScalar(0.96);
-      if (stork && wingL && wingR) {
-        // slow, powerful wingbeat with a matching body bob
-        const flap = Math.sin(t * Math.PI * 2 * (leaving > 0 ? 2.2 : 1.1));
-        wingR.rotation.z = 0.12 + flap * 0.6;
-        wingL.rotation.z = -(0.12 + flap * 0.6);
-        if (carried) {
-          stork.position.set(0, 2.35 - flap * 0.06, 0.02);
-          stork.rotation.x = 0.06;
-          rig.lift.rotation.z = Math.sin(t * 1.1) * 0.05;
-        } else if (leaving > 0) {
-          leaving = Math.max(0, leaving - step);
-          const k = 1 - leaving / 0.9;
-          stork.position.set(0, 2.35 + k * k * 6, 0.02 - k * 7);
-          stork.rotation.x = -0.35 * k;
-          if (leaving === 0) stork.visible = false;
+    update(dt, anim: ActorAnim, speed) {
+      const stepT = Math.min(Math.max(dt, 0), 0.1);
+      time += stepT;
+      const freq = waiter ? Math.min(2.6, 1.35 + 0.07 * speed) : Math.min(3.2, 1.5 + 0.072 * Math.max(0, speed));
+      phase += stepT * Math.PI * 2 * freq;
+      const want: Clip = carried ? "carried" : riding && (anim === "run" || anim === "idle") ? "ride" : anim;
+      if (want !== clip || first) {
+        if (!first) {
+          from.set(pose);
+          // finish a roll forwards rather than unwinding it
+          const sp = from[SPIN] ?? 0;
+          if (sp < -Math.PI) from[SPIN] = sp + Math.PI * 2;
+          fade = 0;
+          fadeDur = fadeTime(clip, want);
+          if ((clip === "jump" || clip === "fall") && GROUNDED.has(want)) {
+            landT = 0;
+            landK = clip === "fall" ? 1 : 0.75;
+          }
+          fromJump = clip === "jump";
+          if (want === "jump") lead = lead > 0 ? -1 : 1;
+          if (want === "stumble") lead = Math.sin(phase) > 0 ? 1 : -1;
         }
-        if (!carried) rig.lift.rotation.z *= 0.9;
+        clip = want;
+        clipT = 0;
       }
+      clipT += stepT;
+      fade += stepT;
+      landT += stepT;
+      ctx.t = clipT;
+      ctx.time = time;
+      ctx.phase = phase;
+      ctx.speed = speed;
+      curSpeed = clip === "run" || clip === "ride" || clip === "stumble" || clip === "roll" || clip === "jump" || clip === "fall" ? speed : 0;
+      ctx.lead = lead;
+      ctx.fromJump = fromJump;
+      evalClip(clip, ctx, tgt);
+      if (landT < 0.5 && GROUNDED.has(clip)) addLanding(tgt, landT, landK);
+      // mood, blinks and small eye darts
+      for (let k = 0; k < FACE_CHANNELS; k++) tgt[FACE + k] = (tgt[FACE + k] ?? 0) + (mood[k] ?? 0);
+      blinkT -= stepT;
+      if (blinkT <= 0) {
+        blink = 0.16;
+        blinkT = 1.8 + Math.random() * 3.2;
+      }
+      blink = Math.max(0, blink - stepT);
+      const bk = blink > 0 ? Math.sin((blink / 0.16) * Math.PI) : 0;
+      sacT -= stepT;
+      if (sacT <= 0) {
+        sac.tx = (Math.random() - 0.5) * 0.3;
+        sac.ty = (Math.random() - 0.5) * 0.18;
+        sacT = 0.6 + Math.random() * 1.8;
+      }
+      const sk2 = 1 - Math.exp(-stepT * 30);
+      sac.x += (sac.tx - sac.x) * sk2;
+      sac.y += (sac.ty - sac.y) * sk2;
+      tgt[FACE + FX.blink] = Math.max(tgt[FACE + FX.blink] ?? 0, bk);
+      tgt[FACE + FX.lookX] = (tgt[FACE + FX.lookX] ?? 0) + sac.x;
+      tgt[FACE + FX.lookY] = (tgt[FACE + FX.lookY] ?? 0) + sac.y;
+      if (first) {
+        pose.set(tgt);
+        first = false;
+      } else {
+        const w = smooth(0, 1, fade / fadeDur);
+        for (let i = 0; i < NCH; i++) pose[i] = (from[i] ?? 0) + ((tgt[i] ?? 0) - (from[i] ?? 0)) * w;
+        // never let the blink lag behind the fade
+        pose[FACE + FX.blink] = Math.max(pose[FACE + FX.blink] ?? 0, bk);
+      }
+      if (fade >= fadeDur && Math.abs(pose[SPIN] ?? 0) > Math.PI * 2 - 1e-3) pose[SPIN] = 0;
+      bodyGroup.position.y = riding && !carried ? DECK : 0;
+      apply(stepT);
+      updateStork(stepT);
     },
   };
   if (scooter) {
@@ -650,15 +472,27 @@ function createActor(kind: Kind, outfit: OutfitId = "clasico"): Actor {
       if (on === carried) return;
       carried = on;
       if (on) {
-        leaving = 0;
-        st.visible = true;
-        st.position.set(0, 2.35, 0.02);
-        st.rotation.x = 0.06;
-      } else if (st.visible) {
-        leaving = 0.9; // flap away up and forward
+        storkState = "arrive";
+        storkT = 0;
+        st.root.visible = true;
+      } else if (st.root.visible) {
+        storkState = "leave";
+        storkT = 0;
       }
     };
   }
+  actorDebug.set(actor, {
+    reset(t0: number, ph: number) {
+      time = t0;
+      phase = ph;
+      blinkT = 1e9;
+      sacT = 1e9;
+      sac.x = sac.y = sac.tx = sac.ty = 0;
+      first = true;
+      for (const s of springs) s.init = false;
+    },
+    triangles: () => (look.geometry.index?.count ?? 0) / 3 + (faceFor(look).index?.count ?? 0) / 3,
+  });
   return actor;
 }
 

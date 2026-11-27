@@ -40,7 +40,7 @@ describe("copy", () => {
 
   it("builds the share text", () => {
     expect(shareText(3231.7, "la Margen derecha", 1)).toBe(
-      "He corrido 3.231 m por Badajoz en Simpa (hasta la Margen derecha, vuelta 1) 🏃‍♂️🍺 ¿Me pillas? https://isroma.github.io/badajoz-surfers/",
+      "He corrido 3.231 m en Badajoz Surfers (hasta la Margen derecha, vuelta 1) 🏃‍♂️🍺 ¿Me pillas? https://isroma.github.io/badajoz-surfers/",
     );
   });
 });

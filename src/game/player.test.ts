@@ -18,7 +18,7 @@ function run(s: PlayerState, seconds: number, actionsAt: Record<number, PlayerAc
 }
 
 describe("player physics", () => {
-  it("a normal jump lifts the feet about 1.75 m with about 0.72 s of airtime", () => {
+  it("a normal jump lifts the feet about 1.75 m with about 0.63 s of airtime", () => {
     const s = createPlayer();
     let apex = 0;
     let landedAt = -1;
@@ -28,8 +28,8 @@ describe("player physics", () => {
     });
     expect(apex).toBeGreaterThan(JUMP_HEIGHT - 0.05);
     expect(apex).toBeLessThan(JUMP_HEIGHT + 0.05);
-    expect(landedAt).toBeGreaterThan(0.68);
-    expect(landedAt).toBeLessThan(0.76);
+    expect(landedAt).toBeGreaterThan(0.6);
+    expect(landedAt).toBeLessThan(0.66);
   });
 
   it("zapatillas make a super jump of about 3.6 m", () => {
@@ -85,14 +85,14 @@ describe("player physics", () => {
     run(s, LANE_CHANGE_TIME + 0.01, { 0: "left" });
     expect(s.x).toBeCloseTo(laneX(-1), 5);
     run(s, 0.4, { 0: "right", 2: "right" });
-    expect(s.lane).toBe(1);
+    expect(s.lane).toBe(2);
     expect(s.x).toBeCloseTo(laneX(1), 5);
   });
 
   it("does not leave the road", () => {
-    const s = createPlayer(0, 1);
+    const s = createPlayer(0, 2);
     run(s, 0.3, { 0: "right" });
-    expect(s.lane).toBe(1);
+    expect(s.lane).toBe(2);
   });
 
   it("roll then jump in the same tick is just a jump", () => {

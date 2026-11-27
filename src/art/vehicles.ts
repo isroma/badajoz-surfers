@@ -17,7 +17,22 @@ const HEAD_OFF = 0x9aa0a8; // unlit lamp glass (kept in the GLOW bucket so parke
 const TAIL = 0xe0141e;
 const INDICATOR = 0xff9a1a;
 
+/** When set (obstacle templates), wheels are collected here instead of merged into the body. */
+export const wheelSink: { list: { x: number; z: number; r: number; w: number }[] | null } = { list: null };
+
+/** One wheel at the origin of `b` (axis along X). */
+export function wheelAt(b: Builder, x: number, y: number, z: number, r: number, w: number): void {
+  b.add(T.cyl(10), xf(x, y, z, r, w, r, 0, 0, Math.PI / 2), TYRE, SOLID);
+  b.add(T.cyl(8), xf(x + Math.sign(x) * 0.01, y, z, r * 0.55, w + 0.02, r * 0.55, 0, 0, Math.PI / 2), CHROME, SOLID);
+  // hub spokes so the spin reads
+  b.add(T.box, xf(x + Math.sign(x) * (w / 2 + 0.012), y, z, 0.01, r * 1.0, r * 0.14), 0x8a8d91, SOLID);
+}
+
 function wheel(b: Builder, x: number, z: number, r: number, w: number): void {
+  if (wheelSink.list) {
+    wheelSink.list.push({ x, z, r, w });
+    return;
+  }
   b.add(T.cyl(10), xf(x, r, z, r, w, r, 0, 0, Math.PI / 2), TYRE, SOLID);
   b.add(T.cyl(8), xf(x + Math.sign(x) * 0.01, r, z, r * 0.55, w + 0.02, r * 0.55, 0, 0, Math.PI / 2), CHROME, SOLID);
 }
@@ -36,11 +51,17 @@ const CAR_COLOURS = [0xc0392b, 0x2e86de, 0xf1c40f, 0x27ae60, 0xecf0f1, 0x34495e,
 
 export type CarShape = "hatch" | "sedan" | "suv";
 
-export function buildCar(b: Builder, seed: number, lit: boolean): void {
+/** Seed bit that selects the "broken down / at the stop" variants (bonnet up, bus doors open). */
+export const ROLE_VARIANT_BIT = 64;
+
+export function buildCar(b: Builder, seedIn: number, lit: boolean): void {
+  const broken = (seedIn & ROLE_VARIANT_BIT) !== 0;
+  const seed = seedIn & ~ROLE_VARIANT_BIT;
   const r = makeRng(seed * 7919 + 17);
   const taxi = seed % 6 === 3;
   const shape: CarShape = taxi ? "sedan" : r.pick(["hatch", "sedan", "suv"] as const);
   const colour = taxi ? 0xf7f7f2 : r.pick(CAR_COLOURS);
+  if (broken) brokenCarExtras(b, colour);
   const L = 4.3;
   const half = L / 2;
   const hw = 0.9;
@@ -103,6 +124,19 @@ export function buildCar(b: Builder, seed: number, lit: boolean): void {
       b.add(T.box, xf(sx * (hw + 0.004), (baseY + beltY) / 2 + 0.03, -0.2, 0.012, 0.16, 1.2, 0.42, 0, 0), 0x1f8a3b, SOLID);
     }
   }
+}
+
+/** A broken-down car's extras: bonnet up (front, -Z) and the warning triangle on the road behind it. */
+export function brokenCarExtras(b: Builder, colour: number): void {
+  b.push(xf(0, 0.92, -0.95, 1, 1, 1, 0.45, 0, 0));
+  b.box(0, 0.0, -0.55, 1.6, 0.04, 1.1, colour, PAINT);
+  b.pop();
+  // warning triangle (V-16 era aside) standing 0.4 m behind the rear bumper, inside the box
+  b.push(xf(0, 0, 2.05, 1, 1, 1, 0, 0, 0));
+  b.tri([-0.22, 0.03, 0], [0.22, 0.03, 0], [0, 0.42, 0], 0xd62828, SOLID);
+  b.tri([0.22, 0.03, 0], [-0.22, 0.03, 0], [0, 0.42, 0], 0xd62828, SOLID);
+  b.box(0, 0.015, 0, 0.3, 0.03, 0.12, 0x333333, SOLID);
+  b.pop();
 }
 
 const MOTO_COLOURS = [0xd62828, 0x2a9d8f, 0xf4a261, 0x3a86ff, 0xe9c46a, 0xffffff, 0x6a4c93];
@@ -204,7 +238,9 @@ export function buildVan(b: Builder, seed: number, lit: boolean): void {
   }
 }
 
-export function buildBus(b: Builder, seed: number, lit: boolean): void {
+export function buildBus(b: Builder, seedIn: number, lit: boolean): void {
+  const doorsOpen = (seedIn & ROLE_VARIANT_BIT) !== 0;
+  const seed = seedIn & ~ROLE_VARIANT_BIT;
   const L = 11;
   const half = L / 2;
   const hw = 1.25;
@@ -218,8 +254,10 @@ export function buildBus(b: Builder, seed: number, lit: boolean): void {
   }
   // body: white upper, red lower skirt and roof band
   b.span(-hw, hw, 0.32, 1.15, -half, half, red, PAINT);
-  b.span(-hw, hw, 1.15, top, -half, half, white, PAINT);
-  b.span(-hw + 0.02, hw - 0.02, top - 0.2, top, -half + 0.3, half - 0.05, red, PAINT);
+  // (the red roof band sits on the white body: no coplanar tops for the runner to stand on)
+  b.span(-hw, hw, 1.15, top - 0.2, -half, half, white, PAINT);
+  b.span(-hw, hw, top - 0.2, top, -half, half, red, PAINT);
+  b.span(-hw - 0.002, hw + 0.002, top - 0.2, top - 0.1, -half + 0.3, half - 0.05, white, PAINT);
   // side window band (dark glass) with pillars
   for (const sx of [-1, 1]) {
     b.box(sx * (hw + 0.01), 1.95, 0.4, 0.02, 1.0, L - 2.4, 0x26323f, GLASS);
@@ -227,7 +265,14 @@ export function buildBus(b: Builder, seed: number, lit: boolean): void {
     b.sign("bus-urbano", sx * (hw + 0.025), 0.78, 0.6, 0.55, sx * Math.PI / 2, 3.3);
   }
   // doors on the right side (+X): dark glass panels
-  for (const z of [-4.5, -0.5]) b.box(hw + 0.03, 1.4, z, 0.02, 2.1, 1.1, 0x1b2733, GLASS);
+  for (const z of [-4.5, -0.5]) {
+    if (doorsOpen) {
+      // folded-open door leaves and the lit interior step
+      b.box(hw + 0.02, 1.4, z, 0.02, 2.1, 1.1, 0x0b0f14, SOLID);
+      for (const dz of [-0.62, 0.62]) b.box(hw + 0.08, 1.4, z + dz, 0.04, 2.0, 0.12, 0x1b2733, GLASS);
+      b.box(hw - 0.2, 0.42, z, 0.45, 0.06, 1.0, 0xffe9b0, GLOW);
+    } else b.box(hw + 0.03, 1.4, z, 0.02, 2.1, 1.1, 0x1b2733, GLASS);
+  }
   // front: big windscreen, LED display, lights
   b.span(-hw + 0.08, hw - 0.08, 1.2, top - 0.42, -half - 0.02, -half, 0x26323f, GLASS);
   b.span(-hw + 0.1, hw - 0.1, top - 0.38, top - 0.06, -half - 0.02, -half, 0x111111, SOLID);

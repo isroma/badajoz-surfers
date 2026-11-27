@@ -1,0 +1,19 @@
+[project]
+name = "badajoz-city-data"
+version = "0.1.0"
+description = "Offline pipeline that builds public/data/city.json for Badajoz Surfers from OSM and PNOA-LiDAR"
+requires-python = ">=3.12"
+dependencies = [
+  "rasterio>=1.4",
+  "shapely>=2.0",
+  "pyproj>=3.6",
+  "numpy>=1.26",
+  "requests>=2.31",
+  "networkx>=3.2",
+  "matplotlib>=3.8",
+  "scipy>=1.12",
+  "truststore>=0.9",
+]
+
+[tool.uv]
+package = false

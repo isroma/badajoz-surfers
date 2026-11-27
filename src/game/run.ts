@@ -9,7 +9,6 @@ import {
   POWERUPS,
   WORD,
   ZONES,
-  laneX,
   type GameEvent,
   type ObstacleKind,
   type PickupKind,
@@ -20,7 +19,9 @@ import {
 import { Chaser } from "./chaser";
 import { BoxSet, topAt, type Aabb } from "./collision";
 import {
+  MEDIAN_GAP,
   bounceBack,
+  copyPlayer,
   createEvents,
   createPlayer,
   prevRunnerBox,
@@ -29,9 +30,11 @@ import {
   type PlayerAction,
   type PlayerState,
 } from "./player";
-import type { PickupSpawn } from "./spawns";
+import { getCourse } from "./course";
+import { laneOffset, layoutAt, type LayoutFn } from "./lanes";
+import { obstacleCentre, pickupD, type PickupSpawn } from "./spawns";
 import { TrackGenerator } from "./track";
-import { moverEffectiveHalf } from "./patterns";
+import { footprintOf } from "./traffic";
 import { createRng, type Rng } from "./rng";
 import {
   FLIGHT_DESCENT_TIME,
@@ -57,7 +60,9 @@ export type RunFx =
   /** Everything ahead was regenerated (debug warp): the scene must drop its objects. */
   | { type: "reset" }
   /** An obstacle was cleared away to make room for a stork landing. */
-  | { type: "remove"; id: number };
+  | { type: "remove"; id: number }
+  /** An oncoming vehicle in the runner's lane flashes its headlights (and honks). */
+  | { type: "flash"; id: number };
 
 export type RunPhase = "countdown" | "running" | "ending" | "over";
 
@@ -69,6 +74,8 @@ export interface RunConfig {
   fx(fx: RunFx): void;
   /** Open with the scripted tutorial. */
   tutorial?: boolean;
+  /** Lane layout by distance (the engine's by default). */
+  layout?: LayoutFn;
 }
 
 export interface ActivePowerup {
@@ -86,7 +93,10 @@ interface NearTrack {
 
 export const COUNTDOWN_TIME = 1.5;
 export const ENDING_TIME = 1.25;
-const GENERATE_AHEAD = 280;
+/** Same-direction traffic is on screen for a long time before you overtake it: generate far ahead. */
+const GENERATE_AHEAD = 440;
+/** Oncoming vehicles in your lane flash and honk this many seconds before they would reach you. */
+export const HORN_TIME = 1.7;
 
 export const SCORE = {
   perMetre: 1,
@@ -103,13 +113,22 @@ export const TUTORIAL_SLOWMO = 0.6;
 const overlaps = (aMin: number, aMax: number, bMin: number, bMax: number): boolean => aMin < bMax && bMin < aMax;
 
 export class Run {
-  readonly player: PlayerState = createPlayer(0, 0);
+  readonly player: PlayerState = createPlayer(0);
   readonly gen: TrackGenerator;
   readonly ignore = new Set<number>();
   readonly boxes: BoxSet;
   readonly taken = new Set<number>();
+  /** Letters that went past uncollected (still drawn until they leave the screen). */
+  readonly missed = new Set<number>();
+  /** Oncoming vehicles that already flashed. */
+  private readonly flashed = new Set<number>();
+  /** Obstacle the run ended on (crash), for the end-of-run visuals. */
+  crashedId = -1;
+  /** Running speed when the run ended (vehicles brake from their speed relative to it). */
+  endSpeed = 0;
+  readonly layoutFn: LayoutFn;
   /** Bellotas being pulled by the magnet: current position. */
-  readonly magnet = new Map<number, { x: number; y: number; d: number }>();
+  readonly magnet = new Map<number, { x: number; y: number; d: number; px: number; py: number; pd: number }>();
   readonly chaser = new Chaser();
   readonly powerups: ActivePowerup[] = [];
 
@@ -179,25 +198,31 @@ export class Run {
   private readonly b: Aabb = { xMin: 0, xMax: 0, yMin: 0, yMax: 0, dMin: 0, dMax: 0 };
 
   constructor(private readonly cfg: RunConfig) {
+    this.layoutFn = cfg.layout ?? layoutAt;
     this.gen = new TrackGenerator(cfg.seed, 0, {
       tutorial: cfg.tutorial === true,
       flightDuration: Math.max(1, cfg.powerupDuration("ciguena") || POWERUPS.ciguena.baseDuration),
+      layout: this.layoutFn,
     });
+    copyPlayer(this.player, createPlayer(0, undefined, this.layoutFn(0)));
     this.flightRng = createRng(cfg.seed ^ 0x5f3759df);
     this.tutorialOver = this.gen.tutorial.length === 0;
     this.gen.generateUntil(GENERATE_AHEAD);
-    this.boxes = new BoxSet(this.gen.obstacles, this.ignore);
+    this.boxes = new BoxSet(this.gen.obstacles, this.ignore, 26, this.layoutFn);
     this.boxes.prepare(0, 0);
   }
 
   /** Emit the run-start events (zone banner, countdown 3). */
   /** Emit the run-start events (zone banner, countdown 3). `startZone`: debug start elsewhere. */
-  begin(startZone?: ZoneId): void {
-    if (startZone && startZone !== "puente-real") this.jumpTo(startZone);
+  begin(startZone?: ZoneId, startDistance?: number): void {
+    if (startDistance !== undefined && startDistance > 0) this.jumpToDistance(startDistance);
+    else if (startZone && startZone !== "puente-real") this.jumpTo(startZone);
     const span = zoneAt(this.player.p);
     this.zoneSerial = span.serial;
     this.zonesCompleted = span.serial;
     this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: true });
+    this.street = null;
+    this.updateStreet(false);
     this.startCountdown(true);
   }
 
@@ -301,9 +326,15 @@ export class Run {
     let left = rng.int(7, 11);
     const list = this.gen.pickups;
     for (let d = from; d <= to; d += 3.3) {
-      list.push({ id: this.airIds++, kind: "bellota", lane, d, y: FLIGHT_HEIGHT + 0.9 });
+      const layout = this.layoutFn(d);
+      lane = Math.min(lane, layout.offsets.length - 1);
+      list.push({ id: this.airIds++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: FLIGHT_HEIGHT + 0.9 });
       if (--left <= 0) {
-        const options = ([-1, 0, 1] as const).filter((l) => Math.abs(l - lane) === 1);
+        // Neighbouring lanes reachable in flight (not across a median: the bridge cables).
+        const options = layout.offsets
+          .map((_, i) => i)
+          .filter((l) => Math.abs(l - lane) === 1 && Math.abs((layout.offsets[l] ?? 0) - (layout.offsets[lane] ?? 0)) <= MEDIAN_GAP);
+        if (options.length === 0) options.push(lane);
         lane = rng.pick(options);
         left = rng.int(7, 12);
         d += 3.3; // A beat to steer.
@@ -334,8 +365,8 @@ export class Run {
     const to = s.p + v * (FLIGHT_DESCENT_TIME + reactionWindow(difficultyAt(s.p)) + 0.8) + 4;
     for (const o of this.gen.obstacles) {
       if (o.d > to + 30) break;
-      const half = o.k > 0 ? moverEffectiveHalf(o.kind, o.k) : OBSTACLE_DEFS[o.kind].length / 2;
-      if (o.d + half < from || o.d - half > to) continue;
+      const [a, b] = footprintOf(o);
+      if (b < from || a > to) continue;
       if (this.removed.has(o.id)) continue;
       this.removed.add(o.id);
       this.ignore.add(o.id);
@@ -430,11 +461,11 @@ export class Run {
         } else if (contact.type === "front") {
           if (this.active("patinete")) this.shieldBreak(spawn.id, spawn.lane);
           else {
-            this.crash(spawn.kind);
+            this.crash(spawn.kind, spawn.id);
             return;
           }
         } else {
-          if (contact.type === "side") bounceBack(s);
+          if (contact.type === "side") bounceBack(s, this.layoutFn(s.p));
           else this.ignore.add(spawn.id);
           if (this.stumble()) return;
         }
@@ -442,6 +473,7 @@ export class Run {
     }
 
     if (!s.carried) this.trackNearMisses();
+    this.telegraph();
     this.collectPickups(dt);
 
     this.score += dp * SCORE.perMetre * this.multiplier;
@@ -457,6 +489,9 @@ export class Run {
         cfg.emit({ type: "powerup-end", kind: p.kind });
       }
     }
+
+    // Street names (the real ones: a strong "I'm in Badajoz" cue).
+    this.updateStreet(false);
 
     // Zones.
     const span = zoneAt(s.p);
@@ -538,8 +573,10 @@ export class Run {
     this.cfg.fx({ type: "shake", amount: 0.6 });
   }
 
-  private crash(kind: ObstacleKind): void {
+  private crash(kind: ObstacleKind, id = -1): void {
     this.cause = "crash";
+    this.crashedId = id;
+    this.endSpeed = this.player.speed;
     this.crashedOn = kind;
     this.phase = "ending";
     this.endTime = 0;
@@ -554,6 +591,7 @@ export class Run {
 
   private caught(): void {
     this.cause = "caught";
+    this.endSpeed = this.player.speed;
     this.crashedOn = undefined;
     this.phase = "ending";
     this.endTime = 0;
@@ -605,6 +643,48 @@ export class Run {
     }
   }
 
+  /** Real street name at the runner (null on unnamed links and roundabouts). */
+  street: string | null = null;
+
+  /** Emit a "street" event whenever the runner enters a street with a new real name. */
+  updateStreet(silent: boolean): void {
+    const name = getCourse()?.streetNameAt(this.player.p) ?? null;
+    if (name === null || name === this.street) return;
+    this.street = name;
+    if (!silent) this.cfg.emit({ type: "street", name });
+  }
+
+  /**
+   * Oncoming vehicles about to reach the runner's lane flash their lights and honk: the closing
+   * speed is high, so they are telegraphed HORN_TIME seconds ahead.
+   */
+  private telegraph(): void {
+    const s = this.player;
+    const v = Math.max(1, s.speed);
+    const list = this.gen.obstacles;
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i];
+      if (!o) continue;
+      if (o.d < s.p) continue;
+      if (o.d > s.p + v * (HORN_TIME + 0.5) + 10) break;
+      if (o.k <= 0 || this.flashed.has(o.id) || this.ignore.has(o.id)) continue;
+      const def = OBSTACLE_DEFS[o.kind];
+      if (Math.abs(o.x - laneOffset(this.layoutFn(s.p), s.lane)) > def.width / 2 + 0.3) continue;
+      const [front] = footprintOf(o);
+      if ((front - s.p) / v > HORN_TIME) continue;
+      this.flashed.add(o.id);
+      const c = obstacleCentre(o, s.p);
+      this.cfg.fx({ type: "flash", id: o.id });
+      this.cfg.emit({ type: "horn", obstacle: o.kind, ahead: c - s.p });
+    }
+    if (this.flashed.size > 64) {
+      for (const id of this.flashed) {
+        this.flashed.delete(id);
+        if (this.flashed.size <= 32) break;
+      }
+    }
+  }
+
   private nearMiss(_kind: ObstacleKind): void {
     this.nearMisses++;
     this.score += SCORE.nearMiss * this.multiplier;
@@ -633,13 +713,13 @@ export class Run {
       if (!pk) break;
       if (pk.d > s.p + reach + 1) break;
       if (this.taken.has(pk.id)) continue;
-      if (pk.kind === "letra" && pk.d < s.p - 1.5) {
+      let x = pk.x;
+      let y = pk.y;
+      let d = pickupD(pk, s.p);
+      if (pk.kind === "letra" && d < s.p - 1.5) {
         this.missLetter(pk.id);
         continue;
       }
-      let x = laneX(pk.lane);
-      let y = pk.y;
-      let d = pk.d;
       if (magnet && pk.kind === "bellota") {
         const pulled = this.magnet.get(pk.id);
         if (pulled) {
@@ -654,10 +734,13 @@ export class Run {
         if (dist < MAGNET_RADIUS) {
           const step = Math.min(dist, (18 + s.speed) * dt);
           const f = dist > 1e-6 ? step / dist : 0;
+          const px = x;
+          const py = y;
+          const pd = d;
           x += dx * f;
           y += dy * f;
           d += dd * f;
-          this.magnet.set(pk.id, { x, y, d });
+          this.magnet.set(pk.id, { x, y, d, px, py, pd });
         }
       }
       if (pk.kind === "letra" && this.letterFor(pk.id) < 0) continue;
@@ -671,6 +754,7 @@ export class Run {
   private missLetter(id: number): void {
     const index = this.letterIndex.get(id);
     this.taken.add(id);
+    this.missed.add(id);
     if (index === undefined) return;
     this.letterIndex.delete(id);
     for (const [other, i] of this.letterIndex) if (i > index) this.letterIndex.set(other, i - 1);
@@ -731,10 +815,27 @@ export class Run {
     this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
   }
 
+  /** Debug: jump to a distance (metres; laps beyond the first are later laps). */
+  warpTo(distance: number): void {
+    if (!(distance > this.player.p + 1)) distance += Math.ceil((this.player.p + 1 - distance) / LAP_LENGTH) * LAP_LENGTH;
+    this.jumpToDistance(distance);
+    const span = zoneAt(this.player.p);
+    this.cfg.fx({ type: "reset" });
+    this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
+  }
+
   /** Move to the start of the next zone with this id (no events). */
   private jumpTo(zone: ZoneId): boolean {
     const index = ZONES.findIndex((z) => z.id === zone);
     if (index < 0) return false;
+    let start = zoneStartDistance(index, this.lap);
+    if (start <= this.player.p + 1) start += LAP_LENGTH;
+    this.jumpToDistance(start);
+    return true;
+  }
+
+  /** Move to a distance and regenerate everything ahead (no events). */
+  private jumpToDistance(start: number): void {
     const s = this.player;
     const ciguena = this.powerups.findIndex((p) => p.kind === "ciguena");
     if (ciguena >= 0) {
@@ -742,11 +843,11 @@ export class Run {
       this.endFlight();
       this.cfg.emit({ type: "powerup-end", kind: "ciguena" });
     }
-    let start = zoneStartDistance(index, this.lap);
-    if (start <= s.p + 1) start += LAP_LENGTH;
     this.gen.restartAt(start);
     this.ignore.clear();
     this.taken.clear();
+    this.missed.clear();
+    this.flashed.clear();
     this.magnet.clear();
     this.near.clear();
     this.letterIndex.clear();
@@ -758,10 +859,13 @@ export class Run {
     this.gen.generateUntil(s.p + GENERATE_AHEAD);
     this.boxes.prepare(s.p, s.p);
     this.chaser.far();
+    // Land on a lane of the street here.
+    copyPlayer(s, { ...createPlayer(s.p, undefined, this.layoutFn(s.p)), speed: s.speed });
+    this.boxes.prepare(s.p, s.p);
     const span = zoneAt(s.p);
     this.zoneSerial = span.serial;
     this.zonesCompleted = span.serial;
-    return true;
+    this.street = null;
   }
 
   summary(): RunSummary {

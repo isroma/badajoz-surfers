@@ -72,11 +72,11 @@ describe("progress", () => {
 
   it("single-run missions need the value in one run", () => {
     let s = state(["distance-run", "jumps", "rolls"]);
+    s = commitRun(s, run({ distance: 500 })).state;
     s = commitRun(s, run({ distance: 400 })).state;
-    s = commitRun(s, run({ distance: 300 })).state;
-    expect(s.active[0]?.progress).toBe(400);
+    expect(s.active[0]?.progress).toBe(500);
     expect(s.active[0]?.done).toBe(false);
-    expect(commitRun(s, run({ distance: 520 })).newlyDone).toEqual(["distance-run"]);
+    expect(commitRun(s, run({ distance: 820 })).newlyDone).toEqual(["distance-run"]);
   });
 
   it("live updates mark missions done once and never double count", () => {
@@ -104,9 +104,9 @@ describe("progress", () => {
 
   it("describes progress with labels and ratios", () => {
     const m = { id: "distance-run", progress: 0, done: false };
-    expect(liveProgress(m, run({ distance: 250.7 }), 0)).toBeCloseTo(250.7);
-    const v = describeMission(m, run({ distance: 250.7 }), 0);
-    expect(v.label).toBe("250 / 500 m");
+    expect(liveProgress(m, run({ distance: 400.7 }), 0)).toBeCloseTo(400.7);
+    const v = describeMission(m, run({ distance: 400.7 }), 0);
+    expect(v.label).toBe("400 / 800 m");
     expect(v.ratio).toBeCloseTo(0.5, 2);
     expect(describeMission({ ...m, done: true }, emptyRunStats(), 0).label).toBe("¡Hecho!");
   });

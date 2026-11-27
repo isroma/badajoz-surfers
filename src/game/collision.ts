@@ -7,7 +7,8 @@
  * - the Y overlap began (landing on something not walkable, bumping the head) → "clip" (a stumble).
  * A front contact that only clips the obstacle by a little (see MARGINAL_CLIP) is a "clip".
  */
-import { OBSTACLE_DEFS, laneX, type ObstacleKind } from "../contracts";
+import { OBSTACLE_DEFS, type ObstacleKind } from "../contracts";
+import { layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
 import type { ObstacleSpawn } from "./spawns";
 import { obstacleCentre } from "./spawns";
 import type { PlayerWorld, SurfaceHit } from "./player";
@@ -62,8 +63,8 @@ export function topAt(box: Box, p: number): number {
 
 export function fillBox(box: Box, spawn: ObstacleSpawn, pPrev: number, p: number): Box {
   const def = OBSTACLE_DEFS[spawn.kind];
-  const x = def.lanes === 3 ? 0 : laneX(spawn.lane);
-  const halfW = def.width / 2 - OBSTACLE_SHRINK_X;
+  const x = spawn.x;
+  const halfW = (spawn.span ?? def.width) / 2 - OBSTACLE_SHRINK_X;
   const half = def.length / 2;
   const c = obstacleCentre(spawn, p);
   const pc = obstacleCentre(spawn, pPrev);
@@ -99,7 +100,13 @@ export class BoxSet implements PlayerWorld {
     private readonly ignore: ReadonlySet<number> | null = null,
     /** Spawns whose |d - p| is below this are considered. */
     private readonly window = 26,
+    /** Lane layout by distance (the engine's by default). */
+    private readonly layoutFn: LayoutFn = layoutAt,
   ) {}
+
+  layout(p: number): LaneLayout {
+    return this.layoutFn(p);
+  }
 
   setSpawns(spawns: readonly ObstacleSpawn[]): void {
     this.spawns = spawns;

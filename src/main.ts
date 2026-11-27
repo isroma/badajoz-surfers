@@ -1,12 +1,14 @@
 import { createGame } from "./game";
 import { createShell } from "./ui";
+import { setCity } from "./ui/city";
+import { createTrack, loadCity } from "./city";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const root = document.getElementById("ui") as HTMLElement;
 
-/** No WebGL (or the renderer failed to start): explain it in Spanish instead of a blank page. */
-function showNoWebGL(error: unknown): void {
-  console.error("Simpa: could not start the 3D engine", error);
+/** A full-screen Spanish message instead of a blank page. */
+function showError(text: string, error: unknown): void {
+  console.error("Badajoz Surfers:", text, error);
   document.getElementById("boot")?.remove();
   canvas.style.display = "none";
   const box = document.createElement("div");
@@ -16,20 +18,37 @@ function showNoWebGL(error: unknown): void {
     "padding:1.5em;text-align:center;background:#141f3f;color:#fff4dc;z-index:100;" +
     'font:600 clamp(15px,2.4vmin,26px) "Avenir Next","Segoe UI",system-ui,sans-serif;';
   const title = document.createElement("strong");
-  title.textContent = "Simpa: corre por Badajoz";
+  title.textContent = "Badajoz Surfers";
   title.style.cssText = "color:#ffc53d;font-size:1.5em;";
-  const text = document.createElement("span");
-  text.textContent =
-    "Tu navegador no puede mostrar gráficos 3D (WebGL). Prueba con otro navegador o actualiza los controladores.";
-  text.style.maxWidth = "32em";
-  box.append(title, text);
+  const message = document.createElement("span");
+  message.textContent = text;
+  message.style.maxWidth = "32em";
+  box.append(title, message);
   root.replaceChildren(box);
 }
 
+const NO_WEBGL = "Tu navegador no puede mostrar gráficos 3D (WebGL). Prueba con otro navegador o actualiza los controladores.";
+const NO_CITY = "No se ha podido cargar el mapa de Badajoz. Comprueba tu conexión y recarga la página.";
+
 const shell = createShell(root);
-try {
-  const game = createGame(canvas, shell.gameOptions);
-  shell.attach(game);
-} catch (error) {
-  showNoWebGL(error);
+
+// The real lap comes first: the page keeps showing "Cargando Badajoz…" until it is ready.
+async function boot(): Promise<void> {
+  let world: { city: Awaited<ReturnType<typeof loadCity>>; track: ReturnType<typeof createTrack> };
+  try {
+    const city = await loadCity();
+    world = { city, track: createTrack(city) };
+    setCity(city);
+  } catch (error) {
+    showError(NO_CITY, error);
+    return;
+  }
+  try {
+    const game = createGame(canvas, shell.gameOptions, world);
+    shell.attach(game);
+  } catch (error) {
+    showError(NO_WEBGL, error);
+  }
 }
+
+void boot();
