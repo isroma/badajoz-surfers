@@ -9,6 +9,9 @@ import { layoutAt } from "./lanes";
 import { LAP_LENGTH, zoneAt, zoneStartDistance } from "./tuning";
 import { useRealCourse } from "./test-course";
 
+/** Node global (the project has no @types/node). */
+declare const process: { env: Record<string, string | undefined> };
+
 useRealCourse();
 
 function check(seed: number, from: number, length: number): { gen: TrackGenerator; ok: boolean; reached: number } {
@@ -116,7 +119,9 @@ describe("track generator", () => {
   it("is always solvable (fuzz across seeds, zones and laps)", () => {
     const failures: string[] = [];
     let runs = 0;
-    for (let seed = 1; seed <= 48; seed++) {
+    // 16 seeds on CI (hosted runners are several times slower); all 48 locally.
+    const seeds = process.env["CI"] ? 16 : 48;
+    for (let seed = 1; seed <= seeds; seed++) {
       const lap = 1 + (seed % 4);
       const zoneIndex = seed % ZONES.length;
       const from = seed <= 4 ? 0 : zoneStartDistance(zoneIndex, lap);

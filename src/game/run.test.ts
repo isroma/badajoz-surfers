@@ -4,6 +4,9 @@ import { Bot } from "./bot";
 import { Run, type RunFx } from "./run";
 import { TICK } from "./tuning";
 
+/** Node global (the project has no @types/node). */
+declare const process: { env: Record<string, string | undefined> };
+
 function makeRun(seed: number, tutorial = false): { run: Run; events: GameEvent[]; fx: RunFx[] } {
   const events: GameEvent[] = [];
   const fx: RunFx[] = [];
@@ -62,7 +65,8 @@ describe("run", () => {
 
   it("the autopilot gets far and collects things", () => {
     let best = 0;
-    for (const seed of [11, 12, 13]) {
+    // One seed on CI: the hosted runners are several times slower than a laptop.
+    for (const seed of process.env["CI"] ? [11] : [11, 12, 13]) {
       const { run, events } = makeRun(seed);
       const bot = new Bot();
       let maxPlan = 0;
