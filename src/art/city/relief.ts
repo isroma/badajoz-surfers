@@ -147,8 +147,10 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
       const mz = (a.z + d.z) / 2 + nz * 0.08;
       const g = pb.streetGround ? ctx.streetLevel(mx, mz, pb.src.s) : pb.src.h0;
       // high on the facade, clear of the shop signs at ~3.25 m
-      const y = Math.max(Math.min(pb.top - 0.8, g + 4.6), Math.min(pb.top - 0.8, g + (st.floors > 0 ? st.Gf - g - 0.2 : 3.2)));
-      const w = Math.min(len - 0.6, Math.max(3, pb.name.length * 0.32));
+      const y0 = Math.max(Math.min(pb.top - 0.8, g + 4.6), Math.min(pb.top - 0.8, g + (st.floors > 0 ? st.Gf - g - 0.2 : 3.2)));
+      // a school's name goes high under the roof line, above the street trees
+      const y = pb.typ === "school" ? Math.max(y0, pb.top - 1.8) : y0;
+      const w = Math.min(len - 0.6, Math.max(3, pb.name.length * (pb.typ === "school" ? 0.45 : 0.32)));
       const look = nameLook(pb, pb.name);
       p.push(new THREE.Matrix4().makeRotationY(Math.atan2(nx, nz)).setPosition(mx, 0, mz));
       if (pb.typ !== "theatre") textQuad(bag, `bname-${pb.typ}-${pb.name}`, look, 0, y, 0.02, w); // the theatre names itself on the frieze

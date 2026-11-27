@@ -356,11 +356,24 @@ function puenteReal(ctx: CityCtx, bag: Bag, ts: TS): void {
       const sa = s + dir * d;
       if (sa < 516 || sa > 962) continue;
       const ml = ctx.track.layoutAt(sa).median[0];
-      const anchor = ts.p(sa, ml ? (ml.from + ml.to) / 2 : mid, 0.4);
+      if (!ml) continue;
+      const anchor = ts.p(sa, (ml.from + ml.to) / 2, 0.4);
       const yTop = top0 + ((top1 - top0) * k) / (n - 1);
       const ax = base.x + f.tx * dir * 1.6;
       const az = base.z + f.tz * dir * 1.6;
-      p.beam([anchor.x, anchor.y, anchor.z], [ax, yTop, az], 0.16, 0xf6f6f2, m, 5);
+      // a cable never passes lower than 5 m over a runnable lane
+      let clear = true;
+      for (let t = 0; t <= 1 && clear; t += 0.02) {
+        const x = anchor.x + (ax - anchor.x) * t;
+        const y = anchor.y + (yTop - anchor.y) * t;
+        const z = anchor.z + (az - anchor.z) * t;
+        const pr = ctx.track.project(x, z, sa);
+        if (y - ctx.track.frameAt(pr.s).h >= 5) break;
+        const lw = ctx.wideLayout(pr.s);
+        if (lw.offsets.some((o, j) => Math.abs(pr.lateral - o) < (lw.widths[j] ?? 0) / 2 + 0.3)) clear = false;
+      }
+      if (!clear) continue;
+      p.beam([anchor.x, anchor.y, anchor.z], [ax, yTop, az], 0.035, 0xf6f6f2, m, 4);
       p.box(anchor.x, anchor.y - 0.15, anchor.z, 0.35, 0.4, 0.5, CONCRETE_SHADE, m);
     }
   }
@@ -449,6 +462,35 @@ function catedral(bag: Bag, fac: Acc, top: Acc, ring: P2[], g0: number, peak: nu
     const a = ring[i]!;
     const b = ring[(i + 1) % ring.length]!;
     merlons(p, a.x, a.z, b.x, b.z, naveTop, 0.8, 0xc9b590, 0.6);
+  }
+  // sober stone buttresses and high slit windows, so the long walls do not read as blank boxes
+  {
+    const cen0 = centroid(ring);
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i]!;
+      const b = ring[(i + 1) % ring.length]!;
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      if (len < 10) continue;
+      const ux = (b.x - a.x) / len;
+      const uz = (b.z - a.z) / len;
+      let nx = -uz;
+      let nz = ux;
+      if ((cen0.x - (a.x + b.x) / 2) * nx + (cen0.z - (a.z + b.z) / 2) * nz > 0) {
+        nx = -nx;
+        nz = -nz;
+      }
+      const rot = Math.atan2(nx, nz);
+      const n = Math.floor(len / 9);
+      for (let k = 1; k < n; k++) {
+        const t = (k * len) / n;
+        const x = a.x + ux * t;
+        const z = a.z + uz * t;
+        p.box(x + nx * 0.6, g0 + (naveTop - 2 - g0) / 2 - 1, z + nz * 0.6, 1.3, naveTop - 2 - g0 + 2, 1.2, 0xd8c6a2, m, rot);
+        const wx = a.x + ux * (t - len / n / 2);
+        const wz = a.z + uz * (t - len / n / 2);
+        p.box(wx + nx * 0.04, naveTop - 5.5, wz + nz * 0.04, 0.9, 3.2, 0.08, 0x3a2e25, m, rot);
+      }
+    }
   }
   // tower at the west end (the corner nearest Plaza de España), aligned with the nave
   const o = obb(ring);
@@ -617,8 +659,20 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
     if (only >= 0 && wi !== only) continue;
     const pts = ringPoints(w.line).map((q, i) => ({ ...q, g: w.ground[i] ?? 0, h: Math.max(4, w.height[i] ?? 6) }));
     // ringPoints drops a closing duplicate; walls are polylines, so keep all vertices
-    const raw: { x: number; z: number; g: number; h: number }[] = [];
-    for (let i = 0; i + 1 < w.line.length; i += 2) raw.push({ x: w.line[i]!, z: w.line[i + 1]!, g: w.ground[i / 2] ?? 0, h: Math.max(4, w.height[i / 2] ?? 6) });
+    const all: { x: number; z: number; g: number; h: number }[] = [];
+    for (let i = 0; i + 1 < w.line.length; i += 2) all.push({ x: w.line[i]!, z: w.line[i + 1]!, g: w.ground[i / 2] ?? 0, h: Math.max(4, w.height[i / 2] ?? 6) });
+    // the mapped lines zigzag every metre or two: keep a vertex every ≥ 5 m so the wall reads as one curtain
+    const raw = all.slice(0, 1);
+    if (all.length > 2) {
+      for (let i = 1; i < all.length - 1; i++) {
+        const l = raw[raw.length - 1]!;
+        if (Math.hypot(all[i]!.x - l.x, all[i]!.z - l.z) >= 5) raw.push(all[i]!);
+      }
+      const last = all[all.length - 1]!;
+      const l = raw[raw.length - 1]!;
+      if (raw.length > 1 && Math.hypot(last.x - l.x, last.z - l.z) < 2.5) raw.pop();
+      raw.push(last);
+    } else raw.push(...all.slice(1));
     void pts;
     const near = w.dist < 120;
     const thick = 2.4;
@@ -648,10 +702,19 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
         top.quad(new THREE.Vector3(a.x - nx, ta, a.z - nz), new THREE.Vector3(b.x - nx, tb, b.z - nz), new THREE.Vector3(b.x + nx, tb, b.z + nz), new THREE.Vector3(a.x + nx, ta, a.z + nz), [0, 0], [1, 0], [1, 1], [0, 1], c, c, c, c, new THREE.Vector3(0, 1, 0));
         continue;
       }
-      if (near) merlons(p, a.x + nx * 0.7, a.z + nz * 0.7, b.x + nx * 0.7, b.z + nz * 0.7, Math.min(ta, tb), 2.0, 0xc4945e, 1.0);
+      if (near) {
+        // merlons along the outer edge, following the wall top up the hill
+        const n = Math.max(1, Math.floor(len / 2.6));
+        const ry = Math.atan2(b.x - a.x, b.z - a.z);
+        for (let k = 0; k < n; k++) {
+          const t = (k + 0.5) / n;
+          p.box(a.x + nx * 0.7 + (b.x - a.x) * t, ta + (tb - ta) * t + 0.6, a.z + nz * 0.7 + (b.z - a.z) * t, 0.8, 1.2, 1.3, 0xc4945e, m, ry);
+        }
+      }
     }
     // square towers at the corners of the near walls
     if (!near || !detail) continue;
+    const towers: { x: number; z: number }[] = [];
     for (let i = 1; i + 1 < raw.length; i++) {
       const a = raw[i - 1]!;
       const b = raw[i]!;
@@ -661,6 +724,10 @@ function murallas(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, detail: boolean, o
       let d = Math.abs(a2 - a1);
       if (d > Math.PI) d = 2 * Math.PI - d;
       if (d < 0.6) continue;
+      // a tower only at a real corner between long curtains, and never crowded together
+      if (Math.hypot(b.x - a.x, b.z - a.z) < 12 || Math.hypot(c.x - b.x, c.z - b.z) < 12) continue;
+      if (towers.some((t) => Math.hypot(t.x - b.x, t.z - b.z) < 30)) continue;
+      towers.push(b);
       const tw = 6.5;
       {
         const pr = ctx.track.project(b.x, b.z);
@@ -932,6 +999,17 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
     p.box(x, 1.0, 0.07, 2.4, 0.08, 0.1, PAL.white, m);
   }
   p.box(0, 0.3, 0.05, w, 0.6, 0.08, 0x3e7bd6, m);
+  // the side walls (seen by the intro camera): tiled plinth and two windows each, on a stone base
+  const dpt = b1 - b0;
+  p.box(0, -1.05, -dpt / 2, w + 0.3, 2.1, dpt + 0.3, 0xcfc6b6, m);
+  for (const sx of [-1, 1]) {
+    const x = sx * (w / 2 + 0.03);
+    p.box(x, 0.3, -dpt / 2, 0.08, 0.6, dpt, 0x3e7bd6, m);
+    for (const zc of [-dpt * 0.28, -dpt * 0.72]) {
+      p.box(x, 1.7, zc, 0.06, 1.4, 1.8, PAL.glass, m);
+      p.box(x, 1.0, zc, 0.1, 0.08, 2.0, PAL.white, m);
+    }
+  }
   const uv = signSlot("bar-el-puente", drawLabel("Bar El Puente", "#1f2328", "#ffd98a", { serif: true }));
   p.quad(new THREE.Matrix4().makeScale(6.4, 1.2, 1).setPosition(0, 4.6, 0.08), 0xffffff, signMaterial(), uv);
   p.box(0, 4.6, 0.03, 6.6, 1.35, 0.06, PAL.ink, m);

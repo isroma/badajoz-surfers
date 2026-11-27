@@ -47,7 +47,7 @@ function board(bag: Bag, ts: TS, s: number, lat: number, dir: "left" | "right"):
   b.push(new THREE.Matrix4().makeRotationY(ry).setPosition(p.x, p.y, p.z));
   for (const x of [-0.8, 0.8]) b.box(x, 0.55, 0, 0.08, 1.1, 0.08, PAL.darkGrey, m);
   const uv = signSlot(`chevron-${dir}`, chevronDraw(dir));
-  b.box(0, 1.45, -0.03, 2.1, 0.62, 0.05, PAL.ink, m);
+  b.box(0, 1.45, -0.03, 2.1, 0.62, 0.05, 0xa7adb3, m); // galvanised back, not a black slab from behind
   b.quad(new THREE.Matrix4().makeScale(2.0, 0.56, 1).setPosition(0, 1.45, 0), 0xffffff, signMaterial(true), uv);
   b.pop();
 }

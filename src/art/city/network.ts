@@ -167,7 +167,8 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
       const d = Math.max(0, pr.lateral < 0 ? lay.left - pr.lateral : pr.lateral - lay.right);
       const ter = ground.heightAt(p.x, p.z) + 0.06;
       const k = Math.min(1, d / 25);
-      let y = (f.h - 0.005) * (1 - k) + ter * k;
+      // never under the terrain (it would poke through the street in a saw-tooth near the route)
+      let y = Math.max((f.h - 0.005) * (1 - k) + ter * k, ter + 0.1);
       if (st.bridge) y = Math.max(y, f.h);
       return { y, near: Math.abs(pr.lateral) < NEAR };
     });

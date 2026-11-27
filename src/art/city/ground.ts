@@ -82,6 +82,7 @@ export function buildGround(ctx: CityCtx): GroundLayer {
   const nz = Math.ceil((t.nz * t.cell + 800) / STEP) + 1;
   const H = new Float32Array(nx * nz);
   const kind = new Uint8Array(nx * nz); // 0 urban, 1 lawn, 2 water, 3 square, 4 field, 5 scrub, 6 wood, 7 bank, 8 sand
+  const locked = new Uint8Array(nx * nz); // under the route: never smoothed
   const riparian: { x: number; z: number; y: number; sand: boolean }[] = [];
   const ripIdx: number[] = [];
   const f = newFrame();
@@ -115,6 +116,7 @@ export function buildGround(ctx: CityCtx): GroundLayer {
         const k = Math.max(0, Math.min(1, (d - edge) / STEP));
         const cap = f.h - 0.35 + k * 30;
         if (h > cap) h = cap;
+        locked[i] = 1;
       }
       // the DTM keeps the Puente Real deck: put the river islands back under it
       if (d < edge + 30 && ctx.city.meta.bridges.some((b) => b.length > 100 && pr.s > b.fromS + 15 && pr.s < b.toS - 15)) {
@@ -128,9 +130,29 @@ export function buildGround(ctx: CityCtx): GroundLayer {
       }
     }
   }
+  // soften the shoreline: the 20 m river mask otherwise draws the banks and islands as staircases
+  for (let pass = 0; pass < 3; pass++) {
+    const src = H.slice();
+    for (let iz = 1; iz < nz - 1; iz++) {
+      for (let ix = 1; ix < nx - 1; ix++) {
+        const i = iz * nx + ix;
+        if (locked[i]) continue;
+        let wet = 0;
+        let sum = 0;
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const j = i + dz * nx + dx;
+          if (kind[j] === 2) wet++;
+          sum += src[j]!;
+        }
+        if (wet > 0 && wet < 9) H[i] = sum / 9;
+      }
+    }
+  }
   riparian.forEach((r, k) => {
     r.y = H[ripIdx[k]!]!;
   });
+  // the softened shore may now be under water: no riverside tree stands in the river
+  for (let k = riparian.length - 1; k >= 0; k--) if (riparian[k]!.y < wl + 0.4) riparian.splice(k, 1);
   const heightAt = (x: number, z: number): number => {
     const fx = Math.max(0, Math.min(nx - 1.001, (x - x0) / STEP));
     const fz = Math.max(0, Math.min(nz - 1.001, (z - z0) / STEP));
