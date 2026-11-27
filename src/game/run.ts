@@ -1,0 +1,579 @@
+/**
+ * One run: the fixed-step simulation of the runner, the track, pickups, power-ups, scoring and
+ * the chaser. Pure (no three.js) so it can be tested and driven headless. Emits contract events
+ * through `emit`, and visual cues (bursts, knocked obstacles, shakes) through `fx`.
+ */
+import {
+  OBSTACLE_DEFS,
+  POWERUPS,
+  WORD,
+  ZONES,
+  laneX,
+  type GameEvent,
+  type ObstacleKind,
+  type PickupKind,
+  type PowerupKind,
+  type RunSummary,
+  type ZoneId,
+} from "../contracts";
+import { Chaser } from "./chaser";
+import { BoxSet, topAt, type Aabb } from "./collision";
+import {
+  bounceBack,
+  createEvents,
+  createPlayer,
+  prevRunnerBox,
+  runnerBox,
+  stepPlayer,
+  type PlayerAction,
+  type PlayerState,
+} from "./player";
+import type { PickupSpawn } from "./spawns";
+import { TrackGenerator } from "./track";
+import {
+  LAP_LENGTH,
+  MAGNET_RADIUS,
+  PATINETE_SPEED_FACTOR,
+  SHIELD_INVULNERABLE_TIME,
+  STUMBLE_SLOWDOWN,
+  lapAt,
+  speedAt,
+  zoneAt,
+  zoneStartDistance,
+} from "./tuning";
+
+export type RunFx =
+  | { type: "burst"; kind: PickupKind | "crash" | "shield"; x: number; y: number; d: number }
+  | { type: "knock"; id: number; dir: number }
+  | { type: "shake"; amount: number }
+  /** Everything ahead was regenerated (debug warp): the scene must drop its objects. */
+  | { type: "reset" };
+
+export type RunPhase = "countdown" | "running" | "ending" | "over";
+
+export interface RunConfig {
+  seed: number;
+  powerupDuration(kind: PowerupKind): number;
+  baseMultiplier(): number;
+  emit(event: GameEvent): void;
+  fx(fx: RunFx): void;
+}
+
+export interface ActivePowerup {
+  kind: PowerupKind;
+  remaining: number;
+  duration: number;
+}
+
+interface NearTrack {
+  lastX: number;
+  inD: boolean;
+  minClear: number;
+  spoiled: boolean;
+}
+
+export const COUNTDOWN_TIME = 1.5;
+export const ENDING_TIME = 1.25;
+const GENERATE_AHEAD = 280;
+
+const SCORE = {
+  perMetre: 1,
+  bellota: 5,
+  nearMiss: 25,
+  word: 1000,
+  zone: 100,
+} as const;
+
+const overlaps = (aMin: number, aMax: number, bMin: number, bMax: number): boolean => aMin < bMax && bMin < aMax;
+
+export class Run {
+  readonly player: PlayerState = createPlayer(0, 0);
+  readonly gen: TrackGenerator;
+  readonly ignore = new Set<number>();
+  readonly boxes: BoxSet;
+  readonly taken = new Set<number>();
+  /** Bellotas being pulled by the magnet: current position. */
+  readonly magnet = new Map<number, { x: number; y: number; d: number }>();
+  readonly chaser = new Chaser();
+  readonly powerups: ActivePowerup[] = [];
+
+  phase: RunPhase = "countdown";
+  /** Seconds left in the current countdown (start or resume). */
+  countdown = COUNTDOWN_TIME;
+  /** True while the start countdown runs (vs. a resume countdown). */
+  intro = true;
+  time = 0;
+  endTime = 0;
+  cause: RunSummary["cause"] = "crash";
+  crashedOn: ObstacleKind | undefined;
+
+  score = 0;
+  bellotas = 0;
+  jumps = 0;
+  rolls = 0;
+  nearMisses = 0;
+  roofMetres = 0;
+  powerupsTaken = 0;
+  wordsCompleted = 0;
+  zonesCompleted = 0;
+  lettersCollected = 0;
+
+  zoneSerial = 0;
+  invincible = false;
+  speedOverride: number | null = null;
+  /** Remaining invulnerability after the patinete absorbed a hit. */
+  invulnerable = 0;
+  /** Speed factor after a stumble (recovers to 1). */
+  slow = 1;
+  /** Seconds left of the short "stumble" animation. */
+  stumbleAnim = 0;
+  /** Ticks counter for occasional work. */
+  private ticks = 0;
+  private lastCount = -1;
+
+  readonly actions: PlayerAction[] = [];
+  private readonly ev = createEvents();
+  private readonly near = new Map<number, NearTrack>();
+  private readonly letterIndex = new Map<number, number>();
+  private readonly a: Aabb = { xMin: 0, xMax: 0, yMin: 0, yMax: 0, dMin: 0, dMax: 0 };
+  private readonly b: Aabb = { xMin: 0, xMax: 0, yMin: 0, yMax: 0, dMin: 0, dMax: 0 };
+
+  constructor(private readonly cfg: RunConfig) {
+    this.gen = new TrackGenerator(cfg.seed);
+    this.gen.generateUntil(GENERATE_AHEAD);
+    this.boxes = new BoxSet(this.gen.obstacles, this.ignore);
+    this.boxes.prepare(0, 0);
+  }
+
+  /** Emit the run-start events (zone banner, countdown 3). */
+  begin(): void {
+    const span = zoneAt(0);
+    this.zoneSerial = span.serial;
+    this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: true });
+    this.startCountdown(true);
+  }
+
+  startCountdown(intro: boolean): void {
+    this.intro = intro;
+    this.countdown = COUNTDOWN_TIME;
+    this.lastCount = 3;
+    this.cfg.emit({ type: "countdown", value: 3 });
+  }
+
+  get distance(): number {
+    return this.player.p;
+  }
+
+  get lap(): number {
+    return lapAt(this.player.p);
+  }
+
+  get multiplier(): number {
+    const base = this.cfg.baseMultiplier() + (this.lap - 1);
+    return this.active("jamon") ? base * 2 : base;
+  }
+
+  active(kind: PowerupKind): ActivePowerup | undefined {
+    for (const p of this.powerups) if (p.kind === kind) return p;
+    return undefined;
+  }
+
+  /** Which letter of WORD this pickup shows (-1 = hide it). Assigned in order when first asked. */
+  letterFor(id: number): number {
+    const known = this.letterIndex.get(id);
+    if (known !== undefined) return known;
+    const index = this.lettersCollected + this.letterIndex.size;
+    if (index >= WORD.length) return -1;
+    this.letterIndex.set(id, index);
+    return index;
+  }
+
+  push(action: PlayerAction): void {
+    if (this.phase === "running" || this.phase === "countdown") this.actions.push(action);
+  }
+
+  /** Planned + power-up + stumble speed. */
+  targetSpeed(): number {
+    const base = this.speedOverride ?? speedAt(this.player.p);
+    return base * (this.active("patinete") ? PATINETE_SPEED_FACTOR : 1) * this.slow;
+  }
+
+  tick(dt: number): void {
+    if (this.phase === "over") return;
+    if (this.countdown > 0) {
+      this.countdown -= dt;
+      const shown = Math.ceil(this.countdown / (COUNTDOWN_TIME / 3));
+      if (this.countdown <= 0) {
+        this.countdown = 0;
+        this.cfg.emit({ type: "countdown", value: 0 });
+        if (this.intro) this.chaser.go();
+        this.intro = false;
+        this.phase = this.phase === "countdown" ? "running" : this.phase;
+        this.actions.length = 0;
+      } else if (shown !== this.lastCount && shown > 0) {
+        this.lastCount = shown;
+        this.cfg.emit({ type: "countdown", value: shown });
+      }
+      if (this.phase === "countdown") this.chaser.update(dt);
+      return;
+    }
+    this.time += dt;
+    this.ticks++;
+    if (this.phase === "ending") {
+      this.tickEnding(dt);
+      return;
+    }
+    this.tickRunning(dt);
+  }
+
+  private tickEnding(dt: number): void {
+    const s = this.player;
+    this.endTime += dt;
+    s.speed = this.cause === "crash" ? 0 : Math.max(0, s.speed - 30 * dt);
+    stepPlayer(s, [], dt, this.boxes, this.ev);
+    this.chaser.update(dt);
+    if (this.endTime >= ENDING_TIME) {
+      this.phase = "over";
+      this.cfg.emit({ type: "gameover", summary: this.summary() });
+    }
+  }
+
+  private tickRunning(dt: number): void {
+    const s = this.player;
+    const cfg = this.cfg;
+    this.slow = Math.min(1, this.slow + dt * 0.35);
+    this.invulnerable = Math.max(0, this.invulnerable - dt);
+    this.stumbleAnim = Math.max(0, this.stumbleAnim - dt);
+    s.speed = this.targetSpeed();
+    s.superJump = this.active("zapatillas") !== undefined;
+
+    stepPlayer(s, this.actions, dt, this.boxes, this.ev);
+    this.actions.length = 0;
+    const ev = this.ev;
+    if (ev.jumped) {
+      this.jumps++;
+      cfg.emit({ type: "jump", super: ev.superJumped });
+    }
+    if (ev.landed) cfg.emit({ type: "land" });
+    if (ev.rolled) {
+      this.rolls++;
+      cfg.emit({ type: "roll" });
+    }
+    if (ev.laneChanged) cfg.emit({ type: "lane" });
+
+    const dp = s.p - s.pp;
+    if (s.grounded && s.supportId >= 0) this.roofMetres += dp;
+
+    // Contacts.
+    if (!this.invincible) {
+      const contact = this.boxes.contact(prevRunnerBox(s, this.a), runnerBox(s, this.b));
+      if (contact) {
+        const spawn = contact.spawn;
+        const track = this.near.get(spawn.id);
+        if (track) track.spoiled = true;
+        if (this.invulnerable > 0) this.ignore.add(spawn.id);
+        else if (contact.type === "front") {
+          if (this.active("patinete")) this.shieldBreak(spawn.id, spawn.lane);
+          else {
+            this.crash(spawn.kind);
+            return;
+          }
+        } else {
+          if (contact.type === "side") bounceBack(s);
+          else this.ignore.add(spawn.id);
+          if (this.stumble()) return;
+        }
+      }
+    }
+
+    this.trackNearMisses();
+    this.collectPickups(dt);
+
+    this.score += dp * SCORE.perMetre * this.multiplier;
+
+    // Power-up timers.
+    for (let i = this.powerups.length - 1; i >= 0; i--) {
+      const p = this.powerups[i];
+      if (!p) continue;
+      p.remaining -= dt;
+      if (p.remaining <= 0) {
+        this.powerups.splice(i, 1);
+        cfg.emit({ type: "powerup-end", kind: p.kind });
+      }
+    }
+
+    // Zones.
+    const span = zoneAt(s.p);
+    if (span.serial !== this.zoneSerial) {
+      this.zoneSerial = span.serial;
+      this.zonesCompleted++;
+      this.score += SCORE.zone * this.multiplier;
+      cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
+    }
+
+    this.chaser.update(dt);
+
+    this.gen.generateUntil(s.p + GENERATE_AHEAD);
+    if (this.ticks % 120 === 0) this.gen.prune(s.p);
+  }
+
+  private stumble(): boolean {
+    if (this.chaser.close) {
+      this.caught();
+      return true;
+    }
+    this.chaser.stumble();
+    this.slow = STUMBLE_SLOWDOWN;
+    this.stumbleAnim = 0.4;
+    this.cfg.emit({ type: "stumble" });
+    this.cfg.fx({ type: "shake", amount: 0.45 });
+    return false;
+  }
+
+  private shieldBreak(id: number, lane: number): void {
+    const i = this.powerups.findIndex((p) => p.kind === "patinete");
+    if (i >= 0) this.powerups.splice(i, 1);
+    this.cfg.emit({ type: "powerup-end", kind: "patinete" });
+    this.cfg.emit({ type: "shield-break" });
+    this.ignore.add(id);
+    this.invulnerable = SHIELD_INVULNERABLE_TIME;
+    const s = this.player;
+    this.cfg.fx({ type: "knock", id, dir: lane === 0 ? (s.x >= 0 ? -1 : 1) : Math.sign(lane) });
+    this.cfg.fx({ type: "burst", kind: "shield", x: s.x, y: s.y + 1, d: s.p + 0.5 });
+    this.cfg.fx({ type: "shake", amount: 0.6 });
+  }
+
+  private crash(kind: ObstacleKind): void {
+    this.cause = "crash";
+    this.crashedOn = kind;
+    this.phase = "ending";
+    this.endTime = 0;
+    this.chaser.arrive();
+    const s = this.player;
+    s.p = s.pp; // Do not draw the runner inside the obstacle.
+    s.speed = 0;
+    this.cfg.emit({ type: "crash", obstacle: kind });
+    this.cfg.fx({ type: "burst", kind: "crash", x: s.x, y: s.y + 1.1, d: s.p + 0.3 });
+    this.cfg.fx({ type: "shake", amount: 1 });
+  }
+
+  private caught(): void {
+    this.cause = "caught";
+    this.crashedOn = undefined;
+    this.phase = "ending";
+    this.endTime = 0;
+    this.chaser.grab();
+    this.cfg.emit({ type: "caught" });
+    this.cfg.fx({ type: "shake", amount: 0.5 });
+  }
+
+  private trackNearMisses(): void {
+    const s = this.player;
+    const rb = this.b;
+    for (let i = 0; i < this.boxes.count; i++) {
+      const box = this.boxes.box(i);
+      if (!box) continue;
+      const id = box.spawn.id;
+      let t = this.near.get(id);
+      if (!t) {
+        if (box.dMax < s.p - 1) continue;
+        t = { lastX: -1e9, inD: false, minClear: Infinity, spoiled: false };
+        this.near.set(id, t);
+      }
+      const ox = overlaps(rb.xMin, rb.xMax, box.xMin, box.xMax);
+      const od = overlaps(rb.dMin, rb.dMax, box.dMin, box.dMax);
+      if (s.supportId === id) t.spoiled = true;
+      if (ox) t.lastX = this.time;
+      if (od && !t.inD) {
+        t.inD = true;
+        if (!ox && this.time - t.lastX < 0.3 && !t.spoiled) {
+          t.spoiled = true;
+          this.nearMiss(box.spawn.kind);
+        }
+      }
+      if (od && ox) {
+        const top = topAt(box, s.p);
+        const clear = rb.yMin >= top ? rb.yMin - top : box.yMin > 0 ? box.yMin - rb.yMax : Infinity;
+        if (clear >= 0) t.minClear = Math.min(t.minClear, clear);
+      }
+      if (!od && t.inD) {
+        if (!t.spoiled && t.minClear < 0.25) this.nearMiss(box.spawn.kind);
+        t.spoiled = true;
+        t.inD = false;
+      }
+    }
+    if (this.near.size > 96) {
+      for (const [id] of this.near) {
+        this.near.delete(id);
+        if (this.near.size <= 48) break;
+      }
+    }
+  }
+
+  private nearMiss(_kind: ObstacleKind): void {
+    this.nearMisses++;
+    this.score += SCORE.nearMiss * this.multiplier;
+    this.cfg.emit({ type: "near-miss" });
+  }
+
+  private collectPickups(dt: number): void {
+    const s = this.player;
+    const list = this.gen.pickups;
+    const magnet = this.active("iman") !== undefined;
+    const reach = magnet ? MAGNET_RADIUS : 1.2;
+    // Binary search for the first pickup with d >= p - reach - 2.
+    let lo = 0;
+    let hi = list.length;
+    const from = s.pp - reach - 2;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const p = list[mid];
+      if (p && p.d < from) lo = mid + 1;
+      else hi = mid;
+    }
+    const feet = s.y;
+    const head = feet + (s.roll > 0 ? 1.3 : 2.3);
+    for (let i = lo; i < list.length; i++) {
+      const pk = list[i];
+      if (!pk) break;
+      if (pk.d > s.p + reach + 1) break;
+      if (this.taken.has(pk.id)) continue;
+      if (pk.kind === "letra" && pk.d < s.p - 1.5) {
+        this.missLetter(pk.id);
+        continue;
+      }
+      let x = laneX(pk.lane);
+      let y = pk.y;
+      let d = pk.d;
+      if (magnet && pk.kind === "bellota") {
+        const pulled = this.magnet.get(pk.id);
+        if (pulled) {
+          x = pulled.x;
+          y = pulled.y;
+          d = pulled.d;
+        }
+        const dx = s.x - x;
+        const dy = feet + 1 - y;
+        const dd = s.p - d;
+        const dist = Math.hypot(dx, dy, dd);
+        if (dist < MAGNET_RADIUS) {
+          const step = Math.min(dist, (18 + s.speed) * dt);
+          const f = dist > 1e-6 ? step / dist : 0;
+          x += dx * f;
+          y += dy * f;
+          d += dd * f;
+          this.magnet.set(pk.id, { x, y, d });
+        }
+      }
+      if (pk.kind === "letra" && this.letterFor(pk.id) < 0) continue;
+      if (Math.abs(x - s.x) > 1.05) continue;
+      if (d < s.pp - 0.8 || d > s.p + 0.8) continue;
+      if (y < feet - 0.4 || y > head) continue;
+      this.take(pk);
+    }
+  }
+
+  private missLetter(id: number): void {
+    const index = this.letterIndex.get(id);
+    this.taken.add(id);
+    if (index === undefined) return;
+    this.letterIndex.delete(id);
+    for (const [other, i] of this.letterIndex) if (i > index) this.letterIndex.set(other, i - 1);
+  }
+
+  private take(pk: PickupSpawn): void {
+    const s = this.player;
+    const cfg = this.cfg;
+    this.taken.add(pk.id);
+    this.magnet.delete(pk.id);
+    const mult = this.multiplier;
+    cfg.fx({ type: "burst", kind: pk.kind, x: s.x, y: s.y + 1, d: s.p + 0.4 });
+    switch (pk.kind) {
+      case "bellota":
+        this.bellotas++;
+        this.score += SCORE.bellota * mult;
+        cfg.emit({ type: "pickup", kind: "bellota" });
+        break;
+      case "letra": {
+        const index = this.letterFor(pk.id);
+        this.letterIndex.delete(pk.id);
+        for (const [other, i] of this.letterIndex) if (i > index) this.letterIndex.set(other, i - 1);
+        if (index < 0) break;
+        this.lettersCollected++;
+        cfg.emit({ type: "pickup", kind: "letra", letterIndex: index });
+        if (this.lettersCollected >= WORD.length) {
+          this.lettersCollected = 0;
+          this.letterIndex.clear();
+          this.wordsCompleted++;
+          this.score += SCORE.word * mult;
+          cfg.emit({ type: "word-complete" });
+        }
+        break;
+      }
+      default: {
+        const kind = pk.kind;
+        const duration = Math.max(1, cfg.powerupDuration(kind) || POWERUPS[kind].baseDuration);
+        const existing = this.active(kind);
+        if (existing) {
+          existing.remaining = duration;
+          existing.duration = duration;
+        } else this.powerups.push({ kind, remaining: duration, duration });
+        this.powerupsTaken++;
+        cfg.emit({ type: "pickup", kind });
+        cfg.emit({ type: "powerup-start", kind, duration });
+        break;
+      }
+    }
+  }
+
+  /** Debug: jump to the start of a zone (the next one with this id). */
+  warp(zone: ZoneId): void {
+    const index = ZONES.findIndex((z) => z.id === zone);
+    if (index < 0) return;
+    const s = this.player;
+    let start = zoneStartDistance(index, this.lap);
+    if (start <= s.p + 1) start += LAP_LENGTH;
+    this.gen.restartAt(start);
+    this.ignore.clear();
+    this.taken.clear();
+    this.magnet.clear();
+    this.near.clear();
+    this.letterIndex.clear();
+    s.p = s.pp = start + 1;
+    s.y = s.py = 0;
+    s.vy = 0;
+    s.grounded = true;
+    s.supportId = -1;
+    this.gen.generateUntil(s.p + GENERATE_AHEAD);
+    this.boxes.prepare(s.p, s.p);
+    this.chaser.far();
+    const span = zoneAt(s.p);
+    this.zoneSerial = span.serial;
+    this.cfg.fx({ type: "reset" });
+    this.cfg.emit({ type: "zone", zone: span.zone, lap: span.lap, first: false });
+  }
+
+  summary(): RunSummary {
+    const summary: RunSummary = {
+      score: Math.round(this.score),
+      distance: Math.round(this.player.p),
+      bellotas: this.bellotas,
+      zonesCompleted: this.zonesCompleted,
+      lap: this.lap,
+      cause: this.cause,
+      jumps: this.jumps,
+      rolls: this.rolls,
+      nearMisses: this.nearMisses,
+      roofMetres: Math.round(this.roofMetres),
+      powerups: this.powerupsTaken,
+      wordsCompleted: this.wordsCompleted,
+    };
+    if (this.crashedOn) summary.obstacle = this.crashedOn;
+    return summary;
+  }
+}
+
+/** Is a kind a vehicle (for visuals)? */
+export function isVehicle(kind: ObstacleKind): boolean {
+  return OBSTACLE_DEFS[kind].vehicle;
+}
