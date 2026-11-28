@@ -138,13 +138,14 @@ describe("track generator", () => {
     expect(runs).toBeGreaterThan(0);
   }, 120_000);
 
-  it("opens lap 1 with the first obstacle around 45-60 m", () => {
+  it("opens lap 1 with the first obstacle around 45-80 m", () => {
     for (let seed = 1; seed <= 40; seed++) {
       const gen = new TrackGenerator(seed);
       gen.generateUntil(300);
       const first = Math.min(...gen.obstacles.map((o) => interval(o)[0]));
       expect(first).toBeGreaterThanOrEqual(45);
-      expect(first).toBeLessThanOrEqual(66);
+      // (the welcoming first kilometre only takes dodges and pavement clutter: a beat later)
+      expect(first).toBeLessThanOrEqual(80);
     }
   });
 

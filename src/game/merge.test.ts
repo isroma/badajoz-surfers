@@ -108,7 +108,7 @@ describe("lane tapers, passages and guides on the real lap", () => {
     }
   }, 120_000);
 
-  it("the HUD drops a tapering lane from the midpoint of its taper; s 3132's taper starts in the stretch before", () => {
+  it("the HUD drops a tapering lane from the midpoint of its taper; lanes drawn on a ring are runnable there", () => {
     for (const m of merges(track)) {
       const mid = (m.s0 + m.s1) / 2;
       const st = track.stretches[m.fromStretch]!;
@@ -127,11 +127,15 @@ describe("lane tapers, passages and guides on the real lap", () => {
       expect(laneShownAt(track, m.into, mid + 1)).toBe(true);
       // Every taper is at least MERGE_LENGTH long (the short ring stretch borrows the one before);
       // a ring lane that begins and ends in the ring is never offered (zero length at its start).
+      // (lanes drawn on a ring close over a short taper sized by sideways speed)
       if (m.s1 === m.s0) expect(m.s0).toBe(st.fromS);
-      else expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
+      else if (st.section.roundabout === null) expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
     }
+    // own-2 drawn on the 44 m ring at s ≈ 3100 is runnable there: it closes inside the ring.
     const short = merges(track).find((m) => track.stretches[m.fromStretch]!.layout.ids[m.lane] === "own-2" && track.stretches[m.fromStretch]!.section.roundabout !== null)!;
-    expect(short.s0).toBeLessThan(track.stretches[short.fromStretch]!.fromS);
+    const ring = track.stretches[short.fromStretch]!;
+    expect(short.s0).toBeGreaterThanOrEqual(ring.fromS);
+    expect(laneShownAt(track, short.lane, ring.fromS + 2)).toBe(true);
   });
 
   it("no speed step at the lap seam: the new lap's bonus eases in", () => {
@@ -170,7 +174,7 @@ describe("two-lane streets and oncoming warnings", () => {
         for (const p of narrowObs) {
           if (p === o || Math.abs(p.x - o.x) < 0.3) continue;
           const [b0, b1] = footprintOf(p);
-          if (Math.max(a0, b0) - Math.min(a1, b1) < TWO_LANE_FREE * speedAt(o.d) - 1e-6) bad.push(`seed ${seed}: ${o.kind} and ${p.kind} block both lanes at ${o.d.toFixed(0)}`);
+          if (Math.max(a0, b0) - Math.min(a1, b1) < TWO_LANE_FREE * Math.max(speedAt(o.d), speedAt(p.d)) - 1e-6) bad.push(`seed ${seed}: ${o.kind} and ${p.kind} block both lanes at ${o.d.toFixed(0)}`);
         }
       }
     }

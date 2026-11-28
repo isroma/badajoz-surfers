@@ -23,7 +23,7 @@ import {
   type RewardSlot,
 } from "./patterns";
 import { createRng, type Rng } from "./rng";
-import { unfairPoints } from "./fairness";
+import { PLAIN_JUMP, PLAIN_ROLL, narrowPoints, unfairPoints } from "./fairness";
 import type { ObstacleSpawn, PickupSpawn } from "./spawns";
 import { collides, drivesThrough, flowAllows, footprintOf, lateralOverlap, lifetime, sweep } from "./traffic";
 import {
@@ -31,6 +31,9 @@ import {
   FLIGHT_MIN_DISTANCE,
   FLIGHT_SPEED_FACTOR,
   START_SPEED,
+  WELCOME_GAP,
+  WELCOME_RAMP,
+  WELCOME_UNTIL,
   difficultyAt,
   reactionWindow,
   speedAt,
@@ -99,6 +102,8 @@ export function mergeClosures(course: Course): readonly Closure[] {
   closuresByTrack.set(track, out);
   return out;
 }
+
+const ROW_SLACK = 2;
 
 /** No obstacles where the road curves harder than this (1/m: a radius under 18 m). */
 export const CALM_CURVATURE = 1 / 18;
@@ -189,7 +194,9 @@ function finaleRoom(span: ZoneSpan): { finaleLength: number; before: number } {
   const rows = difficulty > 0.3 ? 4 : 3;
   // Row gap as in patterns.rowGap(+0.12 s lane change), plus the lap-1 breather of the finale.
   const extra = 0.12 + (span.lap === 1 ? 0.25 : 0);
-  const finaleLength = rows * (5.4 + v * (reaction + 0.35 + extra + 0.25 * (1 - difficulty))) + v * (span.lap === 1 ? 0.65 : 0.4) + 1;
+  // (the welcoming first kilometre spaces the rows WELCOME_GAP s apart)
+  const rowTime = Math.max(reaction + 0.35 + extra + 0.25 * (1 - difficulty), span.lap === 1 && span.start < WELCOME_UNTIL ? WELCOME_GAP + 0.1 : 0);
+  const finaleLength = rows * (5.4 + v * rowTime) + v * (span.lap === 1 ? 0.65 : 0.4) + 1;
   return { finaleLength, before: v * (reaction + 1.1 + 0.35 * (1 - difficulty)) + 4 };
 }
 
@@ -531,6 +538,45 @@ export class TrackGenerator {
   }
 
   /**
+   * The welcoming first kilometre of a run (lap 1, before WELCOME_UNTIL): nothing in a road lane
+   * that needs a jump or a roll (low clutter only on the pavements, no street-wide barriers or
+   * banners), no oncoming vehicles, rows at least WELCOME_GAP s apart, and two neighbouring
+   * passable lanes everywhere. Patterns over it are refused otherwise.
+   */
+  private unwelcoming(b: PatternBuilder): boolean {
+    if (this.tutorial.length > 0 && b.start < this.tutorialEnd) return false;
+    let from = Infinity;
+    let to = -Infinity;
+    for (const o of b.obstacles) {
+      const [a, c] = footprintOf(o);
+      if (a >= WELCOME_UNTIL) continue;
+      from = Math.min(from, a);
+      to = Math.max(to, c);
+      if (o.k > 0 || OBSTACLE_DEFS[o.kind].lanes === 3) return true;
+      if (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind)) {
+        const lay = this.layoutFn(o.d);
+        const lane = nearestLane(lay, o.x);
+        if ((lay.kinds?.[lane] ?? "road") === "road") return true;
+      }
+    }
+    if (!Number.isFinite(from)) return false;
+    const room = WELCOME_GAP * speedAt(from);
+    const near: Omit<ObstacleSpawn, "id">[] = [...b.obstacles];
+    for (const o of this.obstacles) {
+      if (o.d < from - room - 20 || o.d > to + room + 20) continue;
+      near.push(o);
+    }
+    // Rows WELCOME_GAP s apart (obstacles side by side, footprints within ROW_SLACK m, are a row).
+    const spans = near.map((o) => footprintOf(o)).sort((x, y) => x[0] - y[0]);
+    for (let i = 1; i < spans.length; i++) {
+      const gap = spans[i]![0] - Math.max(...spans.slice(0, i).map((x) => x[1]));
+      if (gap > ROW_SLACK && gap < room) return true;
+    }
+    const course = this.course();
+    return narrowPoints(near, from - 2, Math.min(WELCOME_UNTIL, to + 2), { layout: this.layoutFn, track: course?.track ?? null, speed: speedAt }, 1).length > 0;
+  }
+
+  /**
    * The fairness invariant over the composed track (fairness.ts): with this pattern added to
    * everything already placed around it, is there still an obvious way through everywhere?
    */
@@ -571,13 +617,15 @@ export class TrackGenerator {
     for (const o of b.obstacles) {
       if (OBSTACLE_DEFS[o.kind].lanes === 3) continue;
       const [a0, a1] = footprintOf(o);
-      const lay = this.layoutFn(o.d);
-      if (lay.offsets.length !== 2) continue;
+      const two = this.layoutFn(o.d).offsets.length === 2;
+      // (the faster of the two speeds: the pace eases through bends)
       const room = TWO_LANE_FREE * speedAt(o.d);
       const clash = (other: ObstacleDraft): boolean => {
         if (other === o || OBSTACLE_DEFS[other.kind].lanes === 3 || Math.abs(other.x - o.x) < 0.3) return false;
+        // Either of the two in a two-lane street.
+        if (!two && this.layoutFn(other.d).offsets.length !== 2) return false;
         const [b0, b1] = footprintOf(other);
-        return Math.max(a0, b0) - Math.min(a1, b1) < room;
+        return Math.max(a0, b0) - Math.min(a1, b1) < Math.max(room, TWO_LANE_FREE * speedAt(other.d));
       };
       for (const other of b.obstacles) if (clash(other)) return true;
       for (const other of this.movers) if (clash(other)) return true;
@@ -586,12 +634,12 @@ export class TrackGenerator {
       let hi = list.length;
       while (lo < hi) {
         const mid = (lo + hi) >> 1;
-        if ((list[mid]?.d ?? Infinity) < a0 - room - 15) lo = mid + 1;
+        if ((list[mid]?.d ?? Infinity) < a0 - room - 25) lo = mid + 1;
         else hi = mid;
       }
       for (let i = lo; i < list.length; i++) {
         const other = list[i]!;
-        if (other.d > a1 + room + 15) break;
+        if (other.d > a1 + room + 25) break;
         if (other.k === 0 && clash(other)) return true;
       }
     }
@@ -719,8 +767,9 @@ export class TrackGenerator {
       if (!PATTERNS[name].fn(b) || !b.ok) continue;
       const flightLimit = this.flights.reduce((m, f) => (f.clearFrom > this.cursor ? Math.min(m, f.clearFrom - 2) : m), Infinity);
       if (b.end > Math.min(name === "finale" ? limit : normalLimit, flightLimit)) continue;
-      if (this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b) || this.unfair(b)) {
-        if (!b.mirror() || this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b) || this.unfair(b)) continue;
+      const refused = (): boolean => this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b) || this.unwelcoming(b) || this.unfair(b);
+      if (refused()) {
+        if (!b.mirror() || refused()) continue;
       }
       if (name === "rampRoof") this.roofSerial = span.serial;
       this.commit(name, b, limit, easy, span);
@@ -802,6 +851,8 @@ export class TrackGenerator {
     let gap = vEnd * (ctx.reaction + 0.15 + b.tail + 0.35 * (1 - ctx.difficulty)) + this.rng.range(0, vEnd * 0.45);
     if (easy) gap *= 1.7;
     else if (ctx.zone === "puente-real" && ctx.lap === 1) gap *= 1.25;
+    // Lap 1: breathing room easing back to normal density between WELCOME_UNTIL and WELCOME_RAMP.
+    if (ctx.lap === 1 && b.end < WELCOME_RAMP) gap *= 1 + 0.5 * Math.min(1, (WELCOME_RAMP - b.end) / (WELCOME_RAMP - WELCOME_UNTIL));
 
     const obstacles = b.obstacles
       .map((o): ObstacleSpawn => ({ ...o, id: this.nextId++ }))
@@ -822,8 +873,14 @@ export class TrackGenerator {
     const first = obstacles[0];
     if (last && first && first.d < last.d) this.obstacles.sort((a, c) => a.d - c.d);
 
+    // The welcoming first kilometres (to WELCOME_RAMP): no bellotas leading into clutter on the
+    // pavements (it is there to run past; a lure into a late jump is not welcoming).
+    const lure = (p: Omit<PickupSpawn, "id">): boolean =>
+      ctx.lap === 1 && p.d < WELCOME_RAMP &&
+      b.obstacles.some((o) => (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind)) && Math.abs(o.x - p.x) < 1 && p.d > o.d - WELCOME_GAP * ctx.v && p.d < o.d + 3 &&
+        (p.d < WELCOME_UNTIL || !b.isRoad(o.lane)));
     const pickups: PickupSpawn[] = b.pickups
-      .filter((p) => (p.ride !== undefined || !this.runOver(p.x, p.d, p.y, b.obstacles)) && !this.blockedPickup(p.x, p.d, p.y))
+      .filter((p) => !lure(p) && (p.ride !== undefined || !this.runOver(p.x, p.d, p.y, b.obstacles)) && !this.blockedPickup(p.x, p.d, p.y))
       .map((p) => ({ ...p, id: this.nextId++ }));
 
     // Letters and power-ups.

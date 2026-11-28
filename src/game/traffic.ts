@@ -9,7 +9,8 @@
  * - Vehicles never change lane, and drive only where the lane's flow allows their direction.
  */
 import { OBSTACLE_DEFS } from "../contracts";
-import type { LaneLayout, LayoutFn } from "./lanes";
+import { getCourse } from "./course";
+import { layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
 import { footprint, obstacleCentre, whenAhead, type ObstacleSpawn } from "./spawns";
 import { RUNNER_HALF_DEPTH } from "./tuning";
 
@@ -122,6 +123,8 @@ export function flowAllows(o: Spawnish, layoutFn: LayoutFn, origin: LaneLayout):
     for (let i = 0; i < layout.offsets.length; i++) if (Math.abs((layout.offsets[i] ?? 0) - o.x) < LANE_DRIFT) lane = i;
     if (lane < 0) return false;
     const flow = layout.flow[lane] ?? 0;
+    // Nothing drives against the ring's direction on a roundabout (not even a scooter).
+    if (o.k > 0 && layoutFn === layoutAt && getCourse()?.track.sectionAt(at).roundabout != null) return false;
     const kind = layout.kinds?.[lane] ?? "road";
     const walker = o.kind === "peaton" && flow === 0 && kind !== "road";
     if (o.kind !== "peaton" && o.kind !== "moto" && kind !== "road") return false;

@@ -4,11 +4,11 @@
 import { describe, expect, it } from "vitest";
 import { OBSTACLE_DEFS } from "../contracts";
 import { PACE_MIN, tableAt } from "./course";
-import { unfairPoints } from "./fairness";
-import { layoutAt, merges } from "./lanes";
+import { PLAIN_JUMP, PLAIN_ROLL, narrowPoints, unfairPoints } from "./fairness";
+import { layoutAt, merges, nearestLane } from "./lanes";
 import { sweep, footprintOf } from "./traffic";
 import { CALM_CURVATURE, TrackGenerator } from "./track";
-import { paceAt, speedAt } from "./tuning";
+import { WELCOME_GAP, WELCOME_UNTIL, paceAt, speedAt } from "./tuning";
 import { useRealCourse } from "./test-course";
 
 const course = useRealCourse();
@@ -29,6 +29,32 @@ describe("an obvious way through, everywhere", () => {
     expect(bad).toEqual([]);
   }, 300_000);
 
+  it("the first kilometre welcomes: no jump or roll needed in a road lane, no oncoming traffic, two lanes open, rows 2.2 s apart", () => {
+    const bad: string[] = [];
+    for (let seed = 1; seed <= 30; seed++) {
+      const gen = new TrackGenerator(seed * 7717);
+      gen.generateUntil(WELCOME_UNTIL + 400);
+      const early = gen.obstacles.filter((o) => footprintOf(o)[0] < WELCOME_UNTIL);
+      for (const o of early) {
+        const lay = layoutAt(o.d);
+        const road = (lay.kinds?.[nearestLane(lay, o.x)] ?? "road") === "road";
+        if (o.k > 0) bad.push(`seed ${seed}: oncoming ${o.kind} at ${o.d.toFixed(0)}`);
+        if (OBSTACLE_DEFS[o.kind].lanes === 3) bad.push(`seed ${seed}: ${o.kind} across the street at ${o.d.toFixed(0)}`);
+        if (road && (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind))) bad.push(`seed ${seed}: ${o.kind} in a road lane at ${o.d.toFixed(0)}`);
+      }
+      const spans = early.map((o) => footprintOf(o)).sort((x, y) => x[0] - y[0]);
+      let reach = -Infinity;
+      for (const [a, b] of spans) {
+        const gap = a - reach;
+        if (gap > 2 && gap < WELCOME_GAP * speedAt(a) - 1e-6) bad.push(`seed ${seed}: rows ${gap.toFixed(1)} m apart at ${a.toFixed(0)}`);
+        reach = Math.max(reach, b);
+      }
+      for (const d of narrowPoints(early, 60, WELCOME_UNTIL, { layout: layoutAt, track, speed: speedAt }, 3)) bad.push(`seed ${seed}: one lane open at ${d.toFixed(0)}`);
+      if (bad.length > 10) break;
+    }
+    expect(bad).toEqual([]);
+  }, 120_000);
+
   it("a wall of parked cars across every lane is caught (the check itself)", () => {
     const at = 300;
     const lay = layoutAt(at);
@@ -40,17 +66,18 @@ describe("an obvious way through, everywhere", () => {
     expect(unfairPoints([{ kind: "valla-larga", lane: 1, x: 0, span: 30, d: at, k: 0, seed: 0, flipped: false }], at - 80, at + 60, { layout: layoutAt, track, speed: speedAt })).toEqual([]);
   });
 
-  it("calm in tight bends and rings: nothing to dodge there, no approach lane tapers in a ring, the pace eases", () => {
+  it("calm in tight bends and rings: nothing to dodge there, only ring lanes' own short tapers in a ring, the pace eases", () => {
     const bends = course.bends();
     let min = 1;
     for (let s = 0; s < L; s += 1) min = Math.min(min, paceAt(s));
     expect(min).toBeGreaterThanOrEqual(PACE_MIN - 1e-6);
     for (const m of merges(track)) {
-      // (a ring's own inner lanes, which begin and end on the arc, open and close inside it)
-      if (track.stretches[m.fromStretch]!.layout.ids[m.lane]!.startsWith("ring-")) continue;
+      // A taper inside a ring is only a ring lane's own short closing (sized by sideways speed),
+      // never an approach lane's taper running on into the ring.
       for (const st of track.stretches) {
-        if (st.section.roundabout === null) continue;
-        expect(m.s1 <= st.fromS + 0.5 || m.s0 >= st.toS, `taper ${m.s0.toFixed(0)}-${m.s1.toFixed(0)} in the ring ${st.fromS.toFixed(0)}-${st.toS.toFixed(0)}`).toBe(true);
+        if (st.section.roundabout === null || m.s1 <= st.fromS + 0.5 || m.s0 >= st.toS) continue;
+        expect(track.stretches[m.fromStretch], `taper ${m.s0.toFixed(0)}-${m.s1.toFixed(0)} in the ring ${st.fromS.toFixed(0)}`).toBe(st);
+        expect(m.s1 - m.s0).toBeLessThan(50);
       }
     }
     const rings = track.stretches.filter((st) => st.section.roundabout !== null);
