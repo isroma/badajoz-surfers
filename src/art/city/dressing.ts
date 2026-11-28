@@ -94,10 +94,10 @@ function speciesFor(ctx: CityCtx, ground: GroundLayer, x: number, z: number, h: 
   }
   if (zone === "casco-antiguo") return h < 7.5 ? "orange" : seed < 0.2 ? "palm" : "plane";
   if (zone === "alcazaba-palmas") {
-    if (s > 4870 && s < 5300 && seed < 0.4) return "cypress";
+    if (ctx.track.sectionAt(s).name === "Calle San Atón" && seed < 0.4) return "cypress";
     return h < 6.5 ? "orange" : seed < 0.25 ? "palm" : seed < 0.4 ? "pine" : "plane";
   }
-  if (zone === "san-francisco" && s > 4060 && s < 4260) return seed < 0.4 ? "palm" : "plane";
+  if (zone === "san-francisco" && ctx.track.sectionAt(s).name === "Paseo San Francisco") return seed < 0.4 ? "palm" : "plane";
   if (h < 5.5) return "orange";
   if (zone === "valdepasillas" && seed < 0.12) return "jacaranda";
   return seed < 0.06 ? "palm" : "plane";
@@ -240,9 +240,9 @@ export function buildPermanentDressing(ctx: CityCtx, ground: GroundLayer): THREE
 
 type LampStyle = "avenue" | "bridge" | "classic" | "wall" | "none";
 
-function lampStyle(zone: ZoneId, e: EdgeSample): LampStyle {
+function lampStyle(ctx: CityCtx, zone: ZoneId, e: EdgeSample): LampStyle {
   if (e.bridge) return zone === "alcazaba-palmas" ? "none" : "bridge";
-  if (zone === "casco-antiguo" || (zone === "alcazaba-palmas" && e.s < 5700)) return e.pedestrian || e.outerR - e.layout.right < 1.5 ? "wall" : "classic";
+  if (zone === "casco-antiguo" || (zone === "alcazaba-palmas" && e.s < ctx.track.marks.puertaPalmas[0])) return e.pedestrian || e.outerR - e.layout.right < 1.5 ? "wall" : "classic";
   if (zone === "san-francisco" && e.pedestrian) return "classic";
   return "avenue";
 }
@@ -435,7 +435,7 @@ export function buildChunkDressing(ctx: CityCtx, bag: Bag, ts: TS, chunk: number
     const e = nearestEdge(edges, s);
     if (!e) continue;
     const zone = zoneOf(s);
-    const style = lampStyle(zone, e);
+    const style = lampStyle(ctx, zone, e);
     const f = ts.f(s);
     const lay = e.layout;
     const heading = Math.atan2(f.nx, f.nz); // ry that points local +Z along +n (right)
@@ -480,7 +480,7 @@ function chunkDetail(ctx: CityCtx, bag: Bag, ts: TS, _chunk: number, s0: number,
     const z = zoneOf(s);
     const e = nearestEdge(edges, s);
     if (!e) continue;
-    const festive = z === "casco-antiguo" || (z === "alcazaba-palmas" && s < 5000) || (z === "san-francisco" && e.pedestrian);
+    const festive = z === "casco-antiguo" || (z === "alcazaba-palmas" && s < ctx.track.marks.plazaAlta + 140) || (z === "san-francisco" && e.pedestrian);
     if (!festive) continue;
     const fl = ctx.facadeAt(s, -1);
     const fr = ctx.facadeAt(s, 1);

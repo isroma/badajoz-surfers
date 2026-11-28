@@ -1027,6 +1027,8 @@ export class World {
       const def = OBSTACLE_DEFS[spawn.kind];
       const half = def.length / 2;
       const c = obstacleCentre(spawn, p);
+      // A vehicle that comes out of (or turns off at) a flow-change boundary is not there beyond it.
+      if (spawn.beyond !== undefined && c > spawn.beyond && !ended) continue;
       let view = this.obstacles.get(spawn.id);
       if (!view) {
         if (c - half > p + OBSTACLE_VIEW) continue; // Not in view yet (beyond the fog).

@@ -8,7 +8,7 @@ import { PLAIN_JUMP, PLAIN_ROLL, narrowPoints, unfairPoints } from "./fairness";
 import { layoutAt, merges, nearestLane } from "./lanes";
 import { sweep, footprintOf } from "./traffic";
 import { CALM_CURVATURE, TrackGenerator } from "./track";
-import { WELCOME_GAP, WELCOME_UNTIL, paceAt, speedAt } from "./tuning";
+import { EARLY_GAP, WELCOME_GAP, WELCOME_RAMP, WELCOME_UNTIL, paceAt, speedAt } from "./tuning";
 import { useRealCourse } from "./test-course";
 
 const course = useRealCourse();
@@ -29,12 +29,13 @@ describe("an obvious way through, everywhere", () => {
     expect(bad).toEqual([]);
   }, 300_000);
 
-  it("the first kilometre welcomes: no jump or roll needed in a road lane, oncoming traffic only in the oncoming lanes, two lanes open, rows 2.2 s apart", () => {
+  it("the opening: a warm-up (no jump or roll in a road lane, oncoming only on the far side, two lanes open, rows 2.2 s apart), then rows 1.6 s apart to 900 m, a set piece at the pylon", () => {
     const bad: string[] = [];
     for (let seed = 1; seed <= 30; seed++) {
       const gen = new TrackGenerator(seed * 7717);
-      gen.generateUntil(WELCOME_UNTIL + 400);
-      const early = gen.obstacles.filter((o) => footprintOf(o)[0] < WELCOME_UNTIL);
+      gen.generateUntil(WELCOME_RAMP + 400);
+      const all = gen.obstacles.filter((o) => footprintOf(o)[0] < WELCOME_RAMP);
+      const early = all.filter((o) => footprintOf(o)[0] < WELCOME_UNTIL);
       for (const o of early) {
         const lay = layoutAt(o.d);
         const road = (lay.kinds?.[nearestLane(lay, o.x)] ?? "road") === "road";
@@ -52,21 +53,54 @@ describe("an obvious way through, everywhere", () => {
         if (OBSTACLE_DEFS[o.kind].lanes === 3) bad.push(`seed ${seed}: ${o.kind} across the street at ${o.d.toFixed(0)}`);
         if (road && (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind))) bad.push(`seed ${seed}: ${o.kind} in a road lane at ${o.d.toFixed(0)}`);
       }
-      const spans = early.map((o) => footprintOf(o)).sort((x, y) => x[0] - y[0]);
+      const spans = all.map((o) => footprintOf(o)).sort((x, y) => x[0] - y[0]);
       let reach = -Infinity;
       for (const [a, b] of spans) {
         const gap = a - reach;
-        if (gap > 2 && gap < WELCOME_GAP * speedAt(a) - 1e-6) bad.push(`seed ${seed}: rows ${gap.toFixed(1)} m apart at ${a.toFixed(0)}`);
+        const need = (a < WELCOME_UNTIL ? WELCOME_GAP : EARLY_GAP) * speedAt(a);
+        if (gap > 2 && gap < need - 1e-6) bad.push(`seed ${seed}: rows ${gap.toFixed(1)} m apart at ${a.toFixed(0)}`);
         reach = Math.max(reach, b);
       }
+      // The first obstacle is met 30-40 m in.
+      const first = Math.min(...gen.obstacles.map((o) => footprintOf(o)[0]));
+      if (first < 30 || first > 40) bad.push(`seed ${seed}: first obstacle at ${first.toFixed(1)}`);
       for (const d of narrowPoints(early, 60, WELCOME_UNTIL, { layout: layoutAt, track, speed: speedAt }, 3)) bad.push(`seed ${seed}: one lane open at ${d.toFixed(0)}`);
       if (bad.length > 10) break;
     }
     expect(bad).toEqual([]);
   }, 120_000);
 
+  it("no vehicle drives through a boundary where its lane changes flow (it comes out of / turns off at it)", () => {
+    // Each boundary with the lateral lines of the lanes that change flow there.
+    const bounds = track.transitions
+      .filter((t) => t.flowChanges.length > 0)
+      .map((t) => ({ s: t.s, xs: t.flowChanges.map((i) => track.stretches[t.fromIndex]!.layout.offsets[i]!) }));
+    expect(bounds.length).toBeGreaterThan(3);
+    const bad: string[] = [];
+    let cut = 0;
+    for (let seed = 1; seed <= 10; seed++) {
+      const gen = new TrackGenerator(seed * 131);
+      gen.generateUntil(2 * L);
+      for (const o of gen.obstacles) {
+        if (o.k === 0) continue;
+        if (o.beyond !== undefined) cut++;
+        const [s0, s1] = sweep(o);
+        const top = Math.min(s1, o.beyond ?? Infinity);
+        for (const b of bounds) {
+          if (!b.xs.some((x) => Math.abs(x - o.x) < 0.3)) continue;
+          for (const base of [0, L, 2 * L]) {
+            const at = base + b.s;
+            if (s0 < at - 3 && top > at + 3) bad.push(`seed ${seed}: ${o.kind} k ${o.k.toFixed(2)} drives through ${b.s.toFixed(0)}`);
+          }
+        }
+      }
+    }
+    expect(bad.slice(0, 5)).toEqual([]);
+    expect(cut).toBeGreaterThan(0);
+  }, 120_000);
+
   it("a wall of parked cars across every lane is caught (the check itself)", () => {
-    const at = 300;
+    const at = track.marks.pylon - 30;
     const lay = layoutAt(at);
     const wall = lay.offsets.map((x, i) => ({ kind: "coche" as const, lane: i, x, d: at, k: 0, seed: 0, flipped: false }));
     expect(unfairPoints(wall, at - 80, at + 60, { layout: layoutAt, track, speed: speedAt }).length).toBeGreaterThan(0);

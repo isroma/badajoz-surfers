@@ -7,6 +7,7 @@ import "./tokens.css";
 import "./styles.css";
 import { OUTFITS, POWERUPS, ZONES, type GameApi, type GameEvent, type GameState, type HudSnapshot, type RunSummary, type Shell } from "../contracts";
 import { AudioEngine } from "../audio";
+import { setRouteMarks } from "../meta/progress";
 import { MetaStore, emptyRunStats, type LiveUnlocks, type RunResult, type RunStats } from "../meta";
 import { formatInt } from "../meta/format";
 import { button, h, setUiSound } from "./dom";
@@ -713,7 +714,9 @@ export function createShell(root: HTMLElement): ShellWithCity {
 
   applyState("menu");
   // The real map arrives after the first screens: redraw what shows a map.
-  onCity(() => {
+  onCity((city) => {
+    // Achievement places (bridge end, first roundabout…) from the data, so they never drift.
+    setRouteMarks(city.meta.marks as unknown as Record<string, unknown>);
     hud.refreshMap();
     if (state === "paused" || state === "gameover") renderBase();
     if (panel?.id === "credits" || panel?.id === "achievements") openPanel(panel.id);

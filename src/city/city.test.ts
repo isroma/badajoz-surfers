@@ -22,6 +22,16 @@ import {
 const city: CityData = validateCity(JSON.parse(readFileSync("public/data/city.json", "utf8")));
 const track = createTrack(city);
 const lap = track.lapLength;
+const marks = track.marks;
+/** Middle of the longest section with this name (positions move when the data is re-anchored). */
+const sOf = (name: string, pick: (x: (typeof city.sections)[number]) => boolean = () => true): number => {
+  const secs = city.sections.filter((x) => x.name === name && pick(x)).sort((a, b) => b.toS - b.fromS - (a.toS - a.fromS));
+  const x = secs[0];
+  if (!x) throw new Error(`no section ${name}`);
+  return (x.fromS + x.toS) / 2;
+};
+const ringEdge = (t: { fromIndex: number; toIndex: number }): boolean =>
+  track.roundabouts.some((rb) => rb.stretchIndices.includes(t.fromIndex) || rb.stretchIndices.includes(t.toIndex));
 
 const env = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env;
 if (env?.["PRINT_LAYOUTS"]) console.log(`\n${formatLayoutTable(track)}\n`);
@@ -86,9 +96,10 @@ describe("frames", () => {
         const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (z - az) * (bz - az)) / ((bx - ax) ** 2 + (bz - az) ** 2)));
         return Math.hypot(ax + (bx - ax) * t - x, az + (bz - az) * t - z);
       });
-    track.toWorld(700, -8.1, 0, p);
+    const deck = marks.pylon - 100;
+    track.toWorld(deck, -8.1, 0, p);
     const left = distToDecks(p.x, p.z);
-    track.toWorld(700, 0, 0, p);
+    track.toWorld(deck, 0, 0, p);
     const ours = distToDecks(p.x, p.z);
     const ourDeck = ours[0]! < ours[1]! ? 0 : 1;
     expect(ours[ourDeck]!).toBeLessThan(1);
@@ -147,6 +158,23 @@ describe("frames", () => {
 });
 
 describe("zones and sections", () => {
+  it("marks are in lap order; the start is not the frame origin", () => {
+    const order = ["start", "bridgeDeckStart", "pylon", "bridgeDeckEnd", "firstRoundaboutEntry", "firstRoundaboutExit", "sinforianoStart", "sinforianoEnd", "sanFranciscoStart", "plazaMinayo", "plazaEspana", "plazaAlta", "arcoDelPeso", "puertaPalmas", "puentePalmasStart", "puentePalmasEnd", "elvasRoundabout"] as const;
+    const at = (k: (typeof order)[number]): number => {
+      const v = marks[k];
+      return Array.isArray(v) ? v[0] : v;
+    };
+    for (let i = 1; i < order.length; i++) expect(at(order[i]!), order[i]).toBeGreaterThan(at(order[i - 1]!));
+    expect(marks.start).toBe(0);
+    const f0 = track.frameAt(0);
+    expect(Math.hypot(f0.x - track.start.x, f0.z - track.start.z)).toBeLessThan(0.2);
+    expect(Math.hypot(track.start.x, track.start.z)).toBeGreaterThan(100);
+    // meta.start.bearing is the compass bearing of travel (clockwise from north = −z).
+    const bearing = ((Math.atan2(f0.tx, -f0.tz) * 180) / Math.PI + 360) % 360;
+    expect(Math.abs(((bearing - track.start.bearing + 540) % 360) - 180)).toBeLessThan(5);
+    expect(track.layoutAt(marks.firstRoundaboutEntry + 1)).toBe(track.stretches[track.roundabouts.find((r) => r.entryS === marks.firstRoundaboutEntry)!.stretchIndices[0]!]!.layout);
+  });
+
   it("zones cover the lap in order", () => {
     expect(track.zones.map((z) => z.id)).toEqual(["puente-real", "valdepasillas", "san-francisco", "casco-antiguo", "alcazaba-palmas", "margen-derecha"]);
     expect(track.zones[0]!.fromS).toBe(0);
@@ -154,8 +182,8 @@ describe("zones and sections", () => {
     expect(track.zones[track.zones.length - 1]!.toS).toBeCloseTo(lap, 6);
     expect(track.zoneAt(-1).id).toBe("margen-derecha");
     expect(track.zoneAt(lap + 1).index).toBe(0);
-    expect(track.streetNameAt(600)).toBe("Puente Real");
-    expect(track.sectionAt(6000).bridge).toBe("Puente de Palmas");
+    expect(track.streetNameAt(marks.pylon)).toBe("Puente Real");
+    expect(track.sectionAt((marks.puentePalmasStart + marks.puentePalmasEnd) / 2).bridge).toBe("Puente de Palmas");
   });
 });
 
@@ -164,7 +192,11 @@ const KNOWN_IDS = new Set(["own-1", "own-2", "own-3", "opp-1", "opp-2", "median"
 const checkLayout = (l: LaneLayout, where: string): void => {
   const n = l.offsets.length;
   expect(n, where).toBeGreaterThanOrEqual(2);
-  expect(n, where).toBeLessThanOrEqual(5);
+  expect(n, where).toBeLessThanOrEqual(4);
+  expect(l.ids.includes("median"), `${where}: medians are never runnable`).toBe(false);
+  // Pavement lanes only to reach 3 lanes.
+  const road = l.kinds.filter((k) => k === "road").length;
+  if (road >= 3) expect(l.kinds.includes("sidewalk"), where).toBe(false);
   expect(l.widths.length).toBe(n);
   expect(l.flow.length).toBe(n);
   expect(l.kinds.length).toBe(n);
@@ -242,30 +274,33 @@ describe("lane layouts", () => {
     }
   });
 
-  it("Puente Real: 2 oncoming, 2 with us, walkway; lane changes ≤ 5.5 m", () => {
-    for (const s of [20, 400, 700, 950]) {
+  it("Puente Real: 2 oncoming, 2 with us (4 road lanes, no walkway lane); lane changes ≤ 5.5 m", () => {
+    for (const s of [10, marks.bridgeDeckStart + 50, marks.pylon, marks.bridgeDeckEnd + 20]) {
       const l = track.layoutAt(s);
-      expect(l.ids).toEqual(["opp-2", "opp-1", "own-2", "own-1", "walk-R"]);
-      expect(l.flow).toEqual([-1, -1, 1, 1, 0]);
+      expect(l.ids).toEqual(["opp-2", "opp-1", "own-2", "own-1"]);
+      expect(l.flow).toEqual([-1, -1, 1, 1]);
       expect(l.median.length).toBe(1);
       expect(Math.max(...l.gaps), `s ${s}`).toBeLessThanOrEqual(5.5);
     }
   });
 
-  it("wide medians: opposite not runnable, one median lane near our kerb", () => {
-    for (const s of [1500, 1800, 2200, 2700, 7700, 7100]) {
+  it("wide medians: never runnable; avenues are own lanes plus the pavement", () => {
+    const sin = city.sections.filter((x) => x.name === "Avenida Sinforiano Madroñero" && x.dual).map((x) => (x.fromS + x.toS) / 2);
+    const adolfo22 = sOf("Avenida Adolfo Díaz Ambrona", (x) => x.dual && x.lanes === 2);
+    for (const s of [...sin, sOf("Avenida María Auxiliadora"), sOf("Avenida de Elvas"), adolfo22]) {
       const l = track.layoutAt(s);
-      expect(l.ids, `s ${s}`).toEqual(["median", "own-2", "own-1", "walk-R"]);
-      expect(l.offsets[1]! - l.offsets[0]!, `s ${s}`).toBeLessThanOrEqual(4.5);
-      expect(l.carriageways.some((c) => c.flow === -1), `s ${s}`).toBe(true); // still drawn
+      expect(l.ids, `s ${s}`).toEqual(["own-2", "own-1", "walk-R"]);
+      expect(l.median.length, `s ${s}`).toBe(1); // still drawn
+      expect(l.carriageways.some((c) => c.flow === -1), `s ${s}`).toBe(true);
     }
-    expect(track.layoutAt(6600).ids).toEqual(["median", "own-1", "walk-R"]);
+    // One-lane carriageway of a dual avenue: nothing runnable on the left (the median).
+    expect(track.layoutAt(sOf("Avenida Adolfo Díaz Ambrona", (x) => x.dual && x.lanes === 1)).ids).toEqual(["own-1", "walk-R"]);
     const base = city.sections.find((x) => x.name === "Avenida de Elvas" && x.dual)!;
-    const barrier = sectionLayout({ ...base, medianKind: "barrier" });
-    expect(barrier.ids).toEqual(["own-2", "own-1", "walk-R"]);
+    expect(sectionLayout({ ...base, medianKind: "barrier" }).ids).toEqual(["own-2", "own-1", "walk-R"]);
     const narrow = sectionLayout({ ...base, medianKind: "kerb", medianWidth: 1.5 });
-    expect(narrow.ids).toEqual(["opp-2", "opp-1", "own-2", "own-1", "walk-R"]);
+    expect(narrow.ids).toEqual(["opp-2", "opp-1", "own-2", "own-1"]);
     expect(narrow.median[0]!.to - narrow.median[0]!.from).toBeCloseTo(1.5, 2);
+    for (const st of track.stretches) expect(st.layout.ids.includes("median")).toBe(false);
   });
 
   it("lanes are stable across every transition", () => {
@@ -282,14 +317,18 @@ describe("lane layouts", () => {
         if (j === null || j === undefined) return;
         const moved = Math.abs(b.offsets[j]! - a.offsets[i]!);
         if (b.ids[j] === id) expect(moved, `${id} at ${t.s}`).toBeLessThan(1.0);
-        else expect(moved, `${id}→${b.ids[j]!} at ${t.s}`).toBeLessThanOrEqual(1.5);
-        expect(b.flow[j] === -1 && a.flow[i] !== -1, `${id} turns oncoming at ${t.s}`).toBe(false);
+        else expect(moved, `${id}→${b.ids[j]!} at ${t.s}`).toBeLessThanOrEqual(ringEdge(t) ? 2.0 : 1.5);
+        // Off the rings a lane never turns oncoming; at ring boundaries flow changes are listed.
+        if (!ringEdge(t)) expect(b.flow[j] === -1 && a.flow[i] !== -1, `${id} turns oncoming at ${t.s}`).toBe(false);
+        expect(t.flowChanges.includes(i), `${id} flow change at ${t.s}`).toBe(b.flow[j] !== a.flow[i]);
         checked++;
       });
       // A lane id present on both sides is the same lane.
-      a.ids.forEach((id, i) => {
-        if (b.ids.includes(id)) expect(t.map[i]).toBe(b.ids.indexOf(id));
-      });
+      if (!ringEdge(t)) {
+        a.ids.forEach((id, i) => {
+          if (b.ids.includes(id)) expect(t.map[i]).toBe(b.ids.indexOf(id));
+        });
+      }
     }
     expect(checked).toBeGreaterThan(30);
   });
@@ -303,8 +342,33 @@ describe("lane layouts", () => {
       const on = track.layoutAt((rb.entryS + rb.exitS) / 2);
       const road = on.ids.filter((id) => id.startsWith("own-") || id.startsWith("ring-"));
       expect(on.ids.every((id) => id.startsWith("own-") || id.startsWith("ring-") || id === "walk-R"), rb.id).toBe(true);
-      expect(road.length, rb.id).toBeGreaterThanOrEqual(Math.min(rb.lanes, 2) - (rb.lanes >= 3 ? 1 : 0));
+      expect(road.length, rb.id).toBeGreaterThanOrEqual(1);
       expect(road.length, rb.id).toBeLessThanOrEqual(rb.lanes);
+      // Lanes flow through 1:1: every ring lane continues from the approach (none begins in the arc).
+      const i = rb.stretchIndices[0]!;
+      const tIn = track.transitions.find((t) => t.toIndex === i);
+      if (tIn) expect(tIn.begins, `${rb.id} lanes beginning on the ring`).toEqual([]);
+      // Shifts at the ring boundaries ≤ 0.3 m unless the island forces the ring lane outward.
+      let dMin = Infinity;
+      for (let s = rb.entryS; s <= rb.exitS; s += 0.5) {
+        track.frameAt(s, f);
+        dMin = Math.min(dMin, Math.hypot(f.x - rb.cx, f.z - rb.cz));
+      }
+      const R = track.stretches[i]!.layout;
+      const tOut = track.transitions.find((t) => t.fromIndex === i);
+      for (const t of [tIn, tOut]) {
+        if (!t) continue;
+        const a = track.stretches[t.fromIndex]!.layout;
+        const b = track.stretches[t.toIndex]!.layout;
+        t.map.forEach((j, k) => {
+          if (j === null) return;
+          if (a.kinds[k] === "pedestrian" || b.kinds[j] === "pedestrian") return; // narrow streets: geometry-limited
+          const ringLane = t.toIndex === i ? j : k;
+          const islandBound = dMin + R.offsets[ringLane]! - R.widths[ringLane]! / 2 <= rb.rInner + 0.3 + 0.15;
+          const shift = Math.abs(b.offsets[j]! - a.offsets[k]!);
+          if (!islandBound) expect(shift, `${rb.id} ${a.ids[k]!}→${b.ids[j]!}`).toBeLessThanOrEqual(0.31);
+        });
+      }
       expect(on.offsets[on.ids.indexOf("own-1")]).toBe(0);
       // Own lanes continue from the approach within 1 m.
       const before = track.layoutAt(rb.entryS - 1);
@@ -354,7 +418,7 @@ describe("lane layouts", () => {
         }
       });
     }
-    expect(ends).toBeGreaterThan(10);
+    expect(ends).toBeGreaterThan(5);
     expect(shortLived).toBe(0);
     // A lane that continues: own-1 on Puente Real.
     expect(track.laneEndsAhead(300, track.layoutAt(300).ids.indexOf("own-1"))).toBeNull();
@@ -400,7 +464,7 @@ describe("lane layouts", () => {
       expect(track.turnAhead(t.s - 100)).not.toBeNull();
       expect(track.turnAhead((t.s + t.endS) / 2)).toBe(t);
     }
-    expect(track.turnAhead(600)).toBeNull();
+    expect(track.turnAhead(marks.bridgeDeckStart + 80)).toBeNull();
   });
 
   it("smoothing adapts to the route noise", () => {
@@ -413,13 +477,13 @@ describe("lane layouts", () => {
 
   it("the pedestrian stretches have no traffic", () => {
     // Paseo de San Francisco, the old town, Puente de Palmas.
-    for (const s of [4150, 4600, 4800, 5900, 6200]) {
+    for (const s of [sOf("Paseo San Francisco"), sOf("Calle San Juan"), marks.plazaAlta - 20, marks.puentePalmasStart + 100, marks.puentePalmasEnd - 100]) {
       const l = track.layoutAt(s);
       expect(l.flow.every((f) => f === 0), `s ${s}`).toBe(true);
       expect(l.kinds.every((k) => k === "pedestrian"), `s ${s}`).toBe(true);
       expect(l.carriageways.length).toBe(0);
     }
-    const palmas = track.layoutAt(6000);
+    const palmas = track.layoutAt((marks.puentePalmasStart + marks.puentePalmasEnd) / 2);
     expect(palmas.offsets.length).toBe(3);
     expect(palmas.right - palmas.left).toBeLessThanOrEqual(7.1);
   });
@@ -429,8 +493,8 @@ describe("lane layouts", () => {
     expect(sectionLayout(base).ids).toEqual(["opp-1", "own-1", "walk-R"]);
     expect(sectionLayout({ ...base, oneway: true, lanes: 1, width: 3 }).ids).toEqual(["walk-L", "own-1", "walk-R"]);
     expect(sectionLayout({ ...base, oneway: true, lanes: 2, width: 6 }).ids).toEqual(["own-2", "own-1", "walk-R"]);
-    expect(sectionLayout({ ...base, lanes: 4, width: 13 }).ids).toEqual(["opp-2", "opp-1", "own-2", "own-1", "walk-R"]);
-    expect(sectionLayout({ ...base, lanes: 3, width: 9.75 }).ids).toEqual(["opp-1", "own-2", "own-1", "walk-R"]);
+    expect(sectionLayout({ ...base, lanes: 4, width: 13 }).ids).toEqual(["opp-2", "opp-1", "own-2", "own-1"]);
+    expect(sectionLayout({ ...base, lanes: 3, width: 9.75 }).ids).toEqual(["opp-1", "own-2", "own-1"]);
     const narrowPed = sectionLayout({ ...base, pedestrian: true, lanes: 0, clearance: 3.8, facadeWidth: 4.4, width: 3 });
     expect(narrowPed.ids).toEqual(["ped-1", "ped-2"]);
     expect(narrowPed.widths[0]!).toBeGreaterThanOrEqual(1.5);

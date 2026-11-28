@@ -7,8 +7,9 @@
  * Types for public/data/city.json, written by tools/city/build.py (see tools/city/README.md).
  *
  * Frame: metres in a local tangent plane (transverse Mercator centred on the origin, scale 1).
- * Origin = the route's start point (OSM node 1142046712, where Puente Real's south-east-bound
- * carriageway leaves the Avenida de Elvas roundabout on the right bank).
+ * Origin = OSM node 1142046712, where Puente Real's south-east-bound carriageway leaves the Avenida
+ * de Elvas roundabout on the right bank. The lap itself starts at meta.start (s = 0), 20 m before the
+ * Puente Real deck, ~490 m further along the same carriageway.
  * X = east, Z = SOUTH (north is -Z), Y = up, as in three.js. Heights `h`/`h0` are metres relative
  * to the DTM ground level at the origin (meta.origin.groundElevation metres above sea level).
  * Coordinates are quantised to 0.1 m. "Flat" arrays interleave values: [x0, z0, x1, z1, ...].
@@ -56,6 +57,11 @@ export interface CityMeta {
   frame: { x: "east"; z: "south"; y: "up"; units: "m"; /** PROJ string of the local frame. */ proj4: string; rasterCrs: string };
   /** Length of the closed lap in metres. */
   lapLength: number;
+  /** Where s = 0 is (20 m before the Puente Real deck). The frame origin is NOT the start: it stays
+   *  at meta.origin (OSM node 1142046712), and heights stay relative to the ground there. */
+  start: { x: number; z: number; h: number; /** compass bearing of travel */ bearing: number; metresBeforeDeck: number };
+  /** Named s positions; ranges are [fromS, toS]. */
+  marks: CityMarks;
   /** Nominal spacing of route samples (m). */
   routeStep: number;
   /** Lines to show in the game's credits (Spanish). */
@@ -69,6 +75,40 @@ export interface CityMeta {
   passesThrough: { id: string; name: string | null; building: string; s: [number, number]; height: number; penetration: number; overCentreline: boolean; passage: boolean }[];
   /** Tree stats, incl. palms (OSM-tagged) and palmLikely counts. */
   trees: Record<string, number | string>;
+}
+
+export interface CityMarks {
+  start: number;
+  bridgeDeckStart: number;
+  pylon: number;
+  bridgeDeckEnd: number;
+  firstRoundaboutEntry: number;
+  firstRoundaboutExit: number;
+  sinforianoStart: number;
+  sinforianoEnd: number;
+  sanFranciscoStart: number;
+  plazaMinayo: [number, number];
+  plazaEspana: [number, number];
+  plazaAlta: number;
+  arcoDelPeso: [number, number];
+  puertaPalmas: [number, number];
+  puentePalmasStart: number;
+  puentePalmasEnd: number;
+  elvasRoundabout: [number, number];
+  /** Site of the bar the runner flees from: just behind the start, right-hand side, on land. */
+  barSite: {
+    /** Negative: metres before s = 0 (i.e. sLap = lapLength + s). */
+    s: number;
+    sLap: number;
+    x: number;
+    z: number;
+    /** Ground (DTM) height there, relative to the frame origin. */
+    h: number;
+    lateral: number;
+    side: "right";
+    groundMinusRoad: number;
+    note: string;
+  };
 }
 
 export interface CityRoute {

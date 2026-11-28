@@ -106,32 +106,52 @@ export interface AchievementDef {
 }
 
 /**
- * Places on the real lap, as distances from the start of a run (s on lap 1; runs start at s = 0
- * on the right bank of Puente Real). From public/data/city.json; progress.test.ts checks them.
+ * Places on the real lap, as distances from the start of a run (s on lap 1; runs start at s = 0,
+ * 20 m before the Puente Real deck). The shell replaces these with `city.meta.marks` when the
+ * city data is set (`setRouteMarks`); the static values are the current data's, as a fallback.
  */
 export const ROUTE_MARKS = {
   /** End of the Puente Real deck. */
-  puenteReal: 966,
-  /** The roundabout at the south-east end of Puente Real: the lap's first. */
-  primeraRotonda: 1012,
+  puenteReal: 473.9,
+  /** Entry to the roundabout at the south-east end of Puente Real: the lap's first. */
+  primeraRotonda: 521.9,
   /** End of Avenida Sinforiano Madroñero. */
-  sinforiano: 2330,
-  /** Through the Arco del Peso passage at Plaza Alta. */
-  arcoDelPeso: 4914,
+  sinforiano: 1843.8,
+  /** Out of the Arco del Peso passage at Plaza Alta. */
+  arcoDelPeso: 4431.5,
   /** Right-bank end of the Puente de Palmas. */
-  puentePalmas: 6287,
-} as const;
+  puentePalmas: 5807.3,
+};
 
-const reached = (mark: number) => (l: Lifetime): boolean => l.bestRun.distance >= mark;
+/** A mark: a position, or a [from, to] stretch (its end counts as "passed"). */
+type Mark = number | readonly number[] | undefined | null;
+const markEnd = (m: Mark): number | null => {
+  const v = Array.isArray(m) ? m[m.length - 1] : m;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+};
+
+/** Take the route places from the city data's `meta.marks` (unknown or bad keys keep the fallback). */
+export function setRouteMarks(marks: Record<string, unknown> | null | undefined): void {
+  if (!marks) return;
+  const get = (k: string): number | null => markEnd(marks[k] as Mark);
+  ROUTE_MARKS.puenteReal = get("bridgeDeckEnd") ?? ROUTE_MARKS.puenteReal;
+  ROUTE_MARKS.primeraRotonda = get("firstRoundaboutEntry") ?? ROUTE_MARKS.primeraRotonda;
+  ROUTE_MARKS.sinforiano = get("sinforianoEnd") ?? ROUTE_MARKS.sinforiano;
+  ROUTE_MARKS.arcoDelPeso = get("arcoDelPeso") ?? ROUTE_MARKS.arcoDelPeso;
+  ROUTE_MARKS.puentePalmas = get("puentePalmasEnd") ?? ROUTE_MARKS.puentePalmas;
+}
+
+/** Read at check time, so marks set after start-up apply. */
+const reached = (key: keyof typeof ROUTE_MARKS) => (l: Lifetime): boolean => l.bestRun.distance >= ROUTE_MARKS[key];
 
 export const ACHIEVEMENTS: readonly AchievementDef[] = [
   { id: "primer-simpa", name: "Primer simpa", description: "Termina tu primera carrera", reward: 50, check: (l) => l.totals.runs >= 1 },
-  { id: "puente-real", name: "Adiós, Puente Real", description: "Cruza el Puente Real", reward: 75, check: reached(ROUTE_MARKS.puenteReal) },
-  { id: "primera-rotonda", name: "La primera rotonda", description: "Llega a la primera rotonda", reward: 75, check: reached(ROUTE_MARKS.primeraRotonda) },
-  { id: "sinforiano", name: "Sinforiano de punta a punta", description: "Recorre Sinforiano Madroñero entera", reward: 200, check: reached(ROUTE_MARKS.sinforiano) },
+  { id: "puente-real", name: "Adiós, Puente Real", description: "Cruza el Puente Real", reward: 75, check: reached("puenteReal") },
+  { id: "primera-rotonda", name: "La primera rotonda", description: "Llega a la primera rotonda", reward: 75, check: reached("primeraRotonda") },
+  { id: "sinforiano", name: "Sinforiano de punta a punta", description: "Recorre Sinforiano Madroñero entera", reward: 200, check: reached("sinforiano") },
   { id: "plaza-alta", name: "Subiendo a la Plaza Alta", description: "Sube hasta la Plaza Alta", reward: 300, check: (l) => l.bestZones >= 4 },
-  { id: "arco-del-peso", name: "Bajo el Arco del Peso", description: "Pasa bajo el Arco del Peso", reward: 300, check: reached(ROUTE_MARKS.arcoDelPeso) },
-  { id: "puente-palmas", name: "Por el Puente de Palmas", description: "Cruza el Puente de Palmas", reward: 400, check: reached(ROUTE_MARKS.puentePalmas) },
+  { id: "arco-del-peso", name: "Bajo el Arco del Peso", description: "Pasa bajo el Arco del Peso", reward: 300, check: reached("arcoDelPeso") },
+  { id: "puente-palmas", name: "Por el Puente de Palmas", description: "Cruza el Puente de Palmas", reward: 400, check: reached("puentePalmas") },
   { id: "turista", name: "Turista", description: "Llega a cada una de las seis zonas", reward: 400, check: (l) => (l.zonesSeen & ALL_ZONES_MASK) === ALL_ZONES_MASK },
   { id: "vuelta-al-ruedo", name: "Vuelta al ruedo", description: "Da una vuelta completa a Badajoz", reward: 1500, check: (l) => l.bestZones >= 6 },
   { id: "ni-el-camarero", name: "Ni el camarero te sigue", description: "Da dos vueltas en una sola carrera", reward: 4000, check: (l) => l.bestZones >= 12 },

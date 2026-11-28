@@ -52,7 +52,20 @@ def main() -> None:
     gap = float(np.hypot(*(P[0] - P[-1])))
     check(gap <= 2.5 * m["routeStep"], f"loop closes in plan (last→first {gap:.2f} m)")
     check(abs(h[0] - h[-1]) <= 0.3, f"loop closes in height (Δh {h[0] - h[-1]:.2f} m)")
-    check(abs(P[0]).max() < 1.5 and abs(h[0]) < 0.5, f"route starts at the origin at height ~0 ({P[0][0]:.2f}, {P[0][1]:.2f})")
+    st = m["start"]
+    check(abs(P[0][0] - st["x"]) < 0.02 and abs(P[0][1] - st["z"]) < 0.02, f"route starts at meta.start ({st['x']}, {st['z']}, h {st['h']})")
+    # the seam at s = 0: heading continuity and curvature across the last/first samples
+    hd = np.degrees(np.arctan2(*np.diff(np.vstack([P[-3:], P[:3]]), axis=0).T[::-1]))
+    rs, _ = radius(np.vstack([P[-4:], P[:4]]), 1)
+    check(float(np.abs(np.diff(hd)).max()) < 3.0, f"seam at s = 0 smooth: heading steps ≤ {np.abs(np.diff(hd)).max():.2f}° per 2 m, radius ≥ {rs[1:-1].min():.0f} m")
+    mk = m.get("marks", {})
+    check(all(k in mk for k in ("start", "bridgeDeckStart", "pylon", "bridgeDeckEnd", "firstRoundaboutEntry", "firstRoundaboutExit",
+                                "sinforianoStart", "sinforianoEnd", "sanFranciscoStart", "plazaMinayo", "plazaEspana", "plazaAlta",
+                                "arcoDelPeso", "puertaPalmas", "puentePalmasStart", "puentePalmasEnd", "elvasRoundabout", "barSite")),
+          "meta.marks complete")
+    flat = [v for k, v in mk.items() if k != "barSite"]
+    seq = [x if not isinstance(x, list) else x[0] for x in flat]
+    check(all(a <= b for a, b in zip(seq, seq[1:])), "marks in lap order")
     seg = np.hypot(*np.diff(np.vstack([P, P[:1]]), axis=0).T)
     check(seg.min() > 1.0 and seg.max() < 3.0, f"sample spacing {seg.min():.2f}–{seg.max():.2f} m")
     check(abs(seg.sum() - L) < 5, f"polyline length {seg.sum():.1f} ≈ lapLength")

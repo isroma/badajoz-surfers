@@ -276,6 +276,8 @@ describe("run", () => {
 
   it("the HUD chaser starts as a head start and fades", () => {
     const { run } = makeRun(16);
+    // (the opening now meets a parked car 30-40 m in: this test is about the HUD, not dodging)
+    run.invincible = true;
     for (let i = 0; i < 1.6 / TICK; i++) run.tick(TICK);
     const start = run.chaser.hudValue;
     expect(start).toBeLessThanOrEqual(0.5);

@@ -45,6 +45,12 @@ export interface ObstacleSpawn {
   flipped: boolean;
   /** Not driving: why (visual only). */
   role?: VehicleRole;
+  /**
+   * Moving vehicles on a lane that changes flow at a boundary (an oncoming lane that becomes a
+   * ring lane): the vehicle exists only while its centre is short of this distance; it comes out
+   * of (or turns off at) that boundary, behind the splitter island, never through it.
+   */
+  beyond?: number;
 }
 
 export interface PickupSpawn {
@@ -119,7 +125,23 @@ export function whenAhead(spawn: Trajectory, ahead: number): number {
 }
 
 /** The fields that define where an obstacle is. */
-export type Trajectory = Pick<ObstacleSpawn, "d" | "k" | "d0" | "stop">;
+export type Trajectory = Pick<ObstacleSpawn, "d" | "k" | "d0" | "stop"> & { beyond?: number };
+
+/** Runner distance at which the vehicle's centre is at `c` (monotonic in p for a moving vehicle). */
+export function whenCentre(spawn: Trajectory, c: number): number {
+  const base = spawn.d0 ?? spawn.d;
+  let lo = base - 4000;
+  let hi = base + 4000;
+  // k > 0 comes towards the runner (centre falls as p grows); k < 0 drives on (centre grows).
+  const falling = spawn.k > 0;
+  for (let i = 0; i < 64; i++) {
+    const mid = (lo + hi) / 2;
+    const at = obstacleCentre(spawn, mid);
+    if (falling ? at > c : at < c) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
 
 /** Distance of a pickup when the runner is at `p`. */
 export function pickupD(pk: PickupSpawn, p: number): number {

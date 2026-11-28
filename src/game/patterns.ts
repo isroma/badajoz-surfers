@@ -22,7 +22,7 @@ import { laneIndices, laneKind, laneOffset, laneWidth, runnableSpan, centreLane,
 import type { Rng } from "./rng";
 import { BRAKE_DISTANCE, meetingPoint, whenAhead, type ObstacleSpawn, type PickupSpawn, type Trajectory, type VehicleRole } from "./spawns";
 import { footprintOf, sweep, lateralOverlap, collides } from "./traffic";
-import { RUNNER_HALF_DEPTH, WELCOME_GAP, WELCOME_UNTIL, jumpAirtime, jumpApexTime, jumpHeightAt } from "./tuning";
+import { EARLY_GAP, RUNNER_HALF_DEPTH, WELCOME_GAP, WELCOME_RAMP, WELCOME_UNTIL, jumpAirtime, jumpApexTime, jumpHeightAt } from "./tuning";
 
 export type ObstacleDraft = Omit<ObstacleSpawn, "id">;
 export type PickupDraft = Omit<PickupSpawn, "id">;
@@ -626,13 +626,6 @@ const SIDEWALK: Palette = {
   movers: [["peaton", 1]],
   full: [],
 };
-const MEDIAN: Palette = {
-  low: [["maceta", 2], ["bolardos", 2]],
-  wall: [["peaton", 1]],
-  over: [],
-  movers: [["peaton", 1]],
-  full: [],
-};
 
 /**
  * What goes in a lane: the zone's palette on the road; on sidewalks, medians and pedestrian
@@ -659,8 +652,6 @@ function palette(b: PatternBuilder, lane?: number): Palette {
       pal = SIDEWALK;
       break;
     case "median":
-      pal = MEDIAN;
-      break;
     case "pedestrian": {
       const old = ctx.zone === "casco-antiguo" || ctx.zone === "san-francisco";
       pal = {
@@ -1307,7 +1298,8 @@ const finale: PatternFn = (b) => {
     b.line = gap;
     // Lap 1: an extra beat between rows, and the gap only shifts every other row.
     const firstLap = ctx.lap === 1;
-    front += rowLen + Math.max(rowGap(b, true) + (firstLap ? b.s(0.25) : 0), welcome ? b.s(WELCOME_GAP + 0.1) : 0);
+    const early = ctx.lap === 1 && b.start < WELCOME_RAMP;
+    front += rowLen + Math.max(rowGap(b, true) + (firstLap ? b.s(0.25) : 0), welcome ? b.s(WELCOME_GAP + 0.1) : early ? b.s(EARLY_GAP + 0.1) : 0);
     if (!firstLap || r % 2 === 1) gap = rng.pick(b.neighbours(gap));
   }
   const kind = pal.full.some(([k]) => k === "valla-larga") || pal.full.length === 0 ? "valla-larga" : rng.weighted(pal.full);
@@ -1366,31 +1358,6 @@ const crowd: PatternFn = (b) => {
   return true;
 };
 
-/** The grass median as a reward lane: a long bellota trail with a planter or two to hop. */
-const medianTrail: PatternFn = (b) => {
-  const { rng, ctx } = b;
-  const medians = b.lanes.filter((l) => b.laneKind(l) === "median");
-  if (medians.length === 0) return false;
-  const lane = b.nearLane(ctx.entryLane, medians);
-  const front = b.start + b.approach(lane);
-  const length = rng.range(35, 60);
-  const lows = palette(b, lane).low;
-  b.line = lane;
-  let at = front;
-  const hops = lows.length > 0 ? rng.int(0, 2) : 0;
-  for (let i = 0; i < hops; i++) {
-    const g = front + ((i + 1) * length) / (hops + 1);
-    const kind = b.pick(lows);
-    b.trail(lane, at, g - b.s(0.45), 0.9, 2.2);
-    b.place(kind, lane, g);
-    lineCell(b, lane, kind, g);
-    at = g + OBSTACLE_DEFS[kind].length + b.s(0.4);
-  }
-  b.trail(lane, at, front + length, 0.9, 2.2);
-  b.end = Math.max(b.end, front + length);
-  b.slot(lane, front + length * 0.5, 1.0, false);
-  return true;
-};
 
 export interface PatternDef {
   name: string;
@@ -1421,7 +1388,6 @@ export const PATTERNS = {
   mixedRows: { name: "mixedRows", fn: mixedRows, easy: false, movers: false },
   busStop: { name: "busStop", fn: busStop, easy: false, movers: false, special: true },
   crowd: { name: "crowd", fn: crowd, easy: true, movers: false },
-  medianTrail: { name: "medianTrail", fn: medianTrail, easy: true, movers: false },
   finale: { name: "finale", fn: finale, easy: false, movers: false, special: true },
 } as const satisfies Record<string, PatternDef>;
 
@@ -1438,12 +1404,10 @@ const REWEIGHT: Partial<Record<PatternName, number>> = { carHop: 0.5, trafficJam
 export function patternWeights(ctx: PatternContext): Weights<PatternName> {
   const kinds = ctx.layout.kinds ?? [];
   const foot = kinds.filter((k) => k === "sidewalk" || k === "pedestrian").length;
-  const median = kinds.includes("median");
   const pedestrianStreet = kinds.length > 0 && kinds.every((k) => k !== "road");
   // The real streets add their own moments: buses at real stops, people on foot, the grass median.
   const city: [PatternName, number][] = [
     ["crowd", pedestrianStreet ? 5 : foot > 0 ? 1.2 : 0],
-    ["medianTrail", median ? 1.5 : 0],
   ];
   return [...zoneWeights(ctx).map(([n, w]): [PatternName, number] => [n, w * (REWEIGHT[n] ?? 1)]), ...city];
 }

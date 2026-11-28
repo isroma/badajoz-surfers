@@ -6,6 +6,7 @@ import {
   ACHIEVEMENTS,
   MAX_RECORDS,
   ROUTE_MARKS,
+  setRouteMarks,
   addRecord,
   addRunToLifetime,
   dailyChallenge,
@@ -62,25 +63,30 @@ describe("achievements", () => {
 
   it("route achievements unlock at their places on the real lap", () => {
     const ids = (distance: number): string[] => newAchievements([], addRunToLifetime(emptyLifetime(), run({ distance }))).map((a) => a.id);
-    expect(ids(900)).not.toContain("puente-real");
-    expect(ids(970)).toContain("puente-real");
-    expect(ids(970)).not.toContain("primera-rotonda");
-    expect(ids(2400)).toEqual(expect.arrayContaining(["puente-real", "primera-rotonda", "sinforiano"]));
-    expect(ids(5000)).toContain("arco-del-peso");
-    expect(ids(6300)).toContain("puente-palmas");
+    const M = ROUTE_MARKS;
+    expect(ids(M.puenteReal - 10)).not.toContain("puente-real");
+    expect(ids(M.puenteReal + 1)).toContain("puente-real");
+    expect(ids(M.puenteReal + 1)).not.toContain("primera-rotonda");
+    expect(ids(M.sinforiano + 1)).toEqual(expect.arrayContaining(["puente-real", "primera-rotonda", "sinforiano"]));
+    expect(ids(M.arcoDelPeso + 1)).toContain("arco-del-peso");
+    expect(ids(M.puentePalmas + 1)).toContain("puente-palmas");
   });
 
-  it("route marks match the city data", () => {
-    interface Sec { fromS: number; toS: number; name: string | null; bridge: string | null; tunnel: boolean; roundabout: unknown }
-    const city = JSON.parse(readFileSync("public/data/city.json", "utf8")) as { sections: Sec[] };
-    const secs = city.sections;
-    const near = (a: number, b: number | undefined): void => expect(Math.abs(a - (b ?? -1e9))).toBeLessThan(15);
-    const realDeck = secs.filter((s) => s.bridge === "Puente Real").sort((a, b) => b.toS - b.fromS - (a.toS - a.fromS))[0];
-    near(ROUTE_MARKS.puenteReal, realDeck?.toS);
-    near(ROUTE_MARKS.primeraRotonda, secs.find((s) => s.roundabout)?.fromS);
-    near(ROUTE_MARKS.sinforiano, secs.filter((s) => s.name === "Avenida Sinforiano Madroñero").at(-1)?.toS);
-    near(ROUTE_MARKS.arcoDelPeso, secs.find((s) => s.tunnel)?.toS);
-    near(ROUTE_MARKS.puentePalmas, secs.filter((s) => s.bridge === "Puente de Palmas").at(-1)?.toS);
+  it("route marks follow the city data's marks", () => {
+    const city = JSON.parse(readFileSync("public/data/city.json", "utf8")) as { meta: { marks: Record<string, unknown> } };
+    const before = { ...ROUTE_MARKS };
+    setRouteMarks(city.meta.marks);
+    const m = city.meta.marks;
+    const end = (v: unknown): number => (Array.isArray(v) ? (v[v.length - 1] as number) : (v as number));
+    expect(ROUTE_MARKS.puenteReal).toBe(end(m["bridgeDeckEnd"]));
+    expect(ROUTE_MARKS.primeraRotonda).toBe(end(m["firstRoundaboutEntry"]));
+    expect(ROUTE_MARKS.sinforiano).toBe(end(m["sinforianoEnd"]));
+    expect(ROUTE_MARKS.arcoDelPeso).toBe(end(m["arcoDelPeso"]));
+    expect(ROUTE_MARKS.puentePalmas).toBe(end(m["puentePalmasEnd"]));
+    // The static fallbacks are the current data's values (within a few metres).
+    for (const k of Object.keys(before) as (keyof typeof before)[]) expect(Math.abs(before[k] - ROUTE_MARKS[k])).toBeLessThan(5);
+    setRouteMarks({ bridgeDeckEnd: "x", arcoDelPeso: [] });
+    expect(ROUTE_MARKS.puenteReal).toBe(end(m["bridgeDeckEnd"]));
   });
 
   it("Turista needs every zone", () => {

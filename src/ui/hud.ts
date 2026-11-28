@@ -249,6 +249,7 @@ export class Hud {
     const glyph = svg(turn.roundabout ? GLYPH_ROUNDABOUT : GLYPH_TURN, "turn-icon");
     const deg = turn.roundabout ? (turn.dir === "left" ? 180 : turn.dir === "straight" ? -90 : 0) : 0;
     glyph.style.transform = `${turn.dir === "left" && !turn.roundabout ? "scaleX(-1)" : ""} rotate(${deg}deg)`;
+    // Straight on (not at a roundabout): the turn arrow pointing up.
     if (turn.dir === "straight" && !turn.roundabout) glyph.style.transform = "rotate(-90deg)";
     this.turnEl.replaceChildren(glyph, h("span", undefined, turn.name ?? (turn.roundabout ? "Rotonda" : turn.dir === "left" ? "Gira a la izquierda" : "Gira a la derecha")));
     this.turnEl.classList.add("show");

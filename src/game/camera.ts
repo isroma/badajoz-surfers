@@ -467,12 +467,14 @@ export class ChaseCamera {
         // From the front/side (waiter visible behind) swinging round the runner to the chase view.
         const t = smooth(i.intro);
         this.chasePose(i, this.tmpA, this.tmpB);
-        // From the side of the street with more room, closer in a narrow street.
-        const roomy = street ? (street.right - i.x >= i.x - street.left ? 1 : -1) : 1;
+        // The bridge head: from behind and to the left, wide enough to take in the waiter storming
+        // out of the bar behind on the right, the runner, and the pylon ahead; then it swings in
+        // to the chase view. Closer in a narrow street, on the side with more room.
+        const roomy = street ? (street.right - i.x >= i.x - street.left ? -1 : 1) : -1;
         const shrink = 1 - 0.35 * this.sNarrow.x;
-        const sx = 3.4 * roomy * shrink;
-        const sz = -5.4 * shrink;
-        const sy = 1.7;
+        const sx = 3.2 * roomy * shrink;
+        const sz = 10.5 * shrink;
+        const sy = 2.4;
         const cdx = this.tmpA.x - i.x;
         const cdz = this.tmpA.z - i.z;
         const aS = Math.atan2(sx, sz);
@@ -484,7 +486,7 @@ export class ChaseCamera {
         // Stay over the road: nothing solid stands there below 4 m (lamp posts and trees line the kerbs).
         const ax = street ? i.x + Math.sin(a) * r : Math.max(-3.6, Math.min(3.6, i.x + Math.sin(a) * r));
         pos.set(ax, sy + (this.tmpA.y - sy) * t, i.z + Math.cos(a) * r);
-        look.set(i.x, 1.2, i.z + 1.5).lerp(this.tmpB, t);
+        look.set(i.x + 0.5, 2.2, i.z - 24).lerp(this.tmpB, t);
         targetFov = 55 + (targetFov - 55) * t;
         break;
       }

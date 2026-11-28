@@ -35,7 +35,9 @@ STEP = 2.0  # route sample spacing (m)
 R_MIN = 14.0  # minimum corner radius after smoothing
 R_RING_MIN = 12.0  # roundabout rings keep their real radius if at least this
 MAX_GRADE = 0.08
-PINNED_WAYS = {96659407}  # footway out of the Puerta de Palmas archway (+ the connector to the bridge path)
+PINNED_WAYS = {96659407}
+DECK_WAY = 97944373  # Puente Real, south-east-bound carriageway, bridge=yes (the cable-stayed deck)
+START_BEFORE_DECK = 20  # metres  # footway out of the Puerta de Palmas archway (+ the connector to the bridge path)
 
 ZONE_IDS = ["puente-real", "valdepasillas", "san-francisco", "casco-antiguo", "alcazaba-palmas", "margen-derecha"]
 
@@ -225,9 +227,11 @@ def build_route(osm: OSM, geo: Geo, rings: dict, dtm: Raster, dsm: Raster) -> tu
     for e in ring_report:
         print(f"  ring {e['name'] or e['key']}: {'ok' if 'minRadiusAfter' in e else 'KEPT OLD LINE (' + e['message'] + ')'} "
               f"r {e['minRadiusBefore']:.1f} -> {e.get('minRadiusAfter', float('nan')):.1f} m")
-    # the pass through the Avenida de Elvas roundabout may move the start point: re-anchor s = 0 on
-    # the sample nearest the origin (the start node)
-    k0 = int(np.argmin(np.hypot(*p.T)))
+    # s = 0 is START_BEFORE_DECK metres before the Puente Real deck (OSM way DECK_WAY) begins, so
+    # the lap opens on the bridge structure; the land approach from the Avenida de Elvas roundabout
+    # becomes the end of the lap. (The local frame keeps its origin at OSM node START_NODE.)
+    d0 = int(np.flatnonzero(way1 == DECK_WAY)[0])
+    k0 = (d0 - START_BEFORE_DECK) % len(p)
     p, p1, way1 = np.roll(p, -k0, 0), np.roll(p1, -k0, 0), np.roll(way1, -k0)
     # resample to STEP along the smoothed curve, carrying the attributes
     closed = np.vstack([p, p[:1]])
@@ -774,7 +778,7 @@ def build_zones(sections: list[dict], route: Route) -> list[dict]:
         return e
 
     # 1 -> 2: entering the roundabout at Puente Real's south-east end
-    c1 = first(lambda s: s["roundabout"] is not None, 300)["fromS"]
+    c1 = first(lambda s: s["roundabout"] is not None, 0)["fromS"]
     # 2 -> 3: entering the ring-road roundabout where Avenida María Auxiliadora ends (Valdepasillas -> centre)
     aux = last_end(lambda s: (s["name"] or "").startswith("Avenida María Auxiliadora"), c1)
     c2 = first(lambda s: s["roundabout"] is not None, aux["fromS"])["fromS"]
@@ -1047,6 +1051,81 @@ def building_heights(polys: list[Polygon], dsm: Raster, dtm: Raster, f: Frame) -
 # ---------------------------------------------------------------------------
 
 
+def build_marks(route: Route, secs: list[dict], zones: list[dict], roundabouts: list[dict], landmarks: list[dict],
+                passes: list[dict], buildings_polys: list[Polygon], water: list[dict], dtm: Raster, geo: Geo, z0: float) -> dict:
+    """Named s positions for the game (instead of hard-coded distances), and the bar's site."""
+    def sec(pred, last=False):
+        c = [x for x in secs if pred(x)]
+        return (c[-1] if last else c[0]) if c else None
+
+    deck = sec(lambda x: x["bridge"] == "Puente Real" and x["toS"] - x["fromS"] > 100)
+    palmas = sec(lambda x: x["bridge"] == "Puente de Palmas")
+    rbs = sorted(roundabouts, key=lambda r: r["entryS"])
+    by_id = {r["id"]: r for r in roundabouts}
+    lm = {x["id"]: x for x in landmarks}
+    zone = {z["id"]: z for z in zones}
+    pas = {p["id"]: p for p in passes}
+
+    def rng(a, b):
+        return [qn(a), qn(b)]
+
+    marks = {
+        "start": 0,
+        "bridgeDeckStart": qn(deck["fromS"]),
+        "pylon": lm["puente-real"]["pylon"]["s"],
+        "bridgeDeckEnd": qn(deck["toS"]),
+        "firstRoundaboutEntry": rbs[0]["entryS"],
+        "firstRoundaboutExit": rbs[0]["exitS"],
+        "sinforianoStart": sec(lambda x: x["name"] == "Avenida Sinforiano Madroñero")["fromS"],
+        "sinforianoEnd": sec(lambda x: x["name"] == "Avenida Sinforiano Madroñero", last=True)["toS"],
+        "sanFranciscoStart": zone["san-francisco"]["fromS"],
+        "plazaMinayo": rng(by_id["rb-plaza-minayo"]["entryS"], by_id["rb-plaza-minayo"]["exitS"]),
+        "plazaEspana": rng(sec(lambda x: x["name"] == "Plaza de España")["fromS"], sec(lambda x: x["name"] == "Plaza de España", last=True)["toS"]),
+        "plazaAlta": qn(float(route.locate(lm["plaza-alta"]["x"], lm["plaza-alta"]["z"])[0][0])),
+        "arcoDelPeso": pas["w1240323757"]["s"],
+        "puertaPalmas": pas["w96592196"]["s"],
+        "puentePalmasStart": qn(palmas["fromS"]),
+        "puentePalmasEnd": qn(palmas["toS"]),
+        "elvasRoundabout": rng(by_id["rb-28-57"]["entryS"], by_id["rb-28-57"]["exitS"]),
+    }
+    # the bar: right-hand side just behind the start (end of the lap), clear of buildings, water and
+    # the carriageway (+3 m), with the ground there close to the road surface
+    half = np.zeros(len(route.s))
+    for x in secs:
+        half[(route.s >= x["fromS"]) & (route.s < x["toS"])] = x["width"] / 2
+    from shapely import contains_xy
+    from shapely.ops import unary_union
+    blds = unary_union([b.buffer(1.0) for b in buildings_polys if b.distance(Point(*route.p[0])) < 200])
+    wet = unary_union([Polygon(np.asarray(w["ring"]).reshape(-1, 2)).buffer(0) for w in water]).buffer(2)
+    best = None
+    L = route.length
+    for back in np.arange(3, 15.1, 1.0):
+        sb = L - back
+        i = int(np.argmin(np.abs(route.s - sb)))
+        t = route.tan[i]
+        nrm = np.array([-t[1], t[0]])  # right-hand normal (x east, z south)
+        for lat in np.arange(6.0, 14.1, 0.5):
+            q = route.p[i] + nrm * lat
+            if lat < half[i] + 3.0 or contains_xy(blds, q[0], q[1]) or contains_xy(wet, q[0], q[1]):
+                continue
+            # nothing of the carriageway within 3 m anywhere nearby (other carriageway, slip roads)
+            near = route.tree.query_ball_point(q, 25)
+            if any(np.hypot(*(route.p[j] - q)) < half[j] + 3.0 for j in near):
+                continue
+            e, n = geo.f.utm(q[0], q[1])
+            g = float(dtm.sample(np.atleast_1d(e), np.atleast_1d(n))[0]) - z0
+            dh = g - route.h[i]
+            score = abs(back - 8) + abs(lat - 8) + 4 * abs(dh)
+            if best is None or score < best[0]:
+                best = (score, sb, lat, q, g, dh)
+    if best:
+        _, sb, lat, q, g, dh = best
+        marks["barSite"] = {"s": qn(sb - L), "sLap": qn(sb), "x": qn(q[0]), "z": qn(q[1]), "h": qn(g), "lateral": qn(lat),
+                            "side": "right", "groundMinusRoad": qn(dh),
+                            "note": "on land at the north-west bridge head; ≥ 3 m clear of the carriageway, ≥ 1 m from buildings, off water"}
+    return marks
+
+
 def main() -> None:
     osm = OSM.load(merged_path())
     lon0, lat0 = osm.nodes[START_NODE]
@@ -1170,6 +1249,7 @@ def main() -> None:
     junctions = build_junctions(osm, geo, route, rmeta["raw"], secs)
     terrain = build_terrain(geo, route, dtm, z0, water)
     roundabouts = build_roundabouts(osm, geo, route, secs, rmeta, dtm, z0)
+    marks = build_marks(route, secs, zones, roundabouts, landmarks, passes, polys, water, dtm, geo, z0)
 
     sv = np.array([b["height"] for b in buildings])
     city = {
@@ -1182,6 +1262,10 @@ def main() -> None:
             "frame": {"x": "east", "z": "south", "y": "up", "units": "m", "proj4": f.proj4,
                       "rasterCrs": "EPSG:25829"},
             "lapLength": qn(route.length),
+            # where s = 0 is: 20 m before the Puente Real deck. The frame origin stays the OSM node above.
+            "start": {"x": qn(route.p[0][0], 2), "z": qn(route.p[0][1], 2), "h": qn(route.h[0], 2),
+                      "bearing": qn(bearing(*route.tan[0]), 1), "metresBeforeDeck": START_BEFORE_DECK},
+            "marks": marks,
             "routeStep": STEP,
             "attribution": ATTRIBUTION,
             "sources": {

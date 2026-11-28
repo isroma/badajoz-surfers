@@ -185,18 +185,17 @@ describe("lane layouts", () => {
       const world = new BoxSet([]);
       const L = track.lapLength;
       const ms = merges(track).filter((x) => !x.opens);
-      expect(ms.length).toBeGreaterThan(10);
-      // Puente Real: the two oncoming lanes taper in sequence into own-2.
-      const pr = ms.filter((m) => Math.abs(m.end - 1010) < 2);
+      // (lanes now flow through the rings 1:1: only the real endings remain)
+      expect(ms.length).toBeGreaterThanOrEqual(5);
+      // Puente Real: the outer oncoming lane tapers into opp-1, which carries on round the first
+      // ring (as its inner lane).
+      const ring = track.marks.firstRoundaboutEntry;
+      const pr = ms.filter((m) => Math.abs(m.end - ring) < 2);
       const ids = track.stretches[pr[0]!.fromStretch]!.layout.ids;
       const opp2 = pr.find((m) => ids[m.lane] === "opp-2")!;
-      const opp1 = pr.find((m) => ids[m.lane] === "opp-1")!;
       expect(ids[opp2.into]).toBe("opp-1");
-      expect(ids[opp1.into]).toBe("own-2");
-      expect(opp2.s1).toBeCloseTo(opp1.s0, 6);
       // (one geometry for every lap, sized for the fastest: MERGE_TIME s at its planned speed)
-      expect(opp1.s1 - opp1.s0).toBeGreaterThanOrEqual(MERGE_LENGTH);
-      expect(opp1.end - opp2.s0).toBeCloseTo(2 * (opp1.s1 - opp1.s0), 6);
+      expect(opp2.s1 - opp2.s0).toBeGreaterThanOrEqual(MERGE_LENGTH);
       const report: string[] = [];
       for (const lap of [0, 1, 2, 3]) {
         for (const m of ms) {

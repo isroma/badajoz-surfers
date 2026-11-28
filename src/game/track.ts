@@ -31,6 +31,7 @@ import {
   FLIGHT_MIN_DISTANCE,
   FLIGHT_SPEED_FACTOR,
   START_SPEED,
+  EARLY_GAP,
   WELCOME_GAP,
   WELCOME_RAMP,
   WELCOME_UNTIL,
@@ -111,6 +112,14 @@ export function mergeClosures(course: Course): readonly Closure[] {
 
 const ROW_SLACK = 2;
 
+/** Lap 1: no bellotas lure the runner into pavement clutter before this distance. */
+const NO_LURE_UNTIL = 2000;
+
+/** Lap 1's set piece at the Puente Real pylon. */
+const PYLON_SET_PIECE: PatternName = "oncoming";
+/** The pylon set-piece starts up to this many metres before the pylon. */
+const PYLON_LEAD = 80;
+
 /** Nothing is met within this many metres after a layout boundary. */
 export const BOUNDARY_CLEAR = 15;
 
@@ -126,8 +135,10 @@ const PICKUP_CLOSURE_HALF = 1.0;
 
 /** Nothing is placed this close to the start or end of a zone (room for the zone banner). */
 export const ZONE_MARGIN = 25;
+/** The first obstacle of a fresh run (no tutorial) is met this far in (to +6 m). */
+export const OPENING_AT = 31;
 /** A fresh run starts with this much empty road... */
-export const EMPTY_START = 48;
+export const EMPTY_START = 30;
 /** ...followed by very easy patterns until here. */
 export const EASY_UNTIL = 130;
 /** With the tutorial, easy patterns continue until here. */
@@ -204,7 +215,7 @@ function finaleRoom(span: ZoneSpan): { finaleLength: number; before: number } {
   // Row gap as in patterns.rowGap(+0.12 s lane change), plus the lap-1 breather of the finale.
   const extra = 0.12 + (span.lap === 1 ? 0.25 : 0);
   // (the welcoming first kilometre spaces the rows WELCOME_GAP s apart)
-  const rowTime = Math.max(reaction + 0.35 + extra + 0.25 * (1 - difficulty), span.lap === 1 && span.start < WELCOME_UNTIL ? WELCOME_GAP + 0.1 : 0);
+  const rowTime = Math.max(reaction + 0.35 + extra + 0.25 * (1 - difficulty), span.lap === 1 && span.start < WELCOME_RAMP ? EARLY_GAP + 0.1 : 0);
   const finaleLength = rows * (5.4 + v * rowTime) + v * (span.lap === 1 ? 0.65 : 0.4) + 1;
   return { finaleLength, before: v * (reaction + 1.1 + 0.35 * (1 - difficulty)) + 4 };
 }
@@ -282,6 +293,10 @@ export class TrackGenerator {
     this.nextPowerupAt = this.cursor + this.rng.range(160, 260);
     this.nextLetterAt = this.cursor + this.rng.range(90, 160);
     if (options.tutorial && this.fresh) this.placeTutorial();
+    else if (this.fresh) this.placeOpening();
+    // Lap 1's first letter comes with the pylon set-piece.
+    const marks = this.course()?.track.marks;
+    if (this.fresh && marks) this.nextLetterAt = Math.max(this.nextLetterAt, marks.pylon - PYLON_LEAD);
   }
 
   /**
@@ -331,6 +346,32 @@ export class TrackGenerator {
     this.easyUntil = TUTORIAL_EASY_UNTIL;
     this.nextPowerupAt = this.cursor + this.rng.range(120, 200);
     this.nextLetterAt = this.cursor + this.rng.range(40, 90);
+  }
+
+  /**
+   * The opening beat on the bridge head: a parked car in the runner's lane 30-40 m ahead with a
+   * line of bellotas pulling them across to the next lane (a dodge, nothing to jump).
+   */
+  private placeOpening(): void {
+    const ctx = this.context(0, true);
+    ctx.v = START_SPEED;
+    const b = new PatternBuilder(ctx, 0);
+    const lane = centreLane(ctx.layout);
+    const near = b.lanes.filter((l) => l !== lane && Math.abs(b.xOf(l) - b.xOf(lane)) < 3.8);
+    const road = near.filter((l) => b.isRoad(l));
+    const side = road[0] ?? near[0];
+    if (side === undefined) return;
+    const front = OPENING_AT + this.rng.range(0, 6);
+    const end = b.place("coche", lane, front, "parked");
+    b.trail(side, front - 16, end + 4, 0.9, 2.2);
+    if (!b.ok) return;
+    for (const o of b.obstacles) this.obstacles.push({ ...o, id: this.nextId++ });
+    for (const p of b.pickups) this.pickups.push({ ...p, id: this.nextId++ });
+    this.pickups.sort((a, c) => a.d - c.d);
+    for (const o of b.obstacles) this.noteStatic(o, ctx.layout);
+    this.lineX = b.xOf(side);
+    this.contentEnd = end + 4;
+    this.cursor = end + speedAt(end) * (WELCOME_GAP + 0.2);
   }
 
   /** Where generation has reached. */
@@ -515,6 +556,9 @@ export class TrackGenerator {
     if (inPassage(course, w0, w1)) return true;
     // Calm in tight bends: nothing to dodge, jump or roll where the road curves harder than
     // CALM_CURVATURE (rings, old-town corners): only bellota trails along the lanes.
+    // Lap 1's first roundabout is a clean bellota arc.
+    const marks = course.track.marks;
+    if (f0 < course.lapLength && f1 > marks.firstRoundaboutEntry - 5 && f0 < marks.firstRoundaboutExit + 5) return true;
     // Nothing just after a layout boundary (a ring entry, a street change: the lanes blend there).
     for (const t of course.track.transitions) {
       for (let k = Math.floor(f0 / course.lapLength) - 1; k <= Math.floor(f1 / course.lapLength) + 1; k++) {
@@ -565,11 +609,15 @@ export class TrackGenerator {
     if (this.tutorial.length > 0 && b.start < this.tutorialEnd) return false;
     let from = Infinity;
     let to = -Infinity;
+    let warm = false;
     for (const o of b.obstacles) {
       const [a, c] = footprintOf(o);
-      if (a >= WELCOME_UNTIL) continue;
+      if (a >= WELCOME_RAMP) continue;
       from = Math.min(from, a);
       to = Math.max(to, c);
+      if (a >= WELCOME_UNTIL) continue;
+      // The warm-up: dodges only in the road lanes, nothing across the street.
+      warm = true;
       if (OBSTACLE_DEFS[o.kind].lanes === 3) return true;
       if (o.k > 0 && !this.quietOncoming(o, b)) return true;
       if (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind)) {
@@ -579,18 +627,20 @@ export class TrackGenerator {
       }
     }
     if (!Number.isFinite(from)) return false;
-    const room = WELCOME_GAP * speedAt(from);
+    const room = (from < WELCOME_UNTIL ? WELCOME_GAP : EARLY_GAP) * speedAt(from);
     const near: Omit<ObstacleSpawn, "id">[] = [...b.obstacles];
     for (const o of this.obstacles) {
       if (o.d < from - room - 20 || o.d > to + room + 20) continue;
       near.push(o);
     }
-    // Rows WELCOME_GAP s apart (obstacles side by side, footprints within ROW_SLACK m, are a row).
+    // Rows apart (obstacles side by side, footprints within ROW_SLACK m, are a row).
     const spans = near.map((o) => footprintOf(o)).sort((x, y) => x[0] - y[0]);
     for (let i = 1; i < spans.length; i++) {
       const gap = spans[i]![0] - Math.max(...spans.slice(0, i).map((x) => x[1]));
-      if (gap > ROW_SLACK && gap < room) return true;
+      const need = (spans[i]![0] < WELCOME_UNTIL ? WELCOME_GAP : EARLY_GAP) * speedAt(spans[i]![0]);
+      if (spans[i]![0] < WELCOME_RAMP && gap > ROW_SLACK && gap < need) return true;
     }
+    if (!warm) return false;
     const course = this.course();
     return narrowPoints(near, from - 2, Math.min(WELCOME_UNTIL, to + 2), { layout: this.layoutFn, track: course?.track ?? null, speed: speedAt }, 1).length > 0;
   }
@@ -694,6 +744,14 @@ export class TrackGenerator {
     return false;
   }
 
+  /** Lap 1's pylon set-piece is still to place, and the generator is at it. */
+  private pylonDone = false;
+  private pylonDue(easy: boolean, lap: number): boolean {
+    const m = this.course()?.track.marks;
+    if (!m || this.pylonDone || easy || lap !== 1) return false;
+    return this.cursor > m.pylon - PYLON_LEAD && this.cursor < m.pylon - 5;
+  }
+
   /**
    * A pattern is refused whole when anything it places sits in a closure or a passage; a plain
    * moving vehicle there (background traffic: nothing rides on it, the pattern does not need it)
@@ -785,16 +843,18 @@ export class TrackGenerator {
     // Ordinary patterns leave room for the finale at the end of the zone (it starts at the light).
     // (ordinary patterns stop a pattern gap before the light, longer in the welcoming opening, so
     // the finale starts at its light and ends before the lane tapers)
-    const finaleSlack = (ctx.lap === 1 && this.cursor < WELCOME_UNTIL ? 2.5 : 1.5) * ctx.v;
+    const finaleSlack = (ctx.lap === 1 && this.cursor < WELCOME_RAMP ? 2.5 : 1.5) * ctx.v;
     let normalLimit = finalePending ? Math.min(ctx.lightAt - finaleSlack, limit) : limit;
     for (const f of this.flights) if (f.clearFrom > this.cursor) normalLimit = Math.min(normalLimit, f.clearFrom - 2);
     // Oncoming traffic reaches far ahead: none just before the finale.
     const finaleSoon = finalePending && normalLimit - this.cursor < 90;
     // A pending roof route needs its lanes free of oncoming traffic: hold the traffic back.
-    const roofPending = !easy && ROOF_ZONES.has(ctx.zone) && this.roofSerial !== span.serial && ctx.zoneT > 0.15;
+    // (lap 1: the roof route waits until past the middle of the zone, once the run has warmed up)
+    const roofFrom = ctx.lap === 1 ? 0.5 : 0.25;
+    const roofPending = !easy && ROOF_ZONES.has(ctx.zone) && this.roofSerial !== span.serial && ctx.zoneT > roofFrom - 0.1;
     const trafficLanes = ctx.layout.flow.some((f) => f === 1);
     // Oncoming walls too, just before the roof route is due (its lanes must stay clear ahead).
-    ctx.holdOncoming = finaleSoon || (roofPending && ctx.zoneT > 0.18);
+    ctx.holdOncoming = finaleSoon || (roofPending && ctx.zoneT > roofFrom - 0.07);
     const weights = patternWeights(ctx).filter(([name]) => {
       const def: PatternDef = PATTERNS[name];
       if (def.special) return false;
@@ -808,28 +868,45 @@ export class TrackGenerator {
       if (ctx.lap === 1 && this.cursor < 1500 && name === "fullBarrier") return false;
       return true;
     });
-    if (finalePending && ctx.lightAt - this.cursor < 25) {
+    const pylon = this.pylonDue(easy, ctx.lap);
+    if (pylon) {
+      ctx.holdOncoming = false;
+      // The bridge's signature moment on lap 1: an oncoming convoy past the pylon on the far
+      // lanes, a letter as the reward; it stands in for the bridge's finale.
+      forced = PYLON_SET_PIECE;
+    } else if (finalePending && ctx.lightAt - this.cursor < 25) {
       forced = "finale";
       if (limit - this.cursor < finaleLength * 0.6 && this.cursor > ctx.lightAt) this.finaleSerial = span.serial; // No room left: give up.
-    } else if (!easy && ROOF_ZONES.has(ctx.zone) && this.roofSerial !== span.serial && ctx.zoneT > 0.25) {
+    } else if (!easy && ROOF_ZONES.has(ctx.zone) && this.roofSerial !== span.serial && ctx.zoneT > roofFrom) {
       forced = "rampRoof";
     } else if (!easy && ctx.busStopsNear(this.cursor + 18, this.cursor + 70).length > 0) {
       // A bus waits at the real stop just ahead.
       forced = "busStop";
     }
     ctx.roofDue = forced === "rampRoof";
+    // The finale stands at the zone-end light (the stopped traffic queues there), not before it.
+    if (forced === "finale" && this.cursor < ctx.lightAt) {
+      // (a stork's reserved landing there takes the finale's place)
+      if (this.flights.some((f) => ctx.lightAt + finaleLength > f.clearFrom - 2 && ctx.lightAt < f.clearTo)) {
+        this.finaleSerial = span.serial;
+        forced = null;
+      } else this.cursor = ctx.lightAt;
+    }
     for (let attempt = 0; attempt < 10; attempt++) {
       const name = forced !== null && attempt < (forced === "busStop" ? 1 : 3) ? forced : this.rng.weighted(weights);
       if (forced === "finale" && name !== "finale") break; // Wait (a breather) rather than crowd the finale out.
       const b = new PatternBuilder(ctx, this.cursor);
       if (!PATTERNS[name].fn(b) || !b.ok) continue;
       const flightLimit = this.flights.reduce((m, f) => (f.clearFrom > this.cursor ? Math.min(m, f.clearFrom - 2) : m), Infinity);
-      if (b.end > Math.min(name === "finale" ? limit : normalLimit, flightLimit)) continue;
+      if (b.end > Math.min(name === "finale" || (pylon && name === PYLON_SET_PIECE) ? limit : normalLimit, flightLimit)) continue;
       const refused = (): boolean => this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b) || this.unwelcoming(b) || this.unfair(b);
       if (refused()) {
         if (!b.mirror() || refused()) continue;
       }
-      if (name === "rampRoof") this.roofSerial = span.serial;
+      if (pylon && name === PYLON_SET_PIECE) {
+        this.pylonDone = true;
+        this.finaleSerial = span.serial; // (it stands in for the bridge's finale on lap 1)
+      } else if (name === "rampRoof") this.roofSerial = span.serial;
       this.commit(name, b, limit, easy, span);
       if (name === "finale") {
         // The finale closes the zone's traffic; what is left of the zone (a plaza, a paseo)
@@ -915,7 +992,7 @@ export class TrackGenerator {
     if (easy) gap *= 1.7;
     else if (ctx.zone === "puente-real" && ctx.lap === 1) gap *= 1.25;
     // Lap 1: breathing room easing back to normal density between WELCOME_UNTIL and WELCOME_RAMP.
-    if (ctx.lap === 1 && b.end < WELCOME_RAMP) gap *= 1 + 0.5 * Math.min(1, (WELCOME_RAMP - b.end) / (WELCOME_RAMP - WELCOME_UNTIL));
+    if (ctx.lap === 1 && b.end < WELCOME_RAMP) gap *= 1 + 0.4 * Math.min(1, (WELCOME_RAMP - b.end) / (WELCOME_RAMP - WELCOME_UNTIL));
 
     const obstacles = b.obstacles
       .map((o): ObstacleSpawn => ({ ...o, id: this.nextId++ }))
@@ -939,7 +1016,7 @@ export class TrackGenerator {
     // The welcoming first kilometres (to WELCOME_RAMP): no bellotas leading into clutter on the
     // pavements (it is there to run past; a lure into a late jump is not welcoming).
     const lure = (p: Omit<PickupSpawn, "id">): boolean =>
-      ctx.lap === 1 && p.d < WELCOME_RAMP &&
+      ctx.lap === 1 && p.d < NO_LURE_UNTIL &&
       b.obstacles.some((o) => (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind)) && Math.abs(o.x - p.x) < 1 && p.d > o.d - WELCOME_GAP * ctx.v && p.d < o.d + 3 &&
         (p.d < WELCOME_UNTIL || !b.isRoad(o.lane)));
     // On the real line of a lane the runner can be in there (lanes blend, open and taper).

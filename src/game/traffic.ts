@@ -11,7 +11,7 @@
 import { OBSTACLE_DEFS } from "../contracts";
 import { getCourse } from "./course";
 import { layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
-import { footprint, obstacleCentre, whenAhead, type ObstacleSpawn } from "./spawns";
+import { footprint, obstacleCentre, whenAhead, whenCentre, type ObstacleSpawn } from "./spawns";
 import { RUNNER_HALF_DEPTH } from "./tuning";
 
 /** Obstacles appear this far ahead of the runner (world metres, the fog is thick beyond). */
@@ -44,11 +44,17 @@ interface Cached {
 const cache = new WeakMap<object, Cached>();
 
 function cached(o: Spawnish): Cached {
-  const key = `${o.d}|${o.k}|${o.d0}|${o.stop}|${o.kind}`;
+  const key = `${o.d}|${o.k}|${o.d0}|${o.stop}|${o.kind}|${o.beyond}`;
   let c = cache.get(o);
   if (c && c.key === key) return c;
   const half = lengthOf(o) / 2;
   const life: [number, number] = [whenAhead(o, OBSTACLE_VIEW + half), whenAhead(o, -(KEEP_BEHIND + half))];
+  // A vehicle that comes out of / turns off at a flow-change boundary exists only short of it.
+  if (o.beyond !== undefined && o.k !== 0) {
+    const at = whenCentre(o, o.beyond);
+    if (o.k > 0) life[0] = Math.max(life[0], at);
+    else life[1] = Math.min(life[1], at);
+  }
   const ca = obstacleCentre(o, life[0]);
   const cb = obstacleCentre(o, life[1]);
   c = { key, life, sweep: ca < cb ? [ca, cb] : [cb, ca] };
@@ -114,24 +120,57 @@ export function flowAllows(o: Spawnish, layoutFn: LayoutFn, origin: LaneLayout):
   const half = lengthOf(o) / 2;
   void origin;
   // Its lane must exist all along the sweep (same lateral position: the real lanes keep their
-  // offsets through junctions and roundabouts), with traffic its way.
+  // offsets through junctions and roundabouts), with traffic its way. Ahead of where the runner
+  // meets it, a lane that stops carrying it (a flow change at a ring) cuts the vehicle short: it
+  // comes out of / turns off at that boundary (`beyond`) instead of driving through.
+  const meet = footprint(o, lengthOf(o), RUNNER_HALF_DEPTH)[1];
+  const ok = (at: number): boolean => laneCarries(o, layoutFn, at);
   for (let d = s0 - half; ; d += 8) {
     const at = Math.min(d, s1 + half);
-    const layout = layoutFn(at);
-    let lane = -1;
-    // (a lane may sit a few centimetres elsewhere through a roundabout: same lane, same car)
-    for (let i = 0; i < layout.offsets.length; i++) if (Math.abs((layout.offsets[i] ?? 0) - o.x) < LANE_DRIFT) lane = i;
-    if (lane < 0) return false;
-    const flow = layout.flow[lane] ?? 0;
-    // Nothing drives against the ring's direction on a roundabout (not even a scooter).
-    if (o.k > 0 && layoutFn === layoutAt && getCourse()?.track.sectionAt(at).roundabout != null) return false;
-    const kind = layout.kinds?.[lane] ?? "road";
-    const walker = o.kind === "peaton" && flow === 0 && kind !== "road";
-    if (o.kind !== "peaton" && o.kind !== "moto" && kind !== "road") return false;
-    if (o.k < 0 && flow !== 1 && !walker) return false;
-    if (o.k > 0 && !(flow === -1 || walker || (flow === 0 && o.kind === "moto"))) return false;
+    if (!ok(at)) {
+      if (at > meet + 25 && o.beyond === undefined && flowChangeNear(at)) {
+        // Find the boundary within the last step, and cut there (a little short of it).
+        let lo = at - 8;
+        let hi = at;
+        for (let i = 0; i < 12; i++) {
+          const mid = (lo + hi) / 2;
+          if (ok(mid)) lo = mid;
+          else hi = mid;
+        }
+        (o as { beyond?: number }).beyond = lo - half - 2;
+        return true;
+      }
+      return false;
+    }
     if (at >= s1 + half) break;
   }
+  return true;
+}
+
+/** Is there a boundary where a lane changes flow (an oncoming lane meeting a ring) near `at`? */
+function flowChangeNear(at: number): boolean {
+  const course = getCourse();
+  if (!course) return false;
+  const L = course.lapLength;
+  const w = ((at % L) + L) % L;
+  return course.track.transitions.some((t) => t.flowChanges.length > 0 && Math.abs(((w - t.s + L / 2) % L + L) % L - L / 2) < 12);
+}
+
+/** Does the lane at the vehicle's line exist at `at` with traffic its way? */
+function laneCarries(o: Spawnish, layoutFn: LayoutFn, at: number): boolean {
+  const layout = layoutFn(at);
+  let lane = -1;
+  // (a lane may sit a few centimetres elsewhere through a roundabout: same lane, same car)
+  for (let i = 0; i < layout.offsets.length; i++) if (Math.abs((layout.offsets[i] ?? 0) - o.x) < LANE_DRIFT) lane = i;
+  if (lane < 0) return false;
+  const flow = layout.flow[lane] ?? 0;
+  // Nothing drives against the ring's direction on a roundabout (not even a scooter).
+  if (o.k > 0 && layoutFn === layoutAt && getCourse()?.track.sectionAt(at).roundabout != null) return false;
+  const kind = layout.kinds?.[lane] ?? "road";
+  const walker = o.kind === "peaton" && flow === 0 && kind !== "road";
+  if (o.kind !== "peaton" && o.kind !== "moto" && kind !== "road") return false;
+  if (o.k < 0 && flow !== 1 && !walker) return false;
+  if (o.k > 0 && !(flow === -1 || walker || (flow === 0 && o.kind === "moto"))) return false;
   return true;
 }
 

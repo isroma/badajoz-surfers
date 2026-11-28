@@ -50,7 +50,8 @@ describe("camera in narrow streets", () => {
     expect(bad.slice(0, 10)).toEqual([]);
     // The old town and the two arches count as narrow.
     expect(narrow).toBeGreaterThan(150);
-    for (const s of [4600, 4900, 5722]) {
+    const m = course.track.marks;
+    for (const s of [(m.arcoDelPeso[0] + m.arcoDelPeso[1]) / 2, (m.puertaPalmas[0] + m.puertaPalmas[1]) / 2]) {
       wallsBetween(walls, L, s - 7.5, s + 6, box);
       expect(streetNarrowness(box.right - box.left, inPassage(course, s - 8, s + 4)), `s ${s}`).toBeGreaterThan(0.5);
     }

@@ -269,30 +269,12 @@ interface Geometry {
   halfMax: number[];
   /** Largest offset change of a lane that continues across the boundary at each stretch's start. */
   shiftIn: number[];
-  /** By stretch, by lane: a ring lane that opens out of its neighbour over [from, to]. */
+  /** By stretch, by lane: a lane that begins and opens out of its neighbour over [from, to]. */
   beginIn: ({ from: number; to: number; target: number } | undefined)[][];
-  /** Ring lanes closing on the arc: their gap to the target (tapers sized by sideways speed). */
-  ringGap: Map<LaneMerge, number>;
 }
 
-/**
- * A ring's own inner lane (it begins at the ring entry) opens out of its neighbour over the first
- * RING_OPEN m of the arc. When it also ends on the arc it closes over a taper sized by sideways
- * speed (one lane-width at most RING_RATE m/s at the planned speed, `ringClose`), and it is
- * offered to the runner when the arc holds both and RING_SLACK m more.
- */
-export const RING_OPEN = 13;
-export const RING_SLACK = 5;
-/** A ring lane is offered only with at least this much of it at full width (m). */
-export const RING_FULL = 15;
-/** Lanes that begin open out of their neighbour over this many metres (off the rings). */
+/** Lanes that begin open out of their neighbour over this many metres. */
 export const LANE_OPEN = 20;
-export const RING_RATE = 2.5;
-
-/** Closing taper (m) of a ring lane `gap` m from its target at speed v: peak carry RING_RATE m/s. */
-export function ringClose(gap: number, v: number): number {
-  return Math.max(12, (1.5 * Math.abs(gap) * v) / RING_RATE);
-}
 
 const geometries = new WeakMap<object, Geometry>();
 
@@ -338,7 +320,6 @@ function geometry(track: MergeTrack): Geometry {
   const byLane: Geometry["byLane"] = st.map((s) => s.layout.offsets.map(() => undefined));
   const preByLane: Geometry["preByLane"] = st.map((s) => s.layout.offsets.map(() => undefined));
   const earliest = new Map<LaneMerge, number>();
-  const ringGap = new Map<LaneMerge, number>();
   const beginIn: Geometry["beginIn"] = st.map((s2) => s2.layout.offsets.map(() => undefined));
   for (let k = 0; k < NS; k++) {
     const t = after[k];
@@ -351,7 +332,10 @@ function geometry(track: MergeTrack): Geometry {
     if (alive.length === 0) continue;
     // The route's own carriageway: own-1 sits on the centreline; the nearest surviving lane
     // without oncoming traffic is the anchor every ending lane merges towards.
-    const calm = alive.filter((i) => a.flow[i] !== -1);
+    // (a lane's flow after the boundary counts: opp-1 becomes a ring lane at the Puente Real ring)
+    const nb = st[(k + 1) % NS]!.layout;
+    const flowOn = (i: number): number => nb.flow[t.map[i] ?? -1] ?? a.flow[i] ?? 0;
+    const calm = alive.filter((i) => flowOn(i) !== -1);
     const pool = calm.length > 0 ? calm : alive;
     const anchor = pool.reduce((b, i) => (Math.abs(a.offsets[i] ?? 0) < Math.abs(a.offsets[b] ?? 0) ? i : b));
     const into = new Map<number, number>();
@@ -359,7 +343,7 @@ function geometry(track: MergeTrack): Geometry {
       const dir = anchor > i ? 1 : -1;
       const j = i + dir;
       if (j < 0 || j >= a.offsets.length) continue;
-      if (!survives(j) || a.flow[j] !== -1) into.set(i, j);
+      if (!survives(j) || flowOn(j) !== -1) into.set(i, j);
       else {
         // The only neighbour carries oncoming traffic: the nearest calm survivor instead.
         const x = a.offsets[i] ?? 0;
@@ -406,46 +390,6 @@ function geometry(track: MergeTrack): Geometry {
         }
         busy = false;
       }
-      if (ring && d === 1) {
-        // A lane drawn on the ring is runnable on it: it closes over a taper sized by sideways
-        // speed at the end of the arc (and, when it begins at the entry, opens over RING_OPEN m),
-        // whenever the arc holds that.
-        const from = st[k]!.fromS;
-        const gap = Math.abs((a.offsets[j] ?? 0) - (a.offsets[i] ?? 0));
-        const close = ringClose(gap, vMax(end, len(k)));
-        if (len(k) >= close + RING_FULL + (pi < 0 ? RING_OPEN : halfIn[k]!)) {
-          const m: LaneMerge = { s0: end - close, s1: end, fromStretch: k, lane: i, into: j, end };
-          merges.push(m);
-          byLane[k]![i] = m;
-          earliest.set(m, pi < 0 ? from + RING_OPEN + RING_SLACK / 2 : from + halfIn[k]! + RING_SLACK);
-          ringGap.set(m, gap);
-          if (pi < 0) beginIn[k]![i] = { from, to: from + RING_OPEN, target: j };
-          continue;
-        }
-      }
-      if (ring && pi < 0 && d === 1) {
-        // A ring lane that begins and ends inside the ring (ring-2, ring-3). On an arc long enough
-        // it opens out of its neighbour over the first RING_OPEN m and tapers back over a
-        // full-speed taper at the end, all inside the ring; else it is never offered to the runner
-        // (a taper of zero length at the ring's start: it coincides with its target all along).
-        const from = st[k]!.fromS;
-        const gap = Math.abs((a.offsets[j] ?? 0) - (a.offsets[i] ?? 0));
-        const close = ringClose(gap, vMax(end, len(k)));
-        if (len(k) >= RING_OPEN + close + RING_FULL) {
-          const m: LaneMerge = { s0: end - close, s1: end, fromStretch: k, lane: i, into: j, end };
-          merges.push(m);
-          byLane[k]![i] = m;
-          earliest.set(m, from + RING_OPEN + RING_SLACK / 2);
-          ringGap.set(m, gap);
-          beginIn[k]![i] = { from, to: from + RING_OPEN, target: j };
-          continue;
-        }
-        const m: LaneMerge = { s0: from, s1: from, fromStretch: k, lane: i, into: j, end };
-        merges.push(m);
-        byLane[k]![i] = m;
-        earliest.set(m, from);
-        continue;
-      }
       if (d === 1 && (len(k) < want || ring) && pi >= 0 && !busy && roomBefore >= want && NS > 1) {
         const from = st[k]!.fromS;
         const m: LaneMerge = { s0: from - want, s1: from, fromStretch: k, lane: i, into: j, end };
@@ -468,12 +412,11 @@ function geometry(track: MergeTrack): Geometry {
     }
   }
   // Every lane that begins (no lane before it continues into it) opens out of its neighbour
-  // towards the centreline (RING_OPEN m on a ring, LANE_OPEN m elsewhere), so it never appears
+  // towards the centreline over LANE_OPEN m, so it never appears
   // at full width at once.
   for (let k = 0; k < NS; k++) {
     if (!before[k]) continue;
     const lay = st[k]!.layout;
-    const ringK = st[k]!.section.roundabout !== null;
     for (let i = 0; i < lay.offsets.length; i++) {
       if (pred[k]![i]! >= 0 || beginIn[k]![i]) continue;
       const m0 = byLane[k]![i];
@@ -481,7 +424,7 @@ function geometry(track: MergeTrack): Geometry {
       const toward = (lay.offsets[i] ?? 0) < 0 ? i + 1 : i - 1;
       if (toward < 0 || toward >= lay.offsets.length) continue;
       const room = (m0 ? m0.s0 : st[k]!.toS) - st[k]!.fromS;
-      beginIn[k]![i] = { from: st[k]!.fromS, to: st[k]!.fromS + Math.min(ringK ? RING_OPEN : LANE_OPEN, room / 2, len(k) / 3), target: toward };
+      beginIn[k]![i] = { from: st[k]!.fromS, to: st[k]!.fromS + Math.min(LANE_OPEN, room / 2, len(k) / 3), target: toward };
     }
   }
   for (let k = 0; k < NS; k++) {
@@ -504,7 +447,7 @@ function geometry(track: MergeTrack): Geometry {
     const vb = vMax(s2.fromS + 10, 20);
     return Math.max(halfIn[k]!, Math.min(halfMax[k]!, Math.max((BLEND_TIME * vb) / 2, (1.5 * shiftIn[k]! * vb) / (2 * BLEND_RATE))));
   });
-  const g: Geometry = { merges, byLane, preByLane, earliest, after, before, pred, halfIn: halfFix, halfMax, shiftIn, beginIn, ringGap };
+  const g: Geometry = { merges, byLane, preByLane, earliest, after, before, pred, halfIn: halfFix, halfMax, shiftIn, beginIn };
   geometries.set(track, g);
   return g;
 }
