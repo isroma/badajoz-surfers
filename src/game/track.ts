@@ -10,7 +10,7 @@
  * there, so the traffic can flow; street clutter goes in the other lanes.
  */
 import { OBSTACLE_DEFS, POWERUPS, type PowerupKind, type TutorialAction, type ZoneId } from "../contracts";
-import { PASSAGE_PICKUP_Y, getCourse, inPassage, inRange, mapLane, underArch, type Course } from "./course";
+import { PASSAGE_PICKUP_Y, getCourse, tableAt, inPassage, inRange, mapLane, underArch, type Course } from "./course";
 import { centreLane, laneOffset, layoutAt, merges, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
 import {
   PATTERNS,
@@ -23,6 +23,7 @@ import {
   type RewardSlot,
 } from "./patterns";
 import { createRng, type Rng } from "./rng";
+import { unfairPoints } from "./fairness";
 import type { ObstacleSpawn, PickupSpawn } from "./spawns";
 import { collides, drivesThrough, flowAllows, footprintOf, lateralOverlap, lifetime, sweep } from "./traffic";
 import {
@@ -98,6 +99,9 @@ export function mergeClosures(course: Course): readonly Closure[] {
   closuresByTrack.set(track, out);
   return out;
 }
+
+/** No obstacles where the road curves harder than this (1/m: a radius under 18 m). */
+export const CALM_CURVATURE = 1 / 18;
 
 /** In two-lane streets the other lane stays free this long (s) around an obstacle. */
 export const TWO_LANE_FREE = 1.2;
@@ -493,6 +497,10 @@ export class TrackGenerator {
       w1 = Math.max(w1, s1 + half);
     }
     if (inPassage(course, w0, w1)) return true;
+    // Calm in tight bends: nothing to dodge, jump or roll where the road curves harder than
+    // CALM_CURVATURE (rings, old-town corners): only bellota trails along the lanes.
+    const bends = course.bends().curvature;
+    for (let d = Math.floor(f0); d <= Math.ceil(f1); d++) if (tableAt(bends, course.lapLength, d) > CALM_CURVATURE) return true;
     const half = (o.span ?? OBSTACLE_DEFS[o.kind].width) / 2;
     const L = course.lapLength;
     const hits = (a: number, b: number, from: number, to: number): boolean => {
@@ -520,6 +528,39 @@ export class TrackGenerator {
       for (const at of [w - L, w, w + L]) if (at >= c.from - 1 && at <= c.to + 1) return true;
     }
     return false;
+  }
+
+  /**
+   * The fairness invariant over the composed track (fairness.ts): with this pattern added to
+   * everything already placed around it, is there still an obvious way through everywhere?
+   */
+  private unfair(b: PatternBuilder): boolean {
+    let from = b.start;
+    let to = b.end;
+    for (const o of b.obstacles) {
+      const [a, c] = footprintOf(o);
+      from = Math.min(from, a);
+      to = Math.max(to, c);
+    }
+    from -= 45;
+    to += 45;
+    const near: Omit<ObstacleSpawn, "id">[] = [...b.obstacles];
+    const list = this.obstacles;
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((list[mid]?.d ?? Infinity) < from - 60) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < list.length; i++) {
+      const o = list[i]!;
+      if (o.d > to + 60) break;
+      near.push(o);
+    }
+    for (const m of this.movers) if (m.d < from - 60 || m.d > to + 60) continue; else if (!near.includes(m)) near.push(m);
+    const course = this.course();
+    return unfairPoints(near, from, to, { layout: this.layoutFn, track: course?.track ?? null, speed: speedAt }, 1).length > 0;
   }
 
   /**
@@ -678,8 +719,8 @@ export class TrackGenerator {
       if (!PATTERNS[name].fn(b) || !b.ok) continue;
       const flightLimit = this.flights.reduce((m, f) => (f.clearFrom > this.cursor ? Math.min(m, f.clearFrom - 2) : m), Infinity);
       if (b.end > Math.min(name === "finale" ? limit : normalLimit, flightLimit)) continue;
-      if (this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b)) {
-        if (!b.mirror() || this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b)) continue;
+      if (this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b) || this.unfair(b)) {
+        if (!b.mirror() || this.blocked(b, name) || this.conflicts(b) || this.twoLaneSqueeze(b) || this.unfair(b)) continue;
       }
       if (name === "rampRoof") this.roofSerial = span.serial;
       this.commit(name, b, limit, easy, span);
@@ -731,7 +772,7 @@ export class TrackGenerator {
    * A bellota trail along the line through an empty stretch (roundabouts, the run-up to a lane
    * change, zone edges): never more than ~45 m without something on the road.
    */
-  private fillGap(from: number, to: number, avoid = NaN): void {
+  private fillGap(from: number, to: number, avoid = NaN, own: readonly ObstacleDraft[] = []): void {
     if (to - from < 45 || !Number.isFinite(from)) return;
     const pickups: PickupSpawn[] = [];
     for (let d = from + 10; d <= to - 6; d += 2.6) {
@@ -739,7 +780,7 @@ export class TrackGenerator {
       const layout = this.layoutFn(d);
       // The line's lane (or the nearest one), else the nearest lane no vehicle drives through.
       const order = layout.offsets.map((_, i) => i).sort((p, q) => Math.abs((layout.offsets[p] ?? 0) - this.lineX) - Math.abs((layout.offsets[q] ?? 0) - this.lineX));
-      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, []) && !this.blockedPickup(laneOffset(layout, l), d, 0.9, true));
+      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, own) && !this.blockedPickup(laneOffset(layout, l), d, 0.9, true) && !own.some((o) => o.k === 0 && Math.abs(o.x - laneOffset(layout, l)) < 1.2 && Math.abs(o.d - d) < OBSTACLE_DEFS[o.kind].length / 2 + 1.5));
       if (lane === undefined) continue;
       pickups.push({ id: this.nextId++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: 0.9 });
     }
@@ -755,7 +796,7 @@ export class TrackGenerator {
     let begin = b.end;
     for (const o of b.obstacles) begin = Math.min(begin, footprintOf(o)[0]);
     for (const p of b.pickups) begin = Math.min(begin, p.d);
-    this.fillGap(this.contentEnd, begin);
+    this.fillGap(this.contentEnd, begin, NaN, b.obstacles);
     this.contentEnd = Math.max(this.contentEnd, b.end);
     const vEnd = speedAt(b.end);
     let gap = vEnd * (ctx.reaction + 0.15 + b.tail + 0.35 * (1 - ctx.difficulty)) + this.rng.range(0, vEnd * 0.45);
@@ -855,6 +896,15 @@ export class TrackGenerator {
     }
 
     pickups.sort((a, c) => a.d - c.d);
+    // A pattern thinned out (traffic left out of a closure or a bend, bellotas a vehicle would run
+    // over) may have a hole: bellotas along it.
+    const items: [number, number][] = [...b.obstacles.map((o) => footprintOf(o)), ...pickups.map((p): [number, number] => [p.d, p.d])].sort((x, y) => x[0] - y[0]);
+    let reach = begin;
+    for (const [x0, x1] of items) {
+      if (x0 - reach > 45) this.fillGap(reach - 8, x0, NaN, b.obstacles);
+      reach = Math.max(reach, x1);
+    }
+    if (b.end - reach > 45) this.fillGap(reach - 8, b.end, NaN, b.obstacles);
     const lastPickup = this.pickups[this.pickups.length - 1];
     for (const p of pickups) this.pickups.push(p);
     if (lastPickup && pickups[0] && pickups[0].d < lastPickup.d) this.pickups.sort((a, c) => a.d - c.d);

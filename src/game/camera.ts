@@ -196,6 +196,113 @@ export function clearOfSolids(pos: { x: number; y: number; z: number }, pivot: {
   return moved;
 }
 
+// --- Smooth turning ------------------------------------------------------------------------
+
+/** Camera yaw limits through bends and roundabouts (rad/s, rad/s²). */
+export const YAW_RATE_MAX = (40 * Math.PI) / 180;
+export const YAW_ACCEL_MAX = (150 * Math.PI) / 180;
+/**
+ * Only to keep the runner on screen in the tightest corners (radius < ~20 m at speed, where the
+ * path itself turns faster than YAW_RATE_MAX) the follower may go up to these.
+ */
+export const YAW_RATE_HARD = (95 * Math.PI) / 180;
+export const YAW_ACCEL_HARD = (300 * Math.PI) / 180;
+/** Look-ahead heading window: [p − YAW_BEHIND, p + YAW_AHEAD] m, weighted towards YAW_PEAK m ahead. */
+export const YAW_BEHIND = 10;
+export const YAW_AHEAD = 34;
+const YAW_PEAK = 9;
+/** Stiffness of the yaw follower (rad/s): the caps above bound it. */
+const YAW_FOLLOW = 4.5;
+/** Roll into the turn at the yaw rate cap (rad, ≈ 2.5°). */
+export const TURN_BANK = 0.045;
+
+/**
+ * The heading the chase camera aims at, from the track's (unwrapped) heading profile: a
+ * triangular-weighted average over [p − YAW_BEHIND, p + YAW_AHEAD], so the yaw starts before a
+ * bend and finishes after it, and a roundabout's in-around-out is one fluid swing. Pure.
+ */
+export function headingTarget(heading: (s: number) => number, p: number): number {
+  let sum = 0;
+  let wsum = 0;
+  for (let k = 0; k <= 22; k++) {
+    const s = p - YAW_BEHIND + ((YAW_BEHIND + YAW_AHEAD) * k) / 22;
+    const off = s - (p + YAW_PEAK);
+    const w = off < 0 ? 1 + off / (YAW_PEAK + YAW_BEHIND) : 1 - off / (YAW_AHEAD - YAW_PEAK);
+    sum += heading(s) * Math.max(0.05, w);
+    wsum += Math.max(0.05, w);
+  }
+  return sum / wsum;
+}
+
+/** The runner stays within this share of the half-screen (from the centre) through bends. */
+export const SCREEN_BAND = 0.4;
+
+/**
+ * The chase camera's yaw target at runner distance p: the smoothed heading (`headingTarget`),
+ * kept within SCREEN_BAND of the half-screen of the bearing from the lens (`back` m behind, on
+ * the curve) to the runner, for a horizontal half-FOV whose tangent is `tanHalf`. Pure.
+ */
+export function chaseYawTarget(
+  heading: (s: number) => number,
+  point: (s: number, lateral: number, y: number, out: { x: number; y: number; z: number }) => unknown,
+  p: number,
+  back: number,
+  tanHalf: number,
+): number {
+  const want = headingTarget(heading, p);
+  const b = want + wrapAngle(runnerBearing(point, p, back) - want);
+  const max = Math.atan(SCREEN_BAND * tanHalf);
+  return Math.max(b - max, Math.min(b + max, want));
+}
+
+/** Bearing (world yaw) from the lens `back` m behind on the curve to the runner at p. Pure. */
+export function runnerBearing(point: (s: number, lateral: number, y: number, out: { x: number; y: number; z: number }) => unknown, p: number, back: number): number {
+  point(p - back, 0, 3, lens);
+  point(p, 0, 1, body);
+  return Math.atan2(body.x - lens.x, body.z - lens.z);
+}
+
+/** Is the runner (at `bearing`) beyond `share` of the half-screen for a camera at `yaw`? Pure. */
+export function offBand(yaw: number, bearing: number, tanHalf: number, share = SCREEN_BAND * 0.8): boolean {
+  return Math.abs(Math.tan(wrapAngle(bearing - yaw))) > share * tanHalf;
+}
+const lens = { x: 0, y: 0, z: 0 };
+const body = { x: 0, y: 0, z: 0 };
+
+/**
+ * The camera's yaw: a critically damped follower of `headingTarget` whose rate and acceleration
+ * are capped (YAW_RATE_MAX, YAW_ACCEL_MAX): the world never swings round sharply; the runner
+ * drifts a little towards the inside of a tight bend instead. Pure (no three.js).
+ */
+export class YawFollower {
+  yaw = 0;
+  rate = 0;
+  accel = 0;
+
+  reset(yaw: number): void {
+    this.yaw = yaw;
+    this.rate = 0;
+    this.accel = 0;
+  }
+
+  /** `urgent`: the runner is near the edge of the screen band (the hard caps apply). */
+  step(target: number, dt: number, urgent = false): number {
+    if (dt <= 0) return this.yaw;
+    const w = urgent ? YAW_FOLLOW * 1.6 : YAW_FOLLOW;
+    const want = w * w * (target - this.yaw) - 2 * w * this.rate;
+    const amax = urgent ? YAW_ACCEL_HARD : YAW_ACCEL_MAX;
+    const rmax = urgent ? YAW_RATE_HARD : YAW_RATE_MAX;
+    const a = Math.max(-amax, Math.min(amax, want));
+    // Out of an urgent swing the rate comes back under the soft cap at the soft acceleration.
+    let rate = this.rate + a * dt;
+    if (Math.abs(rate) > rmax) rate = Math.sign(rate) * Math.max(rmax, Math.abs(this.rate) - YAW_ACCEL_MAX * dt);
+    this.accel = (rate - this.rate) / dt;
+    this.rate = rate;
+    this.yaw += rate * dt;
+    return this.yaw;
+  }
+}
+
 /** Angle difference wrapped to (-π, π]. */
 const wrapAngle = (a: number): number => a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
 
@@ -229,6 +336,17 @@ export class ChaseCamera {
   private readonly worldLook = new THREE.Vector3();
   private yaw: Spring = { x: 0, v: 0 };
   private yawReady = false;
+  /** Chase mode: the yaw follows the track's heading profile (see YawFollower). */
+  private readonly follower = new YawFollower();
+  private runnerS = 0;
+  private readonly headingOf = (s: number): number => this.space?.frame(s).heading ?? 0;
+  private readonly pointV = new THREE.Vector3();
+  private readonly pointOf = (s: number, lateral: number, y: number, out: { x: number; y: number; z: number }): void => {
+    const v = this.space ? this.space.point(s, lateral, y, this.pointV) : this.pointV.set(lateral, y, -s);
+    out.x = v.x;
+    out.y = v.y;
+    out.z = v.z;
+  };
 
   constructor(
     aspect: number,
@@ -296,21 +414,38 @@ export class ChaseCamera {
     const dz = wl.z - wp.z;
     const horiz = Math.hypot(dx, dz);
     const target = Math.atan2(dx, dz);
+    let bank = 0;
     if (!this.yawReady || mode === "menu" || mode === "intro" || dt <= 0) {
       this.yaw.x = target;
       this.yaw.v = 0;
       this.yawReady = true;
+      this.follower.reset(target);
+    } else if (mode === "chase") {
+      // The street's heading, smoothed ahead (the same angle family as `target`: unwrapped).
+      const tanHalf = Math.tan(((this.camera.fov * Math.PI) / 180) / 2) * this.camera.aspect;
+      const back = this.runnerS + pos.z;
+      const want = chaseYawTarget(this.headingOf, this.pointOf, this.runnerS, back, tanHalf);
+      const y = this.follower.yaw;
+      const urgent = offBand(y, runnerBearing(this.pointOf, this.runnerS, back), tanHalf);
+      this.follower.step(y + wrapAngle(want - y), dt, urgent);
+      this.yaw.x = this.follower.yaw;
+      this.yaw.v = this.follower.rate;
+      bank = TURN_BANK * Math.max(-1, Math.min(1, this.follower.rate / YAW_RATE_MAX));
     } else {
       // Spring towards the nearest equivalent angle (unwrapped).
       springStep(this.yaw, this.yaw.x + wrapAngle(target - this.yaw.x), YAW_OMEGA, dt);
+      this.follower.reset(this.yaw.x);
+      this.follower.rate = this.yaw.v;
     }
     cam.position.copy(wp);
     wl.set(wp.x + Math.sin(this.yaw.x) * horiz, wl.y, wp.z + Math.cos(this.yaw.x) * horiz);
     cam.lookAt(wl);
+    if (bank !== 0) cam.rotateZ(bank);
   }
 
   update(dt: number, i: CameraInput): void {
     this.time += dt;
+    this.runnerS = -i.z;
     const modeChanged = i.mode !== this.lastMode;
     // Follow ~60% of the lateral offset, leaning towards the lane being entered; rise (a bit
     // less than) the surface height on roofs, and only part of a jump.

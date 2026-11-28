@@ -687,7 +687,9 @@ class Game implements GameApi {
       // Lean into lane changes (the lane ease's overshoot shows as a little settle).
       const vx = (s.x - s.px) / TICK;
       const leanGain = s.carried ? 0.04 : 0.02;
-      this.lean += (Math.max(-0.5, Math.min(0.5, -vx * leanGain)) - this.lean) * Math.min(1, dt * (s.carried ? 6 : 16));
+      // ...and into bends like a runner on a track (centripetal lean from the smoothed curvature).
+      const bend = s.carried ? 0 : Math.max(-0.22, Math.min(0.22, (s.speed * s.speed * this.bendCurvature(p)) / 9.81 * 0.5));
+      this.lean += (Math.max(-0.5, Math.min(0.5, -vx * leanGain - bend)) - this.lean) * Math.min(1, dt * (s.carried ? 6 : 10));
       this.flight += ((s.carried ? 1 : 0) - this.flight) * Math.min(1, dt * (s.carried ? 1.8 : 1.4));
       // Landing squash and stumble knock-back decay in real time.
       this.squash *= Math.exp(-dt * 13);
@@ -803,6 +805,13 @@ class Game implements GameApi {
   }
 
   private readonly street = { left: 0, right: 0, passage: false };
+
+  /** Signed curvature (1/m, + turning right) averaged over a few metres round p. */
+  private bendCurvature(p: number): number {
+    let k = 0;
+    for (const d of [-3, 0, 3, 6]) k += this.space.frame(p + d).curvature;
+    return k / 4;
+  }
 
   /** Walls round the camera and the runner at distance p (from the boom's far end to a little ahead). */
   private streetAt(p: number): { left: number; right: number; passage: boolean } | null {

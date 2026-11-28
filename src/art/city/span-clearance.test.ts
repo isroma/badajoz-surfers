@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 
 describe("city art: the route's own surfaces win", () => {
-  it("no street, plaza or far-street geometry lies inside the route's drawn span (walls / pavements)", async () => {
+  it("no street, plaza or far-street geometry lies inside the route's drawn span, and inside each roundabout only the roundabout object", async () => {
     const { createTrack, validateCity } = await import("../../city");
     const { buildContext } = await import("./context");
     const { buildGround } = await import("./ground");
@@ -43,6 +43,47 @@ describe("city art: the route's own surfaces win", () => {
       if (hits?.length) {
         bad.push(hits[0]!);
       }
+    }
+    // inside each roundabout's footprint the roundabout object is the only ground
+    const { inRingFootprint, ringsOf } = await import("./roundabouts");
+    const { Bag, TS } = await import("./bag");
+    const { buildRoadChunk } = await import("./road");
+    const { CHUNK } = await import("./context");
+    const ts = new TS(track);
+    const chunks = new Set<number>();
+    for (const r of ringsOf(ctx)) {
+      const pr = track.project(r.rb.cx, r.rb.cz);
+      for (let d = -r.rb.rOuter - 50; d <= r.rb.rOuter + 50; d += CHUNK / 2) chunks.add(Math.floor((((pr.s + d) % track.lapLength) + track.lapLength) % track.lapLength / CHUNK));
+    }
+    const groups: THREE.Object3D[] = [net];
+    for (const c of chunks) {
+      const bag = new Bag();
+      buildRoadChunk(ctx, bag, ts, c * CHUNK, Math.min(track.lapLength, (c + 1) * CHUNK));
+      groups.push(bag.build(new THREE.Group()));
+    }
+    for (const g of groups) {
+      g.updateMatrixWorld(true);
+      g.traverse((m) => {
+        if (!(m instanceof THREE.Mesh)) return;
+        // lane markings and runnable-lane tints (decals) may lie on top of the roundabout object
+        if (g !== net && (m.material as THREE.Material).polygonOffset) return;
+        const pos = (m.geometry as THREE.BufferGeometry).getAttribute("position");
+        const idx = (m.geometry as THREE.BufferGeometry).index;
+        const n = (idx ? idx.count : pos.count) / 3;
+        for (let t = 0; t < n; t++) {
+          v.set(0, 0, 0);
+          for (let k = 0; k < 3; k++) v.add(new THREE.Vector3().fromBufferAttribute(pos, idx ? idx.getX(t * 3 + k) : t * 3 + k));
+          v.multiplyScalar(1 / 3);
+          const r = inRingFootprint(ctx, v.x, v.z, -2.8); // the carriageway and the island
+          // ground only (props such as railings are checked by the props test)
+          if (r && Math.abs(v.y - track.frameAt(track.project(v.x, v.z).s).h) < 0.3) {
+            const col = (m.geometry as THREE.BufferGeometry).getAttribute("color");
+            const ci = idx ? idx.getX(t * 3) : t * 3;
+            bad.push(`${g === net ? "network" : "route"} ${m.name} ${(m.material as THREE.Material).type} col=${col ? [col.getX(ci), col.getY(ci), col.getZ(ci)].map((q) => q.toFixed(2)).join(",") : "-"} inside ${r.rb.id} at ${v.x.toFixed(1)},${v.z.toFixed(1)} d=${Math.hypot(v.x - r.rb.cx, v.z - r.rb.cz).toFixed(1)}/${r.rb.rOuter}`);
+            break;
+          }
+        }
+      });
     }
     expect(bad.slice(0, 30)).toEqual([]);
   }, 300_000);

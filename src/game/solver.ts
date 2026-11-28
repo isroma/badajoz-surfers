@@ -95,6 +95,11 @@ export interface PlanOptions extends SolveOptions {
   pickupValue: (p: PickupSpawn) => number;
   /** Obstacles to treat as gone (knocked away, already clipped). */
   ignore?: ReadonlySet<number>;
+  /**
+   * Cost per decision spent on a vehicle roof or a ramp (a human prefers the obvious route on
+   * the street; the roofs are an optional reward). 0 by default.
+   */
+  roofCost?: number;
 }
 
 interface PlanNode {
@@ -143,6 +148,7 @@ export function plan(spawns: readonly ObstacleSpawn[], start: PlayerState, opts:
           score += opts.pickupValue(pk);
         }
         const actions = node.actions + (action ? 1 : 0);
+        if (opts.roofCost && c.supportId >= 0) score -= opts.roofCost;
         const child: PlanNode = { s: c, first: step === 0 ? action : node.first, score: score - (action ? 0.05 : 0), actions, got };
         const key = stateKey(c);
         const prev = next.get(key);

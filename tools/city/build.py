@@ -26,6 +26,7 @@ from fetch_osm import merged_path
 from lap import START_NODE, raw_lap, resample, radius_over, smooth_closed
 from osm import CACHE, OSM, Frame, Geo
 from rasters import DSM, DSM_LEAFOFF, DTM, Ndvi, Raster
+from ringpath import fluid_rings, island_contents, ring_arms, ring_geometry
 from route import roundabout_islands
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -218,6 +219,16 @@ def build_route(osm: OSM, geo: Geo, rings: dict, dtm: Raster, dsm: Raster) -> tu
             wide = binary_dilation(np.r_[bad, bad, bad], iterations=6)[len(bad):2 * len(bad)]
             p = constrain(smooth_closed(p, np.where(wide & ~pins, 1.5, 0.0)))
     print(f"route smoothing: {it} iterations" + (f"; still tight at s≈{[round(float(t1[k])) for k in np.where(bad)[0][::5]][:20]}" if bad.any() else ""))
+    # fluid driving lines through every roundabout pass (ringpath.py)
+    ringgeo = ring_geometry(osm, geo, rings)
+    p, ring_report = fluid_rings(p, way1, rings, ringgeo)
+    for e in ring_report:
+        print(f"  ring {e['name'] or e['key']}: {'ok' if 'minRadiusAfter' in e else 'KEPT OLD LINE (' + e['message'] + ')'} "
+              f"r {e['minRadiusBefore']:.1f} -> {e.get('minRadiusAfter', float('nan')):.1f} m")
+    # the pass through the Avenida de Elvas roundabout may move the start point: re-anchor s = 0 on
+    # the sample nearest the origin (the start node)
+    k0 = int(np.argmin(np.hypot(*p.T)))
+    p, p1, way1 = np.roll(p, -k0, 0), np.roll(p1, -k0, 0), np.roll(way1, -k0)
     # resample to STEP along the smoothed curve, carrying the attributes
     closed = np.vstack([p, p[:1]])
     segs = np.hypot(*np.diff(closed, axis=0).T)
@@ -236,7 +247,7 @@ def build_route(osm: OSM, geo: Geo, rings: dict, dtm: Raster, dsm: Raster) -> tu
     e, nn = geo.f.utm(x, z)
     g = dtm.sample(e, nn)
     dsm_s = dsm.sample(e, nn)
-    meta = {"raw": lap, "p1": p1, "way1": way1}
+    meta = {"raw": lap, "p1": p1, "way1": way1, "ringgeo": ringgeo, "ringReport": ring_report}
     raw = p1[idx]
     return Route(P, s, g.copy(), g.copy(), way, L, cKDTree(P), tan, LineString(np.vstack([P, P[:1]])), raw), meta
 
@@ -850,6 +861,132 @@ def build_junctions(osm: OSM, geo: Geo, route: Route, raw, sections) -> list[dic
 
 
 # ---------------------------------------------------------------------------
+# Roundabouts
+
+
+def _slug(t: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")
+
+
+def in_range(s: np.ndarray, a: float, b: float, L: float) -> np.ndarray:
+    """Mask of s within [a, b] on the closed lap (b < a wraps through s = 0)."""
+    return (s >= a) & (s <= b) if a <= b else (s >= a) | (s <= b)
+
+
+def curvature_profile(P: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Radius through three consecutive samples, signed curvature over ±2 samples, and its rate
+    (per metre) over ±1 sample — the way the game measures the 2 m route samples."""
+    from ringpath import radius3
+    r1 = radius3(P, 1)
+    a, b, c = np.roll(P, 2, 0), P, np.roll(P, -2, 0)
+    ab, bc, ca = b - a, c - b, a - c
+    cross = ab[:, 0] * bc[:, 1] - ab[:, 1] * bc[:, 0]
+    k2 = 2 * cross / (np.hypot(*ab.T) * np.hypot(*bc.T) * np.hypot(*ca.T))
+    ds = np.hypot(*(np.roll(P, -1, 0) - np.roll(P, 1, 0)).T)
+    rate = np.abs(np.roll(k2, -1) - np.roll(k2, 1)) / ds
+    return r1, k2, rate
+
+
+def build_roundabouts(osm: OSM, geo: Geo, route: Route, secs: list[dict], rmeta: dict, dtm: Raster, z0: float) -> list[dict]:
+    ringgeo, report = rmeta["ringgeo"], rmeta["ringReport"]
+    route_ways = set(int(w) for w in rmeta["raw"].ways)
+    r1, k2, rate = curvature_profile(route.p)
+    out = []
+    for e in report:
+        ring = ringgeo[e["key"]]
+        ring_secs = [x for x in secs if x["roundabout"] and abs(x["roundabout"]["cx"] - ring.cx) < 0.5 and abs(x["roundabout"]["cz"] - ring.cz) < 0.5]
+        if not ring_secs:
+            continue
+        entryS, exitS = ring_secs[0]["fromS"], ring_secs[-1]["toS"]
+        pa = float(route.locate(*e["startXZ"])[0][0])
+        pb = float(route.locate(*e["endXZ"])[0][0])
+        m = in_range(route.s, pa, pb, route.length)
+        ie = int(np.argmin(np.abs(route.s - entryS)))
+        ix = int(np.argmin(np.abs(route.s - exitS))) % len(route.s)
+        ang_in = bearing(*route.tan[ie])
+        ang_out = bearing(*route.tan[ix])
+        # sweep round the centre on the map (anticlockwise positive)
+        mr = in_range(route.s, entryS, exitS, route.length)
+        idx = np.where(mr)[0]
+        if len(idx) and idx[0] == 0 and idx[-1] == len(route.s) - 1:  # wraps
+            idx = np.r_[idx[idx > len(route.s) // 2], idx[idx <= len(route.s) // 2]]
+        ang = np.unwrap(np.arctan2(-(route.p[idx, 1] - ring.cz), route.p[idx, 0] - ring.cx))
+        sweep = math.degrees(ang[-1] - ang[0]) if len(ang) > 1 else 0.0
+        e0, n0 = geo.f.utm(ring.cx, ring.cz)
+        hc = float(dtm.sample(np.atleast_1d(e0), np.atleast_1d(n0))[0]) - z0
+        # which arms the route uses: route ways within the pass, before / after the ring
+        before_ways = set(int(w) for w in route.way[in_range(route.s, pa, entryS, route.length)])
+        after_ways = set(int(w) for w in route.way[in_range(route.s, exitS, pb, route.length)])
+        arms = []
+        for legs in ring_arms(osm, geo, ring, route_ways):
+            flows = {l["flow"] for l in legs}
+            ins = [l for l in legs if l["flow"] in ("entry", "both")]
+            outs = [l for l in legs if l["flow"] in ("exit", "both")]
+
+            def lanes_of(ls, two_way_half):
+                tot = 0
+                for l in ls:
+                    v = l["lanes"]
+                    if l["flow"] == "both":
+                        tot += max(1, int(math.ceil((v or 2) / 2)))
+                    else:
+                        tot += int(v) if v else (2 if l["highway"] in ("trunk", "primary", "secondary") else 1)
+                return tot
+
+            lin, lout = lanes_of(ins, True), lanes_of(outs, True)
+            hw = legs[0]["highway"]
+            lw = LANE_W.get(hw, 3.0)
+            wid_in = next((l["width"] / (2 if l["flow"] == "both" else 1) for l in ins if l["width"]), None) or lin * lw
+            wid_out = next((l["width"] / (2 if l["flow"] == "both" else 1) for l in outs if l["width"]), None) or lout * lw
+            sx = [math.sin(math.radians(l["bearing"])) for l in legs]
+            cx_ = [math.cos(math.radians(l["bearing"])) for l in legs]
+            brg = (math.degrees(math.atan2(sum(sx), sum(cx_))) + 360) % 360
+            on = None
+            # (on foot the runner may use a one-way leg against its flow, e.g. leaving Plaza Minayo)
+            if any(l["way"] in before_ways for l in legs):
+                on = "entry"
+            if any(l["way"] in after_ways for l in legs):
+                on = "exit" if on is None else "entry-exit"
+            names = [l["name"] for l in legs if l["name"] and l["name"] != ring.name] or [l["name"] for l in legs]
+            arms.append({
+                "name": names[0], "highway": hw, "bearing": qn(brg),
+                "flow": "both" if (ins and outs) else ("entry" if ins else "exit"),
+                "lanesIn": lin, "lanesOut": lout,
+                "widthIn": qn(wid_in) if ins else 0, "widthOut": qn(wid_out) if outs else 0,
+                "splitter": any(l["flow"] == "entry" for l in legs) and any(l["flow"] == "exit" for l in legs),
+                "lines": [qflat(l["line"]) for l in legs],
+                "osmWays": sorted({l["way"] for l in legs}),
+                "onRoute": on,
+            })
+        arms.sort(key=lambda a: a["bearing"])
+        island = [{"osm": it["osm"], "x": qn(it["x"]), "z": qn(it["z"]), **({"area": qn(it["area"])} if "area" in it else {}), "tags": it["tags"]}
+                  for it in island_contents(osm, geo, ring)]
+        target = ring.r_target / e.get("relax", 1.0)
+        rate_lim = e.get("rateRelax", 1.0) / ring.r_target / 12.0  # heading rate ramps over ≥ 12 m (relaxed if needed)
+        out.append({
+            "id": "rb-" + _slug(ring.name or f"{ring.cx:.0f}-{ring.cz:.0f}"),
+            "name": ring.name,
+            "cx": qn(ring.cx), "cz": qn(ring.cz), "h": qn(hc),
+            "r": qn(ring.r), "rInner": qn(ring.rInner), "rOuter": qn(ring.rOuter), "islandMapped": ring.island_mapped,
+            "lanes": ring.lanes, "width": qn(ring.width), "highway": ring.highway,
+            "rRef": qn(ring.r_ref),
+            "entryS": qn(entryS), "exitS": qn(exitS),
+            "entryBearing": qn(ang_in, 0), "exitBearing": qn(ang_out, 0), "sweep": qn(sweep, 0),
+            "passFromS": qn(pa), "passToS": qn(pb),
+            "minRadiusTarget": qn(target), "curvatureRateLimit": qn(rate_lim, 4),
+            "minRadius": qn(float(r1[m].min())), "maxCurvatureRate": qn(float(rate[m].max()), 4),
+            "minRadiusBefore": qn(e["minRadiusBefore"]),
+            "maxDeviation": qn(e.get("maxDeviationFromRingCentreline", float("nan"))),
+            "solved": "minRadiusAfter" in e,
+            "arms": arms,
+            "island": island,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Buildings and heights
 
 
@@ -1032,6 +1169,7 @@ def main() -> None:
     pois = build_pois(osm, geo, route)
     junctions = build_junctions(osm, geo, route, rmeta["raw"], secs)
     terrain = build_terrain(geo, route, dtm, z0, water)
+    roundabouts = build_roundabouts(osm, geo, route, secs, rmeta, dtm, z0)
 
     sv = np.array([b["height"] for b in buildings])
     city = {
@@ -1077,9 +1215,10 @@ def main() -> None:
         "furniture": furniture,
         "pois": pois,
         "terrain": terrain,
+        "roundabouts": roundabouts,
     }
     city["meta"]["counts"] = {k: len(city[k]) for k in ("sections", "zones", "junctions", "streets", "buildings",
-                                                         "landmarks", "water", "green", "squares", "parking",
+                                                         "landmarks", "water", "green", "squares", "parking", "roundabouts",
                                                          "furniture", "pois")}
     city["meta"]["counts"]["trees"] = len(trees) // 5
     city["meta"]["counts"]["routePoints"] = len(route.s)

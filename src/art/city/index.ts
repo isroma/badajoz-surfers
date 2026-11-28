@@ -134,7 +134,9 @@ export function createCity(city: CityData, track: Track): CityInternals {
       const detail = o.parent?.name.endsWith("-detail") ?? false;
       const tree = o.name === "trees";
       const terrain = o.name === "terrain";
-      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 260 : tree ? 360 : terrain ? 500 : CULL_FAR });
+      // the long bridges are one big mesh each: hide them a little earlier than the 720 m default
+      const bridge = o.parent?.name.startsWith("puente-") ?? false;
+      cullList.push({ o, c: sph.center, r: sph.radius, max: detail ? 260 : tree ? 360 : terrain ? 500 : bridge ? 480 : CULL_FAR });
     });
   };
 

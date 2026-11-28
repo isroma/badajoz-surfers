@@ -11,6 +11,7 @@ import { Bag, TS, samples } from "./bag";
 import { SURFACE_COLOUR, flatMaterial, groundMaterial, paintMaterial, solidGroundMaterial } from "./cmats";
 import type { CityCtx } from "./context";
 import { hash01 } from "./shared";
+import { inRingFootprint } from "./roundabouts";
 import { GROUND_SCALE, type GroundName } from "./textures";
 import { PAL } from "../palette";
 import type { LaneLayout, TrackStretch } from "./track";
@@ -73,6 +74,7 @@ class RoadPainter {
       const p2 = this.ts.p(s1, L1(s1), y, this.c);
       const p3 = this.ts.p(s1, L0(s1), y, this.d);
       if (L1(s0) - L0(s0) < 0.01 && L1(s1) - L0(s1) < 0.01) continue;
+      if (this.owned((p0.x + p1.x + p2.x + p3.x) / 4, (p0.z + p1.z + p2.z + p3.z) / 4, p0, p1, p2, p3)) continue;
       const uv = (p: THREE.Vector3): [number, number] => [p.x / scale, p.z / scale];
       acc.quad(p0, p1, p2, p3, uv(p0), uv(p1), uv(p2), uv(p3), colOuter ?? col, col, col, colOuter ?? col, UP);
     }
@@ -90,6 +92,7 @@ class RoadPainter {
       const b = this.ts.p(s1, Lf(s1), y0, this.b);
       const c = this.ts.p(s1, Lf(s1), y1, this.c);
       const d = this.ts.p(s0, Lf(s0), y1, this.d);
+      if (this.owned((a.x + b.x) / 2, (a.z + b.z) / 2, a, b)) continue;
       const u0 = s0 / 2;
       const u1 = s1 / 2;
       if (dir > 0) acc.quad(a, b, c, d, [u0, y0], [u1, y0], [u1, y1], [u0, y1], col);
@@ -107,6 +110,15 @@ class RoadPainter {
   }
 
   /** Paint rectangle in track space (s0..s1 along, l0..l1 across). */
+  /** Ground the roundabout objects own (inside a ring's footprint the route draws nothing). */
+  exclude: ((x: number, z: number, margin: number) => boolean) | null = null;
+  /** Centroid inside the footprint, or any corner inside the ring's outer kerb (+0.4 m). */
+  private owned(x: number, z: number, ...corners: THREE.Vector3[]): boolean {
+    // runnable-lane tints (offRoad paint) stay on top of the roundabout object
+    if (this.exclude === null || this.offRoad) return false;
+    return this.exclude(x, z, -1) || corners.some((c) => this.exclude!(c.x, c.z, -2.1));
+  }
+
   /** While true, paint is clipped to the carriageways actually laid at each s (road markings never on paving). */
   roadOnly = false;
   /** While true, paint avoids every carriageway actually laid at each s (path colour never on a road). */
@@ -145,6 +157,7 @@ class RoadPainter {
       const b = this.ts.p(ss[i]!, l1, y, this.b);
       const c = this.ts.p(ss[i + 1]!, l1, y, this.c);
       const d = this.ts.p(ss[i + 1]!, l0, y, this.d);
+      if (this.owned((a.x + b.x + c.x + d.x) / 4, (a.z + b.z + c.z + d.z) / 4, a, b, c, d)) continue;
       acc.quad(a, b, c, d, [a.x / 2, a.z / 2], [b.x / 2, b.z / 2], [c.x / 2, c.z / 2], [d.x / 2, d.z / 2], col, col, col, col, UP);
     }
   }
@@ -156,6 +169,7 @@ class RoadPainter {
     const v = p.map(([s, l]) => this.ts.p(s, l, 0.006));
     const [a, b, c] = v;
     if (!a || !b || !c) return;
+    if (this.owned((a.x + b.x + c.x) / 3, (a.z + b.z + c.z) / 3, a, b, c)) return;
     const n = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a));
     const [q, r] = n.y > 0 ? [b, c] : [c, b];
     acc.tri(a, q, r, [a.x / 2, a.z / 2], [q.x / 2, q.z / 2], [r.x / 2, r.z / 2], col, UP);
@@ -196,6 +210,7 @@ function innerExtents(lay: LaneLayout): [number, number] {
 
 export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: number): RoadResult {
   const P = new RoadPainter(bag, ts, (s) => ctx.wideLayout(s));
+  P.exclude = (x, z, margin) => inRingFootprint(ctx, x, z, margin) !== null;
   const edges: EdgeSample[] = [];
   const hyd = groundMaterial("hydraulic");
   for (const { a, b, st } of piecesOf(ctx, s0, s1)) {
@@ -558,6 +573,7 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
       const s1 = ss[k + 1]!;
       const A = P.ts.p(s0, edge + side * 0.15, KERB);
       const B = P.ts.p(s1, edge + side * 0.15, KERB);
+      if (P.exclude?.(A.x, A.z, -1) || P.exclude?.(B.x, B.z, -1)) continue; // the roundabout's own ground
       p.beam([A.x, A.y + 0.9, A.z], [B.x, B.y + 0.9, B.z], 0.06, PAL.darkGrey, m);
       if (k % 2 === 0) p.beam([A.x, A.y, A.z], [A.x, A.y + 0.92, A.z], 0.06, PAL.darkGrey, m);
     }
@@ -573,6 +589,7 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
       if (at > wl.left - 0.5 && at < wl.right + 0.5 && !lay.median.some((md) => at > md.from && at < md.to)) continue;
       const A = P.ts.p(ss[k]!, at, KERB);
       const B = P.ts.p(ss[k + 1]!, at, KERB);
+      if (P.exclude?.(A.x, A.z, -1)) continue;
       p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], 0.7, HEDGE, m);
     }
   }
@@ -588,6 +605,7 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
       if (wl.offsets.some((o, j) => Math.abs(mid - o) < (wl.widths[j] ?? 0) / 2 + w / 2 + 0.2)) continue;
       const A = P.ts.p(ss[k]!, mid, KERB);
       const B = P.ts.p(ss[k + 1]!, mid, KERB);
+      if (P.exclude?.(A.x, A.z, -1)) continue;
       p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], w, HEDGE, m);
     }
   }

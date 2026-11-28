@@ -1420,6 +1420,13 @@ export const PATTERNS = {
 export type PatternName = keyof typeof PATTERNS;
 
 /** Pattern weights per zone. Difficulty shifts weight towards the harder patterns. */
+/**
+ * Rows of parked cars (carHop) and all-lane jams (trafficJam) are rarer than they were: with the
+ * obvious-way rule (fairness.ts) they are mostly roof routes beside an open lane; driving traffic
+ * (overtake, oncoming) more common, so most vehicles still drive.
+ */
+const REWEIGHT: Partial<Record<PatternName, number>> = { carHop: 0.5, trafficJam: 0.5, overtake: 1.6, oncoming: 1.2 };
+
 export function patternWeights(ctx: PatternContext): Weights<PatternName> {
   const kinds = ctx.layout.kinds ?? [];
   const foot = kinds.filter((k) => k === "sidewalk" || k === "pedestrian").length;
@@ -1430,7 +1437,7 @@ export function patternWeights(ctx: PatternContext): Weights<PatternName> {
     ["crowd", pedestrianStreet ? 5 : foot > 0 ? 1.2 : 0],
     ["medianTrail", median ? 1.5 : 0],
   ];
-  return [...zoneWeights(ctx), ...city];
+  return [...zoneWeights(ctx).map(([n, w]): [PatternName, number] => [n, w * (REWEIGHT[n] ?? 1)]), ...city];
 }
 
 function zoneWeights(ctx: PatternContext): Weights<PatternName> {

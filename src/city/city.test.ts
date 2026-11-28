@@ -159,7 +159,7 @@ describe("zones and sections", () => {
   });
 });
 
-const KNOWN_IDS = new Set(["own-1", "own-2", "own-3", "opp-1", "opp-2", "median", "walk-L", "walk-R", "ped-1", "ped-2", "ped-3"]);
+const KNOWN_IDS = new Set(["own-1", "own-2", "own-3", "opp-1", "opp-2", "median", "walk-L", "walk-R", "ped-1", "ped-2", "ped-3", "ring-2", "ring-3"]);
 
 const checkLayout = (l: LaneLayout, where: string): void => {
   const n = l.offsets.length;
@@ -191,9 +191,9 @@ const checkLayout = (l: LaneLayout, where: string): void => {
   for (const id of l.ids) expect(KNOWN_IDS.has(id), `${where} ${id}`).toBe(true);
   // Kinds and flows follow from the ids.
   l.ids.forEach((id, i) => {
-    const kind = id.startsWith("own-") || id.startsWith("opp-") ? "road" : id === "median" ? "median" : id.startsWith("walk-") ? "sidewalk" : "pedestrian";
+    const kind = id.startsWith("own-") || id.startsWith("opp-") || id.startsWith("ring-") ? "road" : id === "median" ? "median" : id.startsWith("walk-") ? "sidewalk" : "pedestrian";
     expect(l.kinds[i], where).toBe(kind);
-    expect(l.flow[i], where).toBe(id.startsWith("own-") ? 1 : id.startsWith("opp-") ? -1 : 0);
+    expect(l.flow[i], where).toBe(id.startsWith("own-") || id.startsWith("ring-") ? 1 : id.startsWith("opp-") ? -1 : 0);
   });
   // own-1 is the kerb lane, always on the centreline.
   const own1 = l.ids.indexOf("own-1");
@@ -294,18 +294,34 @@ describe("lane layouts", () => {
     expect(checked).toBeGreaterThan(30);
   });
 
-  it("own lanes on every ring are exactly the approach's", () => {
-    const own = (l: LaneLayout): string =>
-      l.ids.map((id, i) => (id.startsWith("own-") ? `${id}@${l.offsets[i]!.toFixed(2)}/${l.widths[i]!.toFixed(2)}` : "")).filter(Boolean).join(" ");
-    for (const sec of city.sections) {
-      if (!sec.roundabout || sec.pedestrian) continue;
-      const on = track.layoutAt((sec.fromS + sec.toS) / 2);
-      expect(on.ids.every((id) => id.startsWith("own-") || id === "walk-R"), `ring ${sec.fromS}`).toBe(true);
-      const before = track.layoutAt(sec.fromS - 1);
-      const after = track.layoutAt(sec.toS + 1);
-      const approach = before.kinds.includes("pedestrian") ? after : before;
-      if (approach.kinds.every((k) => k === "pedestrian")) continue; // both sides pedestrian (shared street)
-      expect(own(on), `ring ${sec.fromS}`).toBe(own(approach));
+  it("rings keep their real lanes, continuous with the approach, clear of the island", () => {
+    expect(track.roundabouts.length).toBe(city.roundabouts.length);
+    const f = createFrame();
+    const p = { x: 0, y: 0, z: 0 };
+    for (const rb of track.roundabouts) {
+      expect(rb.stretchIndices.length, rb.id).toBeGreaterThan(0);
+      const on = track.layoutAt((rb.entryS + rb.exitS) / 2);
+      const road = on.ids.filter((id) => id.startsWith("own-") || id.startsWith("ring-"));
+      expect(on.ids.every((id) => id.startsWith("own-") || id.startsWith("ring-") || id === "walk-R"), rb.id).toBe(true);
+      expect(road.length, rb.id).toBeGreaterThanOrEqual(Math.min(rb.lanes, 2) - (rb.lanes >= 3 ? 1 : 0));
+      expect(road.length, rb.id).toBeLessThanOrEqual(rb.lanes);
+      expect(on.offsets[on.ids.indexOf("own-1")]).toBe(0);
+      // Own lanes continue from the approach within 1 m.
+      const before = track.layoutAt(rb.entryS - 1);
+      for (const id of on.ids) {
+        const j = before.ids.indexOf(id);
+        if (j >= 0 && id.startsWith("own-")) expect(Math.abs(before.offsets[j]! - on.offsets[on.ids.indexOf(id)]!), `${rb.id} ${id}`).toBeLessThan(1);
+      }
+      // No lane inside the island (+0.3 m) anywhere on the arc.
+      for (let s = rb.entryS + 0.5; s < rb.exitS; s += 2) {
+        track.frameAt(s, f);
+        const l = track.layoutAt(s);
+        l.ids.forEach((id, i) => {
+          if (l.kinds[i] !== "road") return;
+          track.toWorld(s, l.offsets[i]! - l.widths[i]! / 2, 0, p);
+          expect(Math.hypot(p.x - rb.cx, p.z - rb.cz), `${rb.id} ${id} at ${s}`).toBeGreaterThanOrEqual(rb.rInner + 0.3 - 0.05);
+        });
+      }
     }
   });
 
@@ -331,7 +347,7 @@ describe("lane layouts", () => {
             si = (si - 1 + N) % N;
           }
           if (li === null) {
-            shortLived++;
+            if (!track.stretches[t.fromIndex]!.layout.ids[lane]!.startsWith("ring-")) shortLived++;
             break;
           }
           expect(track.laneEndsAhead(s, li), `lane ${track.stretches[t.fromIndex]!.layout.ids[lane]!} ending at ${t.s}, ${d} m before`).toBeCloseTo(d, 1);
@@ -368,11 +384,15 @@ describe("lane layouts", () => {
     for (const p of track.pinches) expect(p.toS - p.fromS).toBeLessThan(25);
   });
 
-  it("turns: every roundabout is one turn; turnAhead looks 150 m ahead", () => {
-    const rings = city.sections.filter((x) => x.roundabout && !x.pedestrian);
-    for (const r of rings) {
-      const t = track.turns.find((x) => x.roundabout && x.entryS !== null && x.exitS !== null && r.fromS >= x.entryS - 0.5 && r.toS <= x.exitS + 0.5);
-      expect(t, `ring ${r.fromS}`).toBeDefined();
+  it("turns: every roundabout pass is one turn; turnAhead looks 150 m ahead", () => {
+    for (const rb of city.roundabouts) {
+      const t = track.turns.filter((x) => x.roundabout && x.entryS === rb.entryS);
+      expect(t.length, rb.id).toBe(1);
+      expect(t[0]!.sweep).toBe(rb.sweep);
+      if (t[0]!.angle < 20) expect(t[0]!.direction).toBe("straight");
+      else expect(t[0]!.direction).not.toBe("straight");
+      const exitArm = rb.arms.find((a) => a.onRoute === "exit" || a.onRoute === "entry-exit");
+      if (exitArm?.name) expect(t[0]!.exitName).toBe(exitArm.name);
     }
     for (const t of track.turns) {
       expect(t.endS).toBeGreaterThan(t.s);
@@ -380,9 +400,7 @@ describe("lane layouts", () => {
       expect(track.turnAhead(t.s - 100)).not.toBeNull();
       expect(track.turnAhead((t.s + t.endS) / 2)).toBe(t);
     }
-    // The long straight on Puente Real's deck has no turn ahead.
     expect(track.turnAhead(600)).toBeNull();
-    expect(track.turns.find((x) => x.roundabout && x.angle > 90 && x.exitName === "Avenida María Auxiliadora")).toBeDefined();
   });
 
   it("smoothing adapts to the route noise", () => {
@@ -395,7 +413,7 @@ describe("lane layouts", () => {
 
   it("the pedestrian stretches have no traffic", () => {
     // Paseo de San Francisco, the old town, Puente de Palmas.
-    for (const s of [4120, 4600, 4800, 5900, 6200]) {
+    for (const s of [4150, 4600, 4800, 5900, 6200]) {
       const l = track.layoutAt(s);
       expect(l.flow.every((f) => f === 0), `s ${s}`).toBe(true);
       expect(l.kinds.every((k) => k === "pedestrian"), `s ${s}`).toBe(true);

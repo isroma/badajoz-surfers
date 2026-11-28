@@ -3,7 +3,7 @@
  * Pure: no three.js. Distances are metres along the run (distance = -z), times seconds.
  */
 import { ZONES, type ZoneDef } from "../contracts";
-import { onCourse } from "./course";
+import { onCourse, tableAt, type Course } from "./course";
 
 // --- Simulation -------------------------------------------------------------------------------
 export const TICK_RATE = 120;
@@ -127,6 +127,9 @@ function useZones(lapLength: number, limits: readonly { id: string; fromS: numbe
   }
 }
 useZones(LAP_LENGTH, null);
+/** The installed course (for the pace through bends). */
+let paceCourse: Course | null = null;
+onCourse((c) => (paceCourse = c));
 onCourse((c) => useZones(c ? c.lapLength : ZONES.reduce((sum, zone) => sum + zone.length, 0), c ? c.zones : null));
 
 /** Lap ("vuelta", 1-based) at a distance. */
@@ -151,7 +154,13 @@ export function speedAt(distance: number): number {
   // Gentle over the first 2 km (11 → 15 m/s), then towards ~23 by the end of the lap.
   const first = lap === 1 && w < GENTLE_RAMP ? START_SPEED + 4 * (w / GENTLE_RAMP) : NaN;
   const ramp = Number.isFinite(first) ? first : START_SPEED + 4 + 8.5 * (1 - Math.exp(-Math.max(0, d - GENTLE_RAMP) / 2500)) + 2 * laps;
-  return Math.min(cap, ramp);
+  return Math.min(cap, ramp) * paceAt(d);
+}
+
+/** Speed factor through bends: 85% at a 12 m radius, 100% from 35 m, eased (course.ts). */
+export function paceAt(distance: number): number {
+  const c = paceCourse;
+  return c ? tableAt(c.bends().pace, c.lapLength, distance) : 1;
 }
 
 /** Metres over which a new lap's speed bonus eases in. */

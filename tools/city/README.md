@@ -13,7 +13,7 @@ cd tools/city
 uv sync                       # once
 uv run python build.py        # ~20 s; downloads OSM on first run, then uses .cache/
 uv run python check.py        # validation (exit code 1 on failure)
-uv run python render.py       # debug PNGs in .cache/: route.png, profile.png, zone-<id>.png
+uv run python render.py       # debug PNGs in .cache/: route.png, profile.png, zone-<id>.png, rings.png, ring-<id>.png
 uv run python route_debug.py  # only the raw routed node path: .cache/route_raw.png
 ```
 
@@ -31,13 +31,14 @@ On machines whose environment sets `UV_ENV_FILE=.env`, prefix the commands with 
 | `rasters.py` | DSM/DTM/NDVI windows, bilinear sampling |
 | `route.py` | routable way graph (costs, one-way handling, roundabout islands) and the waypoint router |
 | `lap.py` | the waypoints of the lap; resampling and smoothing helpers |
+| `ringpath.py` | roundabout geometry (kerbs, arms, island) and the solved fluid line through each ring pass |
 | `build.py` | everything else: smoothing, heights, sections, zones, junctions, buildings; writes the JSON |
 | `features.py` | landmarks, area layers, streets, trees, furniture, POIs, terrain grid |
 | `check.py` | validation |
 | `render.py`, `route_debug.py` | debug maps |
 | `city-types.ts` | TypeScript interfaces for `city.json` (to move into `src/contracts.ts`) |
 
-## The lap (8.16 km)
+## The lap (8.18 km)
 
 Route arrays (`points`, `s`, `ground`) are written at 0.01 m precision; everything else at 0.1 m.
 
@@ -47,21 +48,26 @@ Start (s = 0): OSM node 1142046712, where Puente Real's south-east-bound carriag
 
 | Zone | s (m) | Length | Streets, in order |
 | --- | --- | --- | --- |
-| `puente-real` | 0–1010 | 1010 m | Puente Real (approach on the right bank, then the 454 m cable-stayed deck, s 512–966), to the roundabout at its south-east end |
-| `valdepasillas` | 1010–3090 | 2080 m | Puente Real roundabout (r 28.6 m) → Puente Real → Plaza Caldas da Rainha roundabout → Avenida Sinforiano Madroñero (with Plaza José Luis Herrera Pombo and one unnamed roundabout) to its end → roundabout (r 32.5 m, half way round) → Avenida María Auxiliadora |
-| `san-francisco` | 3090–4308 | 1218 m | ring-road roundabout (r 20.4 m) → Avenida Villanueva → Avenida Miguel Ángel Celdrán Matute → Plaza Conquistadores → Avenida Enrique Segura Otaño → Plaza de la Constitución (three-quarters round) → Avenida de Europa → Calle Alonso de Celada → along the south-east side of Paseo de San Francisco (pedestrian) → garden footway → Calle Pedro de Valdivia → Plaza Minayo |
-| `casco-antiguo` | 4308–4865 | 558 m | Calle Obispo San Juan de Ribera → Plaza de España (west side, Cathedral on the right) → Calle Vicente Barrantes → Calle San Juan → Calle Moreno Zancudo up to Plaza Alta |
-| `alcazaba-palmas` | 4865–6285 | 1420 m | along the west side of Plaza Alta, through the Arco del Peso passage (s 4899–4905) → Plaza San José (Puerta del Capitel, the Alcazaba gate) → down Calle San Atón → Avenida Joaquín Costa (under the walls) → Plaza de los Reyes Católicos → through the archway of Puerta de Palmas (covered footway, s 5721–5725; the gate building is flagged `passesThrough` + `passage`) and straight on along the bridge axis → Puente de Palmas (510 m, pedestrian) |
-| `margen-derecha` | 6285–8157 | 1872 m | right-bank end of Puente de Palmas → roundabout → Avenida Adolfo Díaz Ambrona (west, two roundabouts) → roundabout → Avenida de Elvas → Avenida de Elvas roundabout (r 35.5 m, ~235° round) → back onto Puente Real at s = 0 |
+| `puente-real` | 0–1012 | 1012 m | Puente Real (approach on the right bank, then the 454 m cable-stayed deck, s 512–966), to the roundabout at its south-east end |
+| `valdepasillas` | 1012–3100 | 2088 m | Puente Real roundabout (r 28.6 m) → Puente Real → Plaza Caldas da Rainha roundabout → Avenida Sinforiano Madroñero (with Plaza José Luis Herrera Pombo and one unnamed roundabout) to its end → roundabout (r 32.5 m, half way round) → Avenida María Auxiliadora |
+| `san-francisco` | 3100–4322 | 1222 m | ring-road roundabout (r 20.4 m) → Avenida Villanueva → Avenida Miguel Ángel Celdrán Matute → Plaza Conquistadores → Avenida Enrique Segura Otaño → Plaza de la Constitución (three-quarters round) → Avenida de Europa → Calle Alonso de Celada → along the south-east side of Paseo de San Francisco (pedestrian) → garden footway → Calle Pedro de Valdivia → Plaza Minayo |
+| `casco-antiguo` | 4322–4881 | 560 m | Calle Obispo San Juan de Ribera → Plaza de España (west side, Cathedral on the right) → Calle Vicente Barrantes → Calle San Juan → Calle Moreno Zancudo up to Plaza Alta |
+| `alcazaba-palmas` | 4881–6299 | 1418 m | along the west side of Plaza Alta, through the Arco del Peso passage (s 4915–4919) → Plaza San José (Puerta del Capitel, the Alcazaba gate) → down Calle San Atón → Avenida Joaquín Costa (under the walls) → Plaza de los Reyes Católicos → through the archway of Puerta de Palmas (covered footway, s 5735–5739; the gate building is flagged `passesThrough` + `passage`) and straight on along the bridge axis → Puente de Palmas (510 m, pedestrian) |
+| `margen-derecha` | 6299–8181 | 1882 m | right-bank end of Puente de Palmas → roundabout → Avenida Adolfo Díaz Ambrona (west, two roundabouts) → roundabout → Avenida de Elvas → Avenida de Elvas roundabout (r 35.5 m, ~235° round) → back onto Puente Real at s = 0 |
 
 ### Geometry and heights
 
 1. The routed node path is resampled at 1 m. Points on roundabout rings are put on a true circle of the ring's equivalent radius (OSM rings are coarse polygons; radius = √(area/π) of the island the ring encloses). Rings under 12 m (Plaza de la Constitución 11.2 m, Plaza Minayo 10.9 m) are eased out to 14.5 m.
 2. A light Gaussian smoothing (σ 2 m), then repeated local smoothing (σ 2.5–4 m, then σ 1.5 m) wherever the radius measured over ±2, ±3, ±6 and ±10 m chords is under 14 m (12 m on rings) + 3 %. Ring cores (6 m inside a ring run of ≥ 30 m; tight rings only when driven ≥ 200° round) are pushed back after each step to max(0.8 R, 12.5 m) from the centre (eased tight rings: to their full 14.5 m); after 600 steps that limit relaxes to 85 % to iron out kinks at the ends of the cores. This keeps a three-quarter turn round a small roundabout from collapsing into a cut across its island. Pinned stretches (`PINNED_WAYS`: the footway out of the Puerta de Palmas archway and its connector to the bridge path) keep their exact OSM geometry.
-   `check.py` measures curvature as the consumer does: the circle through three consecutive 2 m samples (and through samples 2 apart), and fails below 12 m on ring sections and 14 m elsewhere.
+   `check.py` measures curvature as the consumer does: the circle through three consecutive 2 m samples. It fails below 14 m outside the roundabout passes and below each ring's `minRadiusTarget` inside them (3 % tolerance), and when a pass exceeds its `curvatureRateLimit` by more than 15 %.
 3. Resampled to 2 m along the smoothed curve; each sample keeps the OSM way it came from (→ sections).
 4. Heights: DTM (2 m) bilinear under each sample. Bridge spans: PNOA's MDT02 keeps the Puente Real deck (the DTM under it is ~172 m, the river ~160 m), so its deck is interpolated linearly between the abutments; Puente de Palmas's DTM shows the river bed, so its deck is the DSM along the centreline (running minimum over 14 m to drop people and lamps, smoothed, pinned to the abutments). Then Gaussian smoothing (σ 12 m) and a grade limit: a forward and a backward clamp pass at 8 % (each Lipschitz, so their mean is) and a last σ 6 m smoothing. `route.ground` keeps the unclamped ground for comparison: they differ by up to 3.4 m on Calle San Atón, which really drops 20 m in 220 m (9 % on average, 17 % at its steepest).
 5. Heights are relative to the DTM at the start point (`meta.origin.groundElevation` = 170.75 m a.s.l.).
+
+### Roundabouts (`ringpath.py`)
+
+- **Ring geometry** (`roundabouts`): one entry per ring the route uses. The OSM ring way is the carriageway centreline (radius `r` = equivalent circle of the island it encloses); width = OSM `width` or `lanes` × 3.5 m; kerbs `rInner`/`rOuter` = r ∓ width/2, or the edge of a mapped island area when one reaches the kerb. `arms`: every non-footway way touching the ring, its first 40 m, grouped so that a one-way entry and a one-way exit with the same name < 100° apart (or ending < 20 m apart) form one arm with a `splitter`; `onRoute` from the route's ways just before/after the ring. `island`: tagged OSM nodes and areas inside `rInner`.
+- **Fluid line**: each ring pass (from ~40 m before the ring to ~40 m after it, halfway to a neighbouring ring at most) is re-solved as a curvature profile with SLSQP: fixed start/end position, heading and curvature (continuous with the route outside), minimise ∫(dκ/ds)² (weight 400) + ∫κ² + 0.02 ∫(d − rRef)² on the ring part, subject to staying ≥ rInner + 1.75 m from the centre, ≤ rOuter − 1 m on the ring, |κ| ≤ 0.96 / target radius (20 m on rings with r ≥ 20 m, else the outer-lane radius rRef) and |dκ/ds| ≤ 0.92 / (target × 12 m). If a pass cannot be solved, the rate limit and then the radius are relaxed step by step (only Plaza Minayo needs it: rate ×1.3). The line goes round the island the legal (anticlockwise) way because it starts from the old line and the island constraint stops it crossing over. The start point can move by up to ~0.2 m (s = 0 is re-anchored on the sample nearest the origin).
 
 ### Sections
 

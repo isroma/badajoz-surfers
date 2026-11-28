@@ -20,6 +20,8 @@ export const OBSTACLE_VIEW = 175;
  * scene keeps behind (30 m, for the end-of-run camera) plus the visual braking after a crash.
  */
 export const KEEP_BEHIND = 46;
+/** A vehicle keeps its lane while the lane's centre stays within this of its line (m). */
+export const LANE_DRIFT = 0.25;
 /** Clearance kept between vehicles (bumper to bumper) at all times. */
 export const TRAFFIC_CLEARANCE = 0.6;
 
@@ -116,7 +118,8 @@ export function flowAllows(o: Spawnish, layoutFn: LayoutFn, origin: LaneLayout):
     const at = Math.min(d, s1 + half);
     const layout = layoutFn(at);
     let lane = -1;
-    for (let i = 0; i < layout.offsets.length; i++) if (Math.abs((layout.offsets[i] ?? 0) - o.x) < 0.05) lane = i;
+    // (a lane may sit a few centimetres elsewhere through a roundabout: same lane, same car)
+    for (let i = 0; i < layout.offsets.length; i++) if (Math.abs((layout.offsets[i] ?? 0) - o.x) < LANE_DRIFT) lane = i;
     if (lane < 0) return false;
     const flow = layout.flow[lane] ?? 0;
     const kind = layout.kinds?.[lane] ?? "road";
