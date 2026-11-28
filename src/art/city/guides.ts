@@ -11,6 +11,7 @@ import type { Bag, TS } from "./bag";
 import { flatMaterial, paintMaterial, signMaterial, signSlot } from "./cmats";
 import type { CityCtx } from "./context";
 import { mergeEdgeAt, mergesIn } from "./merges";
+import { laneOffsetAt } from "../../game/lanes";
 import { KERB } from "./road";
 
 const SUN = new THREE.Color(PAL.sun);
@@ -219,7 +220,8 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
     if (road && !m.begins) {
       for (const ds of [8, 32]) {
         const sa = m.s0 + ds;
-        if (sa >= s0 && sa < s1) arrow(bag, ts, sa, m.layout.offsets[m.lane] ?? 0, -m.side, WHITE);
+        // centred on the lane where it really is (the engine's offset): never astride a lane line
+        if (sa >= s0 && sa < s1) arrow(bag, ts, sa, laneOffsetAt(tr, m.lane, Math.max(m.s0 + 0.01, Math.min(sa, m.s1 - 0.01))), -m.side, WHITE);
       }
     }
   }

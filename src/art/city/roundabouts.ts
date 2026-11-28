@@ -330,27 +330,60 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
       for (let k = -2; k <= 2; k++) covered[(bin + k + BINS) % BINS] = true;
     }
   }
-  /** 1 away from where the route crosses the outer kerb line (entry / exit), fading over ~6 m. */
-  const crossWeight = (a: number): number => {
-    const bin = Math.floor((((a / (2 * Math.PI)) % 1) + 1) % 1 * BINS);
-    for (let k = 0; k < BINS / 2; k++) {
-      if (crossing[(bin + k) % BINS] || crossing[(bin - k + BINS) % BINS]) return Math.max(0, Math.min(1, ((k * 2 * Math.PI * rb.rOuter) / BINS - 2) / 6));
+  // Where the runner's lanes lie on the ring (every offered lane's full width, from the engine's
+  // laneOffsetAt): a polar grid. Ring-side paint (concentric lines, edge lines, arrows, tints)
+  // fades out over ~6 m before it and never runs inside it; the route's own lane paint takes over.
+  const AB = 720;
+  const R0 = rb.rInner - 1;
+  const RS = 0.25;
+  const RB = Math.ceil((rb.rOuter + 1.5 - R0) / RS);
+  const laneCov = new Uint8Array(AB * RB);
+  {
+    const f = newFrame();
+    const L = ctx.track.lapLength;
+    const len = (((rb.passToS - rb.passFromS) % L) + L) % L;
+    for (let d = 0; d <= len; d += 0.5) {
+      const s = (rb.passFromS + d) % L;
+      ctx.track.frameAt(s, f);
+      const lay = ctx.track.layoutAt(s);
+      const si = ctx.track.stretches.findIndex((st) => s >= st.fromS && s < st.toS);
+      for (let k = 0; k < lay.offsets.length; k++) {
+        if (never.has(`${si}:${k}`)) continue;
+        const o = laneOffsetAt(ctx.track, k, s);
+        const w = lay.widths[k] ?? 3;
+        for (let t = -w / 2; t <= w / 2 + 1e-6; t += 0.2) {
+          const x = f.x + f.nx * (o + t);
+          const z = f.z + f.nz * (o + t);
+          const r = Math.hypot(x - rb.cx, z - rb.cz);
+          const ri = Math.floor((r - R0) / RS);
+          if (ri < 0 || ri >= RB) continue;
+          const ai = Math.floor((((Math.atan2(z - rb.cz, x - rb.cx) / (2 * Math.PI)) % 1) + 1) % 1 * AB);
+          laneCov[ai * RB + ri] = 1;
+        }
+      }
+    }
+  }
+  const covAt = (ai: number, r: number): boolean => {
+    const ri = Math.floor((r - R0) / RS);
+    const a = ((ai % AB) + AB) % AB;
+    for (let d = -1; d <= 1; d++) {
+      const q = ri + d;
+      if (q >= 0 && q < RB && laneCov[a * RB + q]) return true;
+    }
+    return false;
+  };
+  /** 1 away from the runner's lanes at radius r, fading to 0 within ~6 m of them (arc length). */
+  const concentricWeight = (a: number, r: number): number => {
+    const ai = Math.floor((((a / (2 * Math.PI)) % 1) + 1) % 1 * AB);
+    const maxK = Math.ceil((8 / (2 * Math.PI * Math.max(1, r))) * AB);
+    for (let k = 0; k <= maxK; k++) {
+      if (covAt(ai + k, r) || covAt(ai - k, r)) return Math.max(0, Math.min(1, ((k * 2 * Math.PI * r) / AB - 0.5) / 6));
     }
     return 1;
   };
-  /** 1 far from the route's arc, fading to 0 within ~6 m of it (arc length at radius r). */
-  const concentricWeight = (a: number, r: number): number => {
-    const bin = Math.floor((((a / (2 * Math.PI)) % 1) + 1) % 1 * BINS);
-    let best = Infinity;
-    for (let k = 0; k < BINS / 2; k++) {
-      if (covered[(bin + k) % BINS] || covered[(bin - k + BINS) % BINS]) {
-        best = k;
-        break;
-      }
-    }
-    const arc = (best * 2 * Math.PI * r) / BINS;
-    return Math.max(0, Math.min(1, arc / 6));
-  };
+  const crossWeight = (a: number): number => concentricWeight(a, rb.rOuter - 0.12);
+  void covered;
+  void crossing;
   const offC = new THREE.Color(PAL.roadOff);
   for (let k = 0; k < N; k++) {
     const a0 = (k / N) * Math.PI * 2;
@@ -359,9 +392,10 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     // lanes the runner is never offered: the "off" tint (they do not look like lanes)
     for (let j = 0; j < lanes; j++) if (!runBand[j] && concentricWeight((a0 + a1) / 2, rb.rInner + (j + 0.5) * lw) > 0.5) sector(paint, a0, a1, rb.rInner + j * lw, rb.rInner + (j + 1) * lw, 0.008, offC);
     // edge lines: the outer one never across the runner's lanes where the route enters / leaves
-    sector(paint, a0, a1, rb.rInner + 0.25, rb.rInner + 0.4, 0.01, white);
+    const wi = concentricWeight((a0 + a1) / 2, rb.rInner + 0.12);
+    if (wi > 0.15) sector(paint, a0, a1, rb.rInner + 0.12 - 0.07 * wi, rb.rInner + 0.12 + 0.07 * wi, 0.01, white);
     const wo = crossWeight((a0 + a1) / 2);
-    if (!inOpening((a0 + a1) / 2) && wo > 0.15) sector(paint, a0, a1, rb.rOuter - 0.32 - 0.07 * wo, rb.rOuter - 0.32 + 0.07 * wo, 0.01, white);
+    if (!inOpening((a0 + a1) / 2) && wo > 0.15) sector(paint, a0, a1, rb.rOuter - 0.12 - 0.07 * wo, rb.rOuter - 0.12 + 0.07 * wo, 0.01, white);
   }
   for (let j = 1; j < lanes; j++) {
     const r = rb.rInner + j * lw;
@@ -409,7 +443,8 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
       const out: number[] = [];
       for (let i = 0; i + 1 < ls.length; i++) {
         const gap = ls[i + 1]!.o - ls[i + 1]!.w / 2 - (ls[i]!.o + ls[i]!.w / 2);
-        if (ls[i + 1]!.o - ls[i]!.o > 1.2 && gap < 1.0) out.push((ls[i]!.o + ls[i]!.w / 2 + ls[i + 1]!.o - ls[i + 1]!.w / 2) / 2);
+        // no line between two lanes that are merging (they overlap): it would run inside a lane
+        if (ls[i + 1]!.o - ls[i]!.o > (ls[i]!.w + ls[i + 1]!.w) / 2 - 0.05 && gap < 1.0) out.push((ls[i]!.o + ls[i]!.w / 2 + ls[i + 1]!.o - ls[i + 1]!.w / 2) / 2);
       }
       return out;
     };
@@ -736,7 +771,7 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
       const q = P(am, rb.rOuter + 1.4, 0);
       // a mouth is road (flush, out to where the arm / road.ts take over), except where walk-R crosses
       const cs = [P(a0, rb.rOuter + 0.4, 0), P(a1, rb.rOuter + 0.4, 0), P(a0, footR(rb), 0), P(a1, footR(rb), 0), q];
-      if (walkLane(q.x, q.z) && !cs.some((c0) => roadLaneAt(c0.x, c0.z))) sector(flat, a0, a1, rb.rOuter + 0.4, footR(rb), KERB, pave);
+      if (walkLane(q.x, q.z) && !cs.some((c0) => roadLaneAt(c0.x, c0.z))) sector(flat, a0, a1, rb.rOuter + 0.4, footR(rb), 0.035, pave); // walk-R: flush
       else sector(flat, a0, a1, rb.rOuter + 0.4, footR(rb) + 0.15, 0, asphalt); // a hair past the circle: no sliver
       continue;
     }
@@ -750,6 +785,13 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     const corners = [P(a0, rb.rOuter + 0.4, 0), P(a1, rb.rOuter + 0.4, 0), P(a0, footR(rb), 0), P(a1, footR(rb), 0)];
     if (corners.some((q) => roadLaneAt(q.x, q.z))) {
       sector(flat, a0, a1, rb.rOuter + 0.4, footR(rb) + 0.15, 0, asphalt); // a hair past the circle: no sliver
+      continue;
+    }
+    // walk-R running round the outside: a flush lane, no raised kerb (stepping onto it is a lane change)
+    if (walkLane(mid.x, mid.z)) {
+      checked = false;
+      sector(flat, a0, a1, rb.rOuter + 0.4, footR(rb), 0.035, pave);
+      checked = true;
       continue;
     }
     // (the corners were checked above: the pavement and its kerb go down as one piece)

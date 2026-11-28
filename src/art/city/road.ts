@@ -11,6 +11,7 @@ import { Bag, TS, samples } from "./bag";
 import { SURFACE_COLOUR, flatMaterial, groundMaterial, paintMaterial, solidGroundMaterial } from "./cmats";
 import type { CityCtx } from "./context";
 import { hash01 } from "./shared";
+import { laneOffsetAt } from "../../game/lanes";
 import { clipOutsideRings, inRingFootprint, ringsOf } from "./roundabouts";
 import { GROUND_SCALE, type GroundName } from "./textures";
 import { PAL } from "../palette";
@@ -23,6 +24,8 @@ const TRANSITION = 12;
 const WHITE = new THREE.Color(0xf2f0ea);
 const YELLOW = new THREE.Color(0xffffff); // bus-stop zigzags in white: sun yellow is reserved for guidance
 const C1 = new THREE.Color(1, 1, 1);
+/** Height of a runnable sidewalk: flush with the road (just above it). */
+const FLUSH = 0.035;
 /** Tint of pavements that are not runnable: lighter than the pavement colour, so they recede. */
 const WALK_OFF = new THREE.Color(1.03, 1.045, 1.07);
 
@@ -435,14 +438,22 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
       // pavements nobody runs on recede: a lighter paving (the runnable ones carry the warmer
       // runnable colour and its edge lines on top, see legibility)
       const runnable = lay.offsets.some((o, k) => lay.kinds[k] !== "road" && o > w.from - 0.1 && o < w.to + 0.1);
-      P.strip(hyd, ss, wf, wt, KERB, GROUND_SCALE.hydraulic, runnable ? C1 : WALK_OFF);
+      if (runnable) {
+        // a runnable sidewalk is a lane: flush with the road (a painted edge, no step), and one clear
+        // kerb where it meets the raised pavement beyond it
+        P.strip(hyd, ss, wf, wt, FLUSH, GROUND_SCALE.hydraulic, C1);
+        const outerSide = w.from >= 0 ? 1 : -1;
+        P.face(solidGroundMaterial("granite"), ss, outerSide > 0 ? wt : wf, FLUSH, KERB, outerSide > 0 ? -1 : 1, new THREE.Color(0.82, 0.8, 0.77));
+      } else P.strip(hyd, ss, wf, wt, KERB, GROUND_SCALE.hydraulic, WALK_OFF);
     });
     // kerbs at every carriageway edge that meets something raised
     if (!ped) {
       lay.carriageways.forEach((c, ci) => {
         const touchesL = lay.sidewalks.some((w) => Math.abs(w.to - c.from) < 0.05) || lay.median.some((m) => Math.abs(m.to - c.from) < 0.05);
-        if (!(ringApron && touchesL && lay.sidewalks.some((w) => Math.abs(w.to - c.from) < 0.05))) P.kerb(ss, E((l) => l.carriageways[ci]?.from), 1);
-        P.kerb(ss, E((l) => l.carriageways[ci]?.to), -1);
+        // no raised kerb against a runnable sidewalk (it is flush: stepping onto it is a lane change)
+        const runnableAt = (edge: number): boolean => lay.sidewalks.some((w) => (Math.abs(w.to - edge) < 0.05 || Math.abs(w.from - edge) < 0.05) && lay.offsets.some((o, k) => lay.kinds[k] !== "road" && o > w.from - 0.1 && o < w.to + 0.1));
+        if (!(ringApron && touchesL && lay.sidewalks.some((w) => Math.abs(w.to - c.from) < 0.05)) && !runnableAt(c.from)) P.kerb(ss, E((l) => l.carriageways[ci]?.from), 1);
+        if (!runnableAt(c.to)) P.kerb(ss, E((l) => l.carriageways[ci]?.to), -1);
       });
     }
     // --- medians ------------------------------------------------------------------------------
@@ -519,23 +530,45 @@ function markings(ctx: CityCtx, P: RoadPainter, lay: LaneLayout, sec: CitySectio
     const x = (lay.offsets[i]! + lay.widths[i]! / 2 + lay.offsets[j]! - lay.widths[j]! / 2) / 2;
     const inCw = lay.carriageways.some((c) => x > c.from + 0.3 && x < c.to - 0.3);
     if (!inCw) continue;
+    // a divider never runs inside a lane: not where the two lanes are merging (the engine's
+    // laneOffsetAt brings them together), and the lanes' own edges decide where it is
+    const span = (p0: number, p1: number, l0: number, l1: number): void => {
+      for (let q = p0; q < p1 - 1e-6; q += 1) {
+        const q1 = Math.min(p1, q + 1);
+        const m = (q + q1) / 2;
+        const oi = laneOffsetAt(ctx.track, i, m);
+        const oj = laneOffsetAt(ctx.track, j, m);
+        if (Math.abs(oj - oi) < (lay.widths[i]! + lay.widths[j]!) / 2 - 0.05) continue;
+        const dx = (oi + lay.widths[i]! / 2 + oj - lay.widths[j]! / 2) / 2 - x;
+        // nor where the line would fall inside a third lane (lanes re-ordering at a stretch boundary)
+        const lc = (l0 + l1) / 2 + dx;
+        if (lay.offsets.some((_, k) => k !== i && k !== j && Math.abs(lc - laneOffsetAt(ctx.track, k, m)) < lay.widths[k]! / 2 - 0.2)) continue;
+        P.paint(q, q1, l0 + dx, l1 + dx);
+      }
+    };
     if (lay.flow[i] === lay.flow[j]) {
       // dashed: 4 m paint, 6 m gap, aligned to the lap's s
       for (let d = Math.floor(a / DASH) * DASH; d < b; d += DASH) {
         const p0 = Math.max(a, d);
         const p1 = Math.min(b, d + 4);
-        if (p1 > p0) P.paint(p0, p1, x - 0.06, x + 0.06);
+        if (p1 > p0) span(p0, p1, x - 0.06, x + 0.06);
       }
     } else {
-      P.paint(a, b, x - 0.2, x - 0.08);
-      P.paint(a, b, x + 0.08, x + 0.2);
+      span(a, b, x - 0.2, x - 0.08);
+      span(a, b, x + 0.08, x + 0.2);
     }
   }
   // edge lines on avenues and bridges
   if (big) {
     for (const c of lay.carriageways) {
-      P.paint(a, b, c.from + 0.3, c.from + 0.45);
-      P.paint(a, b, c.to - 0.45, c.to - 0.3);
+      // at the very kerb: an edge line never lies inside the outer lanes
+      // (not at a ring's mouth: the ring's own kerb lines take over there)
+      for (let q = a; q < b - 1e-6; q += 2) {
+        const q1 = Math.min(b, q + 2);
+        if (P.ringGap((q + q1) / 2) < 6) continue;
+        P.paint(q, q1, c.from + 0.05, c.from + 0.2);
+        P.paint(q, q1, c.to - 0.2, c.to - 0.05);
+      }
     }
   }
   const ourCw = lay.carriageways.find((c) => c.from <= 0.01 && c.to >= -0.01) ?? lay.carriageways[lay.carriageways.length - 1];
@@ -582,14 +615,8 @@ function markings(ctx: CityCtx, P: RoadPainter, lay: LaneLayout, sec: CitySectio
   // bus stops: yellow zigzag along the right kerb
   for (const f of ctx.city.furniture) {
     if (f.type !== "bus_stop" || f.s < a || f.s >= b || f.lateral < 0 || f.lateral > 12 || !ourCw) continue;
-    const x0 = ourCw.to - 0.4;
-    for (let k = 0; k < 8; k++) {
-      const z0 = f.s - 8 + k * 2;
-      const zig = k % 2 === 0;
-      P.paintTri([[z0, x0], [z0 + 2, zig ? x0 - 1.1 : x0], [z0 + 2, zig ? x0 - 0.95 : x0 + 0.15]], YELLOW);
-      P.paintTri([[z0, x0], [z0 + 2, zig ? x0 - 0.95 : x0 + 0.15], [z0, x0 + 0.15]], YELLOW);
-    }
-    P.paint(f.s - 9, f.s + 9, ourCw.to - 0.45, ourCw.to - 0.3, YELLOW);
+    // a kerb line only: no zig-zag inside the runner's lane
+    if (P.ringGap(f.s) > 12) P.paint(f.s - 9, f.s + 9, ourCw.to - 0.2, ourCw.to - 0.05, YELLOW);
   }
   // manholes and kerb drains
   const grey = new THREE.Color(0.32, 0.31, 0.3);
@@ -635,7 +662,7 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
   P.offRoad = true;
   // lanes in the runnable colour on every surface, pedestrian streets included (the rest of the
   // floor to the walls stays in pavement colour)
-  const yRun = ped ? 0.045 : KERB + 0.045;
+  const yRun = ped ? 0.045 : FLUSH + 0.045;
   for (const l of lanes) {
     if (l.kind === "road") continue;
     P.paint(a, b, l.from, l.to, RUN, yRun);

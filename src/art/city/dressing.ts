@@ -54,6 +54,8 @@ export function placementBlocked(ctx: CityCtx, ground: GroundLayer, x: number, z
   for (const r of ringsOf(ctx)) {
     const d = Math.hypot(x - r.rb.cx, z - r.rb.cz);
     if (d > r.rb.rInner - 0.3 && d < r.rb.rOuter + 0.5) return "ring";
+    // medians end before a ring at their nose: nothing stands on the road beyond it
+    if (d < r.rb.rOuter + 2.5 + 12 && lay.median.some((m) => pr.lateral > m.from - 0.3 && pr.lateral < m.to + 0.3)) return "median-end";
   }
   return null;
 }
