@@ -31,11 +31,18 @@ export interface LaneMerge {
 /** The outer edge of a merging lane at s: the engine's lane centre (laneOffsetAt) + half its width. */
 export function mergeEdgeAt(m: LaneMerge, s: number): number {
   const w = (m.layout.widths[m.lane] ?? 3) / 2;
-  const c = laneOffsetAt(m.track, m.lane, Math.min(s, m.s1 - 0.01));
+  // the engine's lane centre, kept inside the taper window (closings and openings alike)
+  const c = laneOffsetAt(m.track, m.lane, Math.max(m.s0 + 0.01, Math.min(s, m.s1 - 0.01)));
   return Math.max(Math.min(c + m.side * w, Math.max(m.edgeFull, m.edgeGone)), Math.min(m.edgeFull, m.edgeGone));
 }
 
 const cache = new WeakMap<Track, LaneMerge[]>();
+
+/** An engine entry for a lane that BEGINS (opening taper), whatever shape the engine gives it. */
+function isOpening(m: object): boolean {
+  const o = m as { begins?: unknown; opens?: unknown; kind?: unknown; type?: unknown };
+  return o.begins === true || o.opens === true || o.kind === "open" || o.kind === "opening" || o.type === "open" || o.type === "opening";
+}
 
 /** The engine's merges (src/game/lanes.ts), as the art draws them: the funnel IS the runner's path. */
 export function laneMerges(track: Track): LaneMerge[] {
@@ -51,7 +58,9 @@ export function laneMerges(track: Track): LaneMerge[] {
     const w = (layout.widths[m.lane] ?? 3) / 2;
     out.push({
       s0: m.s0, s1: m.s1, layout, lane: m.lane, kind: layout.kinds[m.lane] as string,
-      edgeFull: o + side * w, edgeGone: oi + side * ((layout.widths[m.into] ?? 3) / 2), side, begins: false,
+      edgeFull: o + side * w, edgeGone: oi + side * ((layout.widths[m.into] ?? 3) / 2), side,
+      // openings (lanes that begin) come from the same engine list once it reports them
+      begins: isOpening(m),
       track,
     });
   }

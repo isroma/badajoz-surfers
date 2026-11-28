@@ -11,6 +11,7 @@ import type { CityData } from "../city/data";
 import type { Track } from "../city/track";
 import type { LaneLayout as CityLaneLayout } from "../city/lanes";
 import type { ZoneId } from "../contracts";
+import { YAW_RATE_MAX, headingTarget } from "./turning";
 
 /** A stop line: a real traffic signal or zebra crossing on the route. */
 export interface StopLine {
@@ -89,7 +90,20 @@ export interface Bends {
   readonly curvature: Float32Array;
   /** Speed factor per metre of the lap (PACE_MIN..1). */
   readonly pace: Float32Array;
+  /**
+   * Highest speed (m/s) per metre at which the chase camera's smoothed heading (turning.ts) turns
+   * no faster than PACE_YAW_RATE, eased in over CAP_EASE m: the run never outpaces the camera.
+   */
+  readonly cap: Float32Array;
 }
+
+/**
+ * The pace keeps the camera's smoothed heading turning no faster than this (just over its soft
+ * yaw cap: the runner then stays well inside the middle of the screen even on lap 4).
+ */
+export const PACE_YAW_RATE = 1.2 * YAW_RATE_MAX;
+/** The speed cap through bends eases in over at least this many metres. */
+export const CAP_EASE = 24;
 
 /** Tight bends slow the run down to this factor (at radius PACE_TIGHT m), not at all from PACE_OPEN m. */
 export const PACE_MIN = 0.85;
@@ -129,7 +143,29 @@ function buildBends(track: Track): Bends {
     for (let j = 0; j <= PACE_EASE / 2; j++) m = Math.min(m, pace0[(i + j) % (n - 1)] ?? 1);
     ahead[i] = m;
   }
-  return { curvature, pace: average(ahead, PACE_EASE / 2) };
+  // Yaw demand: the camera's smoothed heading, per metre; the speed that keeps its rate at 90% of
+  // PACE_YAW_RATE (Constitución, Minayo: ~12 m/s); the lowest of the coming CAP_EASE m, averaged.
+  const heading = (x: number): number => track.frameAt(x).heading;
+  const target = new Float64Array(n + 2);
+  for (let i = -1; i <= n; i++) target[i + 1] = headingTarget(heading, i);
+  const want = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const rate = Math.abs((target[i + 2] ?? 0) - (target[i] ?? 0)) / 2;
+    want[i] = Math.min(60, (0.9 * PACE_YAW_RATE) / Math.max(1e-6, rate));
+  }
+  const soon = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 60;
+    for (let j = 0; j <= CAP_EASE; j++) m = Math.min(m, want[(i + j) % (n - 1)] ?? 60);
+    soon[i] = m;
+  }
+  const cap = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 60;
+    for (let j = -CAP_EASE / 2; j <= 0; j++) m = Math.min(m, soon[(((i + j) % (n - 1)) + (n - 1)) % (n - 1)] ?? 60);
+    cap[i] = m;
+  }
+  return { curvature, pace: average(ahead, PACE_EASE / 2), cap: average(cap, CAP_EASE / 2) };
 }
 
 /** Value of a per-metre lap table at distance s (any lap), linearly interpolated. */

@@ -1433,7 +1433,7 @@ export type PatternName = keyof typeof PATTERNS;
  * obvious-way rule (fairness.ts) they are mostly roof routes beside an open lane; driving traffic
  * (overtake, oncoming) more common, so most vehicles still drive.
  */
-const REWEIGHT: Partial<Record<PatternName, number>> = { carHop: 0.5, trafficJam: 0.5, overtake: 1.8, oncoming: 1.2 };
+const REWEIGHT: Partial<Record<PatternName, number>> = { carHop: 0.5, trafficJam: 0.5, overtake: 3.2, oncoming: 1.2 };
 
 export function patternWeights(ctx: PatternContext): Weights<PatternName> {
   const kinds = ctx.layout.kinds ?? [];

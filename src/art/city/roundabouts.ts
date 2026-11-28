@@ -239,24 +239,59 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
   }
 
   // --- 1. the circulating carriageway, complete, with lane lines, edge lines and arrows --------
+  // Where the route runs on the ring, the lane paint follows the runner's own lanes (the engine's
+  // laneOffsetAt along the solved line); concentric lines only on the arc the route does not use,
+  // faded out over ~6 m where the two sets meet.
+  const BINS = 360;
+  const covered = new Array<boolean>(BINS).fill(false);
+  const onRing: number[] = [];
+  {
+    const f = newFrame();
+    const L = ctx.track.lapLength;
+    const len = (((rb.passToS - rb.passFromS) % L) + L) % L;
+    for (let d = 0; d <= len; d += 1) {
+      const s = (rb.passFromS + d) % L;
+      ctx.track.frameAt(s, f);
+      const r = Math.hypot(f.x - rb.cx, f.z - rb.cz);
+      if (r < rb.rInner || r > rb.rOuter - 0.3) continue;
+      onRing.push(s);
+      const bin = Math.floor((((Math.atan2(f.z - rb.cz, f.x - rb.cx) / (2 * Math.PI)) % 1) + 1) % 1 * BINS);
+      for (let k = -2; k <= 2; k++) covered[(bin + k + BINS) % BINS] = true;
+    }
+  }
+  /** 1 far from the route's arc, fading to 0 within ~6 m of it (arc length at radius r). */
+  const concentricWeight = (a: number, r: number): number => {
+    const bin = Math.floor((((a / (2 * Math.PI)) % 1) + 1) % 1 * BINS);
+    let best = Infinity;
+    for (let k = 0; k < BINS / 2; k++) {
+      if (covered[(bin + k) % BINS] || covered[(bin - k + BINS) % BINS]) {
+        best = k;
+        break;
+      }
+    }
+    const arc = (best * 2 * Math.PI * r) / BINS;
+    return Math.max(0, Math.min(1, arc / 6));
+  };
   const offC = new THREE.Color(PAL.roadOff);
   for (let k = 0; k < N; k++) {
     const a0 = (k / N) * Math.PI * 2;
     const a1 = ((k + 1) / N) * Math.PI * 2;
     sector(flat, a0, a1, rb.rInner, rb.rOuter + 0.4, 0, asphalt);
     // lanes the runner is never offered: the "off" tint (they do not look like lanes)
-    for (let j = 0; j < lanes; j++) if (!runBand[j]) sector(paint, a0, a1, rb.rInner + j * lw, rb.rInner + (j + 1) * lw, 0.008, offC);
+    for (let j = 0; j < lanes; j++) if (!runBand[j] && concentricWeight((a0 + a1) / 2, rb.rInner + (j + 0.5) * lw) > 0.5) sector(paint, a0, a1, rb.rInner + j * lw, rb.rInner + (j + 1) * lw, 0.008, offC);
     sector(paint, a0, a1, rb.rInner + 0.25, rb.rInner + 0.4, 0.01, white);
     if (!inOpening((a0 + a1) / 2)) sector(paint, a0, a1, rb.rOuter - 0.4, rb.rOuter - 0.25, 0.01, white);
   }
   for (let j = 1; j < lanes; j++) {
     const r = rb.rInner + j * lw;
     const solid = runBand[j - 1] !== runBand[j];
-    const n = Math.max(12, Math.round((2 * Math.PI * r) / 6));
-    for (let k = 0; k < (solid ? N : n); k++) {
-      const a0 = (k / (solid ? N : n)) * Math.PI * 2;
-      const a1 = solid ? ((k + 1) / N) * Math.PI * 2 : a0 + 3 / r;
-      sector(paint, a0, a1, r - 0.06, r + 0.06, 0.011, white);
+    const n = solid ? N : Math.max(12, Math.round((2 * Math.PI * r) / 6));
+    for (let k = 0; k < n; k++) {
+      const a0 = (k / n) * Math.PI * 2;
+      const a1 = solid ? ((k + 1) / n) * Math.PI * 2 : a0 + 3 / r;
+      const wgt = concentricWeight((a0 + a1) / 2, r);
+      if (wgt < 0.15) continue;
+      sector(paint, a0, a1, r - 0.06 * wgt, r + 0.06 * wgt, 0.011, white);
     }
   }
   for (let j = 0; j < lanes; j++) {
@@ -265,11 +300,69 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     const n = Math.max(3, Math.round((2 * Math.PI * r) / 20));
     for (let k = 0; k < n; k++) {
       const a = (k / n) * Math.PI * 2 + j * 0.3;
-      if (inOpening(a, 0.05)) continue;
+      if (inOpening(a, 0.05) || concentricWeight(a, r) < 1 || concentricWeight(a + (dir * 3.6) / r, r) < 1) continue;
       const a1 = a + (dir * 2.2) / r;
       sector(paint, Math.min(a, a1), Math.max(a, a1), r - 0.08, r + 0.08, 0.012, white);
       const h1 = a1 + (dir * 1.4) / r;
       tri(paint, P(a1, r - 0.45, 0.012), P(a1, r + 0.45, 0.012), P(h1, r, 0.012), white);
+    }
+  }
+  // the runner's own ring lanes: dashed edges between them and arrows, along the engine's lanes
+  if (onRing.length > 1) {
+    const f0 = newFrame();
+    const f1 = newFrame();
+    const first = onRing[0]!;
+    const last = onRing[onRing.length - 1]!;
+    const L = ctx.track.lapLength;
+    const fromStart = (s: number): number => ((s - first) % L + L) % L;
+    const toEnd = (s: number): number => ((last - s) % L + L) % L;
+    const edgesAt = (s: number): number[] => {
+      const lay = ctx.track.layoutAt(s);
+      const ls = lay.offsets.map((_, k) => k).filter((k) => lay.kinds[k] === "road").map((k) => ({ o: laneOffsetAt(ctx.track, k, s), w: lay.widths[k] ?? 3 })).sort((p1, p2) => p1.o - p2.o);
+      const out: number[] = [];
+      for (let i = 0; i + 1 < ls.length; i++) {
+        const e = (ls[i]!.o + ls[i]!.w / 2 + ls[i + 1]!.o - ls[i + 1]!.w / 2) / 2;
+        if (ls[i + 1]!.o - ls[i]!.o > 1.2) out.push(e);
+      }
+      return out;
+    };
+    const centresAt = (s: number): number[] => {
+      const lay = ctx.track.layoutAt(s);
+      return lay.offsets.map((_, k) => k).filter((k) => lay.kinds[k] === "road").map((k) => laneOffsetAt(ctx.track, k, s));
+    };
+    const W3 = (f: ReturnType<typeof newFrame>, l: number, dy: number): THREE.Vector3 => {
+      const x = f.x + f.nx * l;
+      const z = f.z + f.nz * l;
+      return new THREE.Vector3(x, yAt(x, z) + dy, z);
+    };
+    for (const s of onRing) {
+      const s1 = (s + 1) % L;
+      if (fromStart(s1) > fromStart(last)) continue;
+      const wgt = Math.max(0, Math.min(1, fromStart(s) / 6, toEnd(s1) / 6));
+      ctx.track.frameAt(s, f0);
+      ctx.track.frameAt(s1, f1);
+      // dashes 3 m on / 3 m off
+      if (Math.floor(s / 3) % 2 === 0 && wgt > 0.15) {
+        const e0 = edgesAt(s);
+        const e1 = edgesAt(s1);
+        for (let i = 0; i < Math.min(e0.length, e1.length); i++) {
+          const hw = 0.06 * wgt;
+          up(paint, W3(f0, e0[i]! - hw, 0.011), W3(f0, e0[i]! + hw, 0.011), W3(f1, e1[i]! + hw, 0.011), W3(f1, e1[i]! - hw, 0.011), white);
+        }
+      }
+      // arrows every 20 m in each lane, pointing the way the runner goes
+      if (Math.floor(s) % 20 === 10 && wgt >= 1 && toEnd(s) > 10) {
+        for (const c0 of centresAt(s)) {
+          const fa = newFrame();
+          const fb = newFrame();
+          ctx.track.frameAt(s, fa);
+          ctx.track.frameAt((s + 2.2) % L, fb);
+          up(paint, W3(fa, c0 - 0.08, 0.012), W3(fa, c0 + 0.08, 0.012), W3(fb, c0 + 0.08, 0.012), W3(fb, c0 - 0.08, 0.012), white);
+          const fc = newFrame();
+          ctx.track.frameAt((s + 3.6) % L, fc);
+          tri(paint, W3(fb, c0 - 0.45, 0.012), W3(fb, c0 + 0.45, 0.012), W3(fc, c0, 0.012), white);
+        }
+      }
     }
   }
 

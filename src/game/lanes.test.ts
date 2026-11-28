@@ -149,7 +149,8 @@ describe("lane layouts", () => {
       const near = (s: number): boolean => {
         const w = ((s % L) + L) % L;
         // (the engine's blends last BLEND_TIME at the planned speed: ≤ 22 m/s on lap 1)
-        const half = Math.max(BLEND_LENGTH / 2, (BLEND_TIME * 22) / 2, (1.5 * 1.5 * 22) / (2 * BLEND_RATE)) + 0.5;
+        // (the blends are sized for the fastest lap's planned speed: ≤ 31.5 m/s)
+        const half = Math.max(BLEND_LENGTH / 2, (BLEND_TIME * 31.5) / 2, (1.5 * 1.5 * 31.5) / (2 * BLEND_RATE)) + 0.5;
         if (track.transitions.some((t) => Math.abs(w - t.s) < half || Math.abs(w - t.s - L) < half)) return true;
         return ms.some((m) => w > m.s0 - 0.5 && w < m.s1 + 0.5);
       };
@@ -183,7 +184,7 @@ describe("lane layouts", () => {
       const track = course.track;
       const world = new BoxSet([]);
       const L = track.lapLength;
-      const ms = merges(track);
+      const ms = merges(track).filter((x) => !x.opens);
       expect(ms.length).toBeGreaterThan(10);
       // Puente Real: the two oncoming lanes taper in sequence into own-2.
       const pr = ms.filter((m) => Math.abs(m.end - 1010) < 2);
@@ -193,10 +194,11 @@ describe("lane layouts", () => {
       expect(ids[opp2.into]).toBe("opp-1");
       expect(ids[opp1.into]).toBe("own-2");
       expect(opp2.s1).toBeCloseTo(opp1.s0, 6);
-      expect(opp1.s1 - opp1.s0).toBeCloseTo(MERGE_LENGTH, 6);
-      expect(opp1.end - opp2.s0).toBeCloseTo(2 * MERGE_LENGTH, 6);
+      // (one geometry for every lap, sized for the fastest: MERGE_TIME s at its planned speed)
+      expect(opp1.s1 - opp1.s0).toBeGreaterThanOrEqual(MERGE_LENGTH);
+      expect(opp1.end - opp2.s0).toBeCloseTo(2 * (opp1.s1 - opp1.s0), 6);
       const report: string[] = [];
-      for (const lap of [0, 1]) {
+      for (const lap of [0, 1, 2, 3]) {
         for (const m of ms) {
           const st = track.stretches[m.fromStretch]!;
           const lay = st.layout;
@@ -210,25 +212,22 @@ describe("lane layouts", () => {
           const ev = createEvents();
           let vmax = 0;
           let x0 = s.x;
+          const own = lay.offsets[m.lane]!;
           while (s.p < lap * L + m.end + 8) {
             s.speed = speedAt(s.p);
             stepPlayer(s, [], TICK, world, ev);
+            // One geometry for every lap: nothing moves the runner before the drawn taper starts
+            // (the HUD and the barriers count down to the same s0).
+            if (s.p < lap * L + m.s0 - 0.5 && s.p > lap * L + st.fromS + 15 && m.s0 >= st.fromS) expect(Math.abs(s.x - own), `lap ${lap + 1} ${lay.ids[m.lane]} at ${(s.p - lap * L).toFixed(1)}`).toBeLessThan(0.01);
             const step = Math.abs(s.x - x0);
             vmax = Math.max(vmax, step / TICK);
             x0 = s.x;
           }
           // Ended exactly on (the continuation of) the target lane, which is not an oncoming one.
           const after = layoutAt(s.p);
-          expect(s.x, `lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)} lap ${lap} now ${(after as { ids?: readonly string[] }).ids?.[s.lane]} at ${s.p.toFixed(1)}`).toBeCloseTo(laneOffsetAt(track, s.lane, s.p, speedAt), 6);
+          expect(s.x, `lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)} lap ${lap} now ${(after as { ids?: readonly string[] }).ids?.[s.lane]} at ${s.p.toFixed(1)}`).toBeCloseTo(laneOffsetAt(track, s.lane, s.p), 6);
           expect(after.flow[s.lane]).not.toBe(-1);
-          // (a ring lane on a short arc closes faster on later laps: the arc bounds its taper)
-          if (lap === 0 || st.section.roundabout === null) expect(vmax, `lap ${lap + 1}: lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}`).toBeLessThan(2.7);
-          else expect(vmax).toBeLessThan(3.6);
-          // Carried earlier on faster laps, but still inside the lane's own width where the drawn taper starts.
-          const atDrawn = laneOffsetAt(track, m.lane, lap * L + m.s0 + (m.s0 < st.fromS ? 0 : 0), speedAt);
-          // (a ring lane's short closing, sized by sideways speed, may reach its edge)
-          const edge = st.section.roundabout !== null ? lay.widths[m.lane]! / 2 : lay.widths[m.lane]! / 2 - 0.3;
-          if (m.s0 >= st.fromS && m.s1 > m.s0) expect(Math.abs(atDrawn - lay.offsets[m.lane]!)).toBeLessThan(edge);
+          expect(vmax, `lap ${lap + 1}: lane ${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}`).toBeLessThan(2.7);
           report.push(`${lay.ids[m.lane]}@${m.end.toFixed(0)}: ${vmax.toFixed(2)}`);
         }
       }

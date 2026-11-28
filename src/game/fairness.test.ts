@@ -29,7 +29,7 @@ describe("an obvious way through, everywhere", () => {
     expect(bad).toEqual([]);
   }, 300_000);
 
-  it("the first kilometre welcomes: no jump or roll needed in a road lane, no oncoming traffic, two lanes open, rows 2.2 s apart", () => {
+  it("the first kilometre welcomes: no jump or roll needed in a road lane, oncoming traffic only in the oncoming lanes, two lanes open, rows 2.2 s apart", () => {
     const bad: string[] = [];
     for (let seed = 1; seed <= 30; seed++) {
       const gen = new TrackGenerator(seed * 7717);
@@ -38,7 +38,17 @@ describe("an obvious way through, everywhere", () => {
       for (const o of early) {
         const lay = layoutAt(o.d);
         const road = (lay.kinds?.[nearestLane(lay, o.x)] ?? "road") === "road";
-        if (o.k > 0) bad.push(`seed ${seed}: oncoming ${o.kind} at ${o.d.toFixed(0)}`);
+        // Oncoming traffic only in the oncoming lanes: a runner who stays on our side (own lanes,
+        // walk-R) is never asked to act by it.
+        if (o.k > 0) {
+          const ids = (lay as { ids?: readonly string[] }).ids ?? [];
+          const lane = nearestLane(lay, o.x);
+          if ((lay.flow[lane] ?? 0) !== -1) bad.push(`seed ${seed}: oncoming ${o.kind} in ${ids[lane]} at ${o.d.toFixed(0)}`);
+          const half = OBSTACLE_DEFS[o.kind].width / 2 + 0.3;
+          lay.offsets.forEach((x, i) => {
+            if ((ids[i] ?? "").startsWith("own-") || ids[i] === "walk-R") if (Math.abs(x - o.x) < half) bad.push(`seed ${seed}: oncoming ${o.kind} reaches ${ids[i]} at ${o.d.toFixed(0)}`);
+          });
+        }
         if (OBSTACLE_DEFS[o.kind].lanes === 3) bad.push(`seed ${seed}: ${o.kind} across the street at ${o.d.toFixed(0)}`);
         if (road && (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind))) bad.push(`seed ${seed}: ${o.kind} in a road lane at ${o.d.toFixed(0)}`);
       }
@@ -71,13 +81,13 @@ describe("an obvious way through, everywhere", () => {
     let min = 1;
     for (let s = 0; s < L; s += 1) min = Math.min(min, paceAt(s));
     expect(min).toBeGreaterThanOrEqual(PACE_MIN - 1e-6);
-    for (const m of merges(track)) {
+    for (const m of merges(track).filter((x) => !x.opens)) {
       // A taper inside a ring is only a ring lane's own short closing (sized by sideways speed),
       // never an approach lane's taper running on into the ring.
       for (const st of track.stretches) {
         if (st.section.roundabout === null || m.s1 <= st.fromS + 0.5 || m.s0 >= st.toS) continue;
         expect(track.stretches[m.fromStretch], `taper ${m.s0.toFixed(0)}-${m.s1.toFixed(0)} in the ring ${st.fromS.toFixed(0)}`).toBe(st);
-        expect(m.s1 - m.s0).toBeLessThan(50);
+        expect(m.s1 - m.s0).toBeLessThan(st.toS - st.fromS);
       }
     }
     const rings = track.stretches.filter((st) => st.section.roundabout !== null);

@@ -282,6 +282,18 @@ export function createCity(city: CityData, track: Track): CityInternals {
         else continue;
         if (performance.now() - start > BUDGET_MS) break;
       }
+      // while the menu is idle, bring the pinned start area up to full detail with the spare
+      // budget, so "Jugar" starts with everything built (no slices during the countdown)
+      if (alsoKeepS !== undefined && performance.now() - start < BUDGET_MS) {
+        for (const i of wanted(alsoKeepS, AHEAD, BEHIND)) {
+          const d = rel(i, alsoKeepS);
+          const full = d + CHUNK > -NEAR_BEHIND && d < NEAR_AHEAD;
+          if (!chunks.has(i)) buildChunk(i, "road");
+          else if (full && !fullChunks.has(i)) buildChunk(i, "detail");
+          else continue;
+          if (performance.now() - start > BUDGET_MS) break;
+        }
+      }
     },
     atmosphereAt(s, lap) {
       return cityAtmosphere(track.zoneAt(s).id, lap);

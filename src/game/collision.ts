@@ -9,12 +9,11 @@
  */
 import { OBSTACLE_DEFS, type ObstacleKind } from "../contracts";
 import { getCourse } from "./course";
-import { followLane, laneOffset, laneOffsetAt, laneOpenAt, layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
+import { followLane, laneOffset, laneOffsetAt, laneOpenAt, laneShownAt, layoutAt, type LaneLayout, type LayoutFn } from "./lanes";
 import type { ObstacleSpawn } from "./spawns";
 import { obstacleCentre } from "./spawns";
 import type { PlayerWorld, SurfaceHit } from "./player";
 import {
-  speedAt,
   MARGINAL_CLIP,
   OBSTACLE_SHRINK_TOP,
   OBSTACLE_SHRINK_X,
@@ -120,7 +119,7 @@ export class BoxSet implements PlayerWorld {
 
   laneX(lane: number, p: number): number {
     const track = this.track();
-    return track ? laneOffsetAt(track, lane, p, speedAt) : laneOffset(this.layoutFn(p), lane);
+    return track ? laneOffsetAt(track, lane, p) : laneOffset(this.layoutFn(p), lane);
   }
 
   followLane(fromS: number, toS: number, lane: number): number | undefined {
@@ -131,6 +130,11 @@ export class BoxSet implements PlayerWorld {
   laneOpen(lane: number, p: number): boolean {
     const track = this.track();
     return track ? laneOpenAt(track, lane, p) : true;
+  }
+
+  laneShown(lane: number, p: number): boolean {
+    const track = this.track();
+    return track ? laneShownAt(track, lane, p) : true;
   }
 
   setSpawns(spawns: readonly ObstacleSpawn[]): void {

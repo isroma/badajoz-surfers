@@ -11,7 +11,7 @@
  */
 import { OBSTACLE_DEFS, POWERUPS, type PowerupKind, type TutorialAction, type ZoneId } from "../contracts";
 import { PASSAGE_PICKUP_Y, getCourse, tableAt, inPassage, inRange, mapLane, underArch, type Course } from "./course";
-import { centreLane, laneOffset, layoutAt, merges, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
+import { centreLane, laneOffset, laneOffsetAt, laneOpenAt, laneShownAt, layoutAt, merges, nearestLane, nextOffsetChange, type LaneLayout, type LayoutFn } from "./lanes";
 import {
   PATTERNS,
   PatternBuilder,
@@ -70,6 +70,12 @@ export function mergeClosures(course: Course): readonly Closure[] {
   const out: Closure[] = [];
   const st = track.stretches;
   for (const m of merges(track)) {
+    if (m.opens) {
+      // A lane still opening is not there yet: nothing in it.
+      const x = st[m.fromStretch]!.layout.offsets[m.lane] ?? 0;
+      out.push({ from: m.s0, to: m.s1 + 5, x, ending: true, taper: m.s0 });
+      continue;
+    }
     const lay = st[m.fromStretch]!.layout;
     out.push({ from: Math.min(m.s1 - MERGE_CLOSED, m.s0 - 10), to: m.end, x: lay.offsets[m.lane] ?? 0, ending: true, taper: m.s0 });
     if (m.s0 < st[m.fromStretch]!.fromS) {
@@ -89,7 +95,7 @@ export function mergeClosures(course: Course): readonly Closure[] {
       const t = track.transitions.find((x) => x.fromIndex === m.fromStretch);
       let lane = m.into;
       for (let g = 0; g < 8; g++) {
-        const next = merges(track).find((x) => x.fromStretch === m.fromStretch && x.lane === lane);
+        const next = merges(track).find((x) => !x.opens && x.fromStretch === m.fromStretch && x.lane === lane);
         if (!next) break;
         lane = next.into;
       }
@@ -104,6 +110,9 @@ export function mergeClosures(course: Course): readonly Closure[] {
 }
 
 const ROW_SLACK = 2;
+
+/** Nothing is met within this many metres after a layout boundary. */
+export const BOUNDARY_CLEAR = 15;
 
 /** No obstacles where the road curves harder than this (1/m: a radius under 18 m). */
 export const CALM_CURVATURE = 1 / 18;
@@ -506,8 +515,17 @@ export class TrackGenerator {
     if (inPassage(course, w0, w1)) return true;
     // Calm in tight bends: nothing to dodge, jump or roll where the road curves harder than
     // CALM_CURVATURE (rings, old-town corners): only bellota trails along the lanes.
+    // Nothing just after a layout boundary (a ring entry, a street change: the lanes blend there).
+    for (const t of course.track.transitions) {
+      for (let k = Math.floor(f0 / course.lapLength) - 1; k <= Math.floor(f1 / course.lapLength) + 1; k++) {
+        const at = t.s + k * course.lapLength;
+        if (f1 > at - 3 && f0 < at + BOUNDARY_CLEAR) return true;
+      }
+    }
+    // ...nor within a reaction's worth of running after one (the camera is still swinging).
     const bends = course.bends().curvature;
-    for (let d = Math.floor(f0); d <= Math.ceil(f1); d++) if (tableAt(bends, course.lapLength, d) > CALM_CURVATURE) return true;
+    const after = speedAt(f0) * reactionWindow(difficultyAt(f0));
+    for (let d = Math.floor(f0 - after); d <= Math.ceil(f1); d++) if (tableAt(bends, course.lapLength, d) > CALM_CURVATURE) return true;
     const half = (o.span ?? OBSTACLE_DEFS[o.kind].width) / 2;
     const L = course.lapLength;
     const hits = (a: number, b: number, from: number, to: number): boolean => {
@@ -552,7 +570,8 @@ export class TrackGenerator {
       if (a >= WELCOME_UNTIL) continue;
       from = Math.min(from, a);
       to = Math.max(to, c);
-      if (o.k > 0 || OBSTACLE_DEFS[o.kind].lanes === 3) return true;
+      if (OBSTACLE_DEFS[o.kind].lanes === 3) return true;
+      if (o.k > 0 && !this.quietOncoming(o, b)) return true;
       if (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind)) {
         const lay = this.layoutFn(o.d);
         const lane = nearestLane(lay, o.x);
@@ -574,6 +593,35 @@ export class TrackGenerator {
     }
     const course = this.course();
     return narrowPoints(near, from - 2, Math.min(WELCOME_UNTIL, to + 2), { layout: this.layoutFn, track: course?.track ?? null, speed: speedAt }, 1).length > 0;
+  }
+
+  /**
+   * The welcoming opening keeps the bridge alive with oncoming traffic only where it never asks
+   * anything of a runner on our side: in an oncoming lane, and when that lane is next to one of
+   * ours (opp-1), only while our neighbouring lanes are free for the vehicle's whole pass.
+   */
+  private quietOncoming(o: ObstacleDraft, b: PatternBuilder): boolean {
+    const lay = this.layoutFn(o.d);
+    const lane = nearestLane(lay, o.x);
+    if ((lay.flow[lane] ?? 0) !== -1) return false;
+    // Not where the zone's finale will stand (it may use the oncoming lanes too).
+    if (sweep(o)[1] + OBSTACLE_DEFS[o.kind].length / 2 > lightFor(zoneAt(o.d)) - 10) return false;
+    const [a0, a1] = footprintOf(o);
+    const room = WELCOME_GAP * speedAt(a0);
+    for (const l of [lane - 1, lane + 1]) {
+      if (l < 0 || l >= lay.offsets.length || (lay.flow[l] ?? 0) === -1) continue;
+      // Our lane beside it: it and the next of ours stay free around the pass.
+      const ours = [l, l + (l > lane ? 1 : -1)].filter((q) => q >= 0 && q < lay.offsets.length).map((q) => laneOffset(lay, q));
+      const busy = (other: Omit<ObstacleSpawn, "id">): boolean => {
+        if (other === o || !ours.some((x) => Math.abs(other.x - x) < 0.5)) return false;
+        const [c0, c1] = footprintOf(other);
+        return c1 > a0 - room && c0 < a1 + 10;
+      };
+      if (b.obstacles.some(busy)) return false;
+      for (const other of this.obstacles) if (other.d > a0 - room - 30 && other.d < a1 + 40 && busy(other)) return false;
+      for (const other of this.movers) if (busy(other)) return false;
+    }
+    return true;
   }
 
   /**
@@ -708,7 +756,14 @@ export class TrackGenerator {
       limit = Math.min(limit, change - 15);
     }
     if (limit - this.cursor < 10) {
-      this.cursor = change !== null && change < span.end ? change : span.end + ZONE_MARGIN;
+      if (change !== null && change < span.end) {
+        // Past the layout change by a reaction's worth of running, as above (never a pattern
+        // starting right on the boundary).
+        const v = speedAt(change);
+        this.cursor = change + Math.max(15, v * (reactionWindow(difficultyAt(change)) + 0.6) + 4);
+        const after = this.layoutFn(this.cursor);
+        this.lineX = laneOffset(after, nearestLane(after, this.lineX));
+      } else this.cursor = span.end + ZONE_MARGIN;
       return;
     }
     const easy = this.fresh && this.cursor < this.easyUntil;
@@ -728,7 +783,10 @@ export class TrackGenerator {
     const { finaleLength } = finaleRoom(span);
     const finalePending = !easy && this.finaleSerial !== span.serial && this.cursor < ctx.lightAt + 90;
     // Ordinary patterns leave room for the finale at the end of the zone (it starts at the light).
-    let normalLimit = finalePending ? Math.min(ctx.lightAt, limit) : limit;
+    // (ordinary patterns stop a pattern gap before the light, longer in the welcoming opening, so
+    // the finale starts at its light and ends before the lane tapers)
+    const finaleSlack = (ctx.lap === 1 && this.cursor < WELCOME_UNTIL ? 2.5 : 1.5) * ctx.v;
+    let normalLimit = finalePending ? Math.min(ctx.lightAt - finaleSlack, limit) : limit;
     for (const f of this.flights) if (f.clearFrom > this.cursor) normalLimit = Math.min(normalLimit, f.clearFrom - 2);
     // Oncoming traffic reaches far ahead: none just before the finale.
     const finaleSoon = finalePending && normalLimit - this.cursor < 90;
@@ -827,11 +885,15 @@ export class TrackGenerator {
     for (let d = from + 10; d <= to - 6; d += 2.6) {
       if (Math.abs(d - avoid) < 3) continue;
       const layout = this.layoutFn(d);
+      // Where each lane really is here (lanes opening, tapering), and only lanes the runner can be in.
+      const track = this.course()?.track ?? null;
+      const xOf = (l: number): number => (track ? laneOffsetAt(track, l, d) : laneOffset(layout, l));
+      const usable = (l: number): boolean => !track || (laneOpenAt(track, l, d) && laneShownAt(track, l, d));
       // The line's lane (or the nearest one), else the nearest lane no vehicle drives through.
-      const order = layout.offsets.map((_, i) => i).sort((p, q) => Math.abs((layout.offsets[p] ?? 0) - this.lineX) - Math.abs((layout.offsets[q] ?? 0) - this.lineX));
-      const lane = order.find((l) => !this.runOver(laneOffset(layout, l), d, 0.9, own) && !this.blockedPickup(laneOffset(layout, l), d, 0.9, true) && !own.some((o) => o.k === 0 && Math.abs(o.x - laneOffset(layout, l)) < 1.2 && Math.abs(o.d - d) < OBSTACLE_DEFS[o.kind].length / 2 + 1.5));
+      const order = layout.offsets.map((_, i) => i).filter(usable).sort((p, q) => Math.abs(xOf(p) - this.lineX) - Math.abs(xOf(q) - this.lineX));
+      const lane = order.find((l) => !this.runOver(xOf(l), d, 0.9, own) && !this.blockedPickup(xOf(l), d, 0.9, true) && !own.some((o) => o.k === 0 && Math.abs(o.x - xOf(l)) < 1.2 && Math.abs(o.d - d) < OBSTACLE_DEFS[o.kind].length / 2 + 1.5));
       if (lane === undefined) continue;
-      pickups.push({ id: this.nextId++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: 0.9 });
+      pickups.push({ id: this.nextId++, kind: "bellota", lane, x: xOf(lane), d, y: 0.9 });
     }
     if (pickups.length === 0) return;
     const last = this.pickups[this.pickups.length - 1];
@@ -846,6 +908,7 @@ export class TrackGenerator {
     for (const o of b.obstacles) begin = Math.min(begin, footprintOf(o)[0]);
     for (const p of b.pickups) begin = Math.min(begin, p.d);
     this.fillGap(this.contentEnd, begin, NaN, b.obstacles);
+    const prevEnd = this.contentEnd;
     this.contentEnd = Math.max(this.contentEnd, b.end);
     const vEnd = speedAt(b.end);
     let gap = vEnd * (ctx.reaction + 0.15 + b.tail + 0.35 * (1 - ctx.difficulty)) + this.rng.range(0, vEnd * 0.45);
@@ -879,7 +942,26 @@ export class TrackGenerator {
       ctx.lap === 1 && p.d < WELCOME_RAMP &&
       b.obstacles.some((o) => (PLAIN_JUMP.has(o.kind) || PLAIN_ROLL.has(o.kind)) && Math.abs(o.x - p.x) < 1 && p.d > o.d - WELCOME_GAP * ctx.v && p.d < o.d + 3 &&
         (p.d < WELCOME_UNTIL || !b.isRoad(o.lane)));
+    // On the real line of a lane the runner can be in there (lanes blend, open and taper).
+    const onLine = (p: Omit<PickupSpawn, "id">): Omit<PickupSpawn, "id"> | null => {
+      const track = this.course()?.track;
+      if (!track || p.ride) return p;
+      const lay = this.layoutFn(p.d);
+      let best = -1;
+      let bestD = 1.2;
+      for (let l = 0; l < lay.offsets.length; l++) {
+        if (!laneOpenAt(track, l, p.d)) continue;
+        const d = Math.abs(laneOffsetAt(track, l, p.d) - p.x);
+        if (d < bestD) {
+          bestD = d;
+          best = l;
+        }
+      }
+      return best < 0 ? null : { ...p, lane: best, x: laneOffsetAt(track, best, p.d) };
+    };
     const pickups: PickupSpawn[] = b.pickups
+      .map(onLine)
+      .filter((p): p is Omit<PickupSpawn, "id"> => p !== null)
       .filter((p) => !lure(p) && (p.ride !== undefined || !this.runOver(p.x, p.d, p.y, b.obstacles)) && !this.blockedPickup(p.x, p.d, p.y))
       .map((p) => ({ ...p, id: this.nextId++ }));
 
@@ -912,7 +994,8 @@ export class TrackGenerator {
       }
       const pk: PickupSpawn = { id: this.nextId++, kind, lane: slot.lane, x: laneOffset(ctx.layout, slot.lane), d: slot.d, y: slot.y };
       if (slot.ride) pk.ride = slot.ride;
-      pickups.push(pk);
+      const placed = onLine(pk);
+      if (placed) pickups.push({ ...placed, id: pk.id });
     };
 
     if (b.end >= this.nextPowerupAt && !easy) {
@@ -956,7 +1039,8 @@ export class TrackGenerator {
     // A pattern thinned out (traffic left out of a closure or a bend, bellotas a vehicle would run
     // over) may have a hole: bellotas along it.
     const items: [number, number][] = [...b.obstacles.map((o) => footprintOf(o)), ...pickups.map((p): [number, number] => [p.d, p.d])].sort((x, y) => x[0] - y[0]);
-    let reach = begin;
+    // (from the previous content: the pattern's own first bellotas may have been left out)
+    let reach = Number.isFinite(prevEnd) && prevEnd < begin && begin - prevEnd < 45 ? prevEnd : begin;
     for (const [x0, x1] of items) {
       if (x0 - reach > 45) this.fillGap(reach - 8, x0, NaN, b.obstacles);
       reach = Math.max(reach, x1);
