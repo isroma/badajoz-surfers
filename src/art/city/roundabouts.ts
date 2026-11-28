@@ -108,6 +108,50 @@ export function clipOutsideRings(ctx: CityCtx, pts: THREE.Vector3[]): THREE.Vect
   return out;
 }
 
+const streetGridCache = new WeakMap<CityCtx, Map<string, { ax: number; az: number; bx: number; bz: number; h: number }[]>>();
+
+/**
+ * On any drawn carriageway: the route's own (both directions), a ring's circulating carriageway,
+ * or a side street's (as the network draws them, outside the route's span). No prop may stand there.
+ */
+export function onAnyCarriageway(ctx: CityCtx, x: number, z: number, margin = 0.2): boolean {
+  const pr = ctx.track.project(x, z);
+  const lay = ctx.track.layoutAt(pr.s);
+  if (Math.abs(pr.lateral) < 40 && lay.carriageways.some((c) => pr.lateral > c.from - margin && pr.lateral < c.to + margin)) return true;
+  for (const r of ringsOf(ctx)) {
+    const d = Math.hypot(x - r.rb.cx, z - r.rb.cz);
+    if (d > r.rb.rInner - margin && d < r.rb.rOuter + margin) return true;
+  }
+  let grid = streetGridCache.get(ctx);
+  if (!grid) {
+    grid = new Map();
+    for (const st of ctx.city.streets) {
+      if (st.onRoute || st.tunnel || st.roundabout) continue;
+      const w = widthOf(st);
+      if (w.ped) continue;
+      for (let i = 0; i + 3 < st.pts.length; i += 2) {
+        const g = { ax: st.pts[i]!, az: st.pts[i + 1]!, bx: st.pts[i + 2]!, bz: st.pts[i + 3]!, h: w.road / 2 };
+        for (let gx = Math.floor(Math.min(g.ax, g.bx) / 20); gx <= Math.floor(Math.max(g.ax, g.bx) / 20); gx++)
+          for (let gz = Math.floor(Math.min(g.az, g.bz) / 20); gz <= Math.floor(Math.max(g.az, g.bz) / 20); gz++) {
+            const k = `${gx},${gz}`;
+            let a = grid.get(k);
+            if (!a) grid.set(k, (a = []));
+            a.push(g);
+          }
+      }
+    }
+    streetGridCache.set(ctx, grid);
+  }
+  const sp = ctx.routeSpan(pr.s);
+  if (Math.abs(pr.lateral) < 40 && pr.lateral > sp.lo - 0.5 && pr.lateral < sp.hi + 0.5) return false; // the route's own ground
+  return (grid.get(`${Math.floor(x / 20)},${Math.floor(z / 20)}`) ?? []).some((g) => {
+    const dx = g.bx - g.ax, dz = g.bz - g.az;
+    const l2 = dx * dx + dz * dz || 1;
+    const t = Math.max(0, Math.min(1, ((x - g.ax) * dx + (z - g.az) * dz) / l2));
+    return Math.hypot(x - g.ax - dx * t, z - g.az - dz * t) < g.h + margin;
+  });
+}
+
 /** Inside a ring's footprint (carriageway, island and outer pavement + margin): the ring owns it. */
 export function inRingFootprint(ctx: CityCtx, x: number, z: number, margin = 0): Ring | null {
   for (const r of ringsOf(ctx)) if (Math.hypot(x - r.rb.cx, z - r.rb.cz) < r.rb.rOuter + 2.5 + margin) return r;
@@ -444,7 +488,7 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
       for (let i = 0; i + 1 < ls.length; i++) {
         const gap = ls[i + 1]!.o - ls[i + 1]!.w / 2 - (ls[i]!.o + ls[i]!.w / 2);
         // no line between two lanes that are merging (they overlap): it would run inside a lane
-        if (ls[i + 1]!.o - ls[i]!.o > (ls[i]!.w + ls[i + 1]!.w) / 2 - 0.05 && gap < 1.0) out.push((ls[i]!.o + ls[i]!.w / 2 + ls[i + 1]!.o - ls[i + 1]!.w / 2) / 2);
+        if (ls[i + 1]!.o - ls[i]!.o > (ls[i]!.w + ls[i + 1]!.w) / 2 - 0.5 && gap < 1.0) out.push((ls[i]!.o + ls[i]!.w / 2 + ls[i + 1]!.o - ls[i + 1]!.w / 2) / 2);
       }
       return out;
     };
@@ -756,7 +800,7 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
       flat.quad(F1, F0, G0, G1, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
     }
     const nose = pts[0]!.clone().add(pts[1]!).multiplyScalar(0.5).add(A1.u.clone().multiplyScalar(0.6));
-    if (!exactLane(nose)) {
+    if (!exactLane(nose) && !onAnyCarriageway(ctx, nose.x, nose.y)) {
       p.cyl(nose.x, yAt(nose.x, nose.y) + KERB, nose.y, 0.04, 1.6, 0x8a9096, 6, m);
       p.cyl(nose.x, yAt(nose.x, nose.y) + KERB + 1.75, nose.y, 0.28, 0.04, 0x1f5fbf, 14, m);
     }

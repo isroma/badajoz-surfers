@@ -11,8 +11,8 @@ import { Bag, TS, samples } from "./bag";
 import { SURFACE_COLOUR, flatMaterial, groundMaterial, paintMaterial, solidGroundMaterial } from "./cmats";
 import type { CityCtx } from "./context";
 import { hash01 } from "./shared";
-import { laneOffsetAt } from "../../game/lanes";
-import { clipOutsideRings, inRingFootprint, ringsOf } from "./roundabouts";
+import { laneOffsetAt, merges as engineMerges } from "../../game/lanes";
+import { clipOutsideRings, inRingFootprint, onAnyCarriageway, ringsOf } from "./roundabouts";
 import { GROUND_SCALE, type GroundName } from "./textures";
 import { PAL } from "../palette";
 import type { LaneLayout, TrackStretch } from "./track";
@@ -148,13 +148,13 @@ class RoadPainter {
 
   /** Paint rectangle in track space (s0..s1 along, l0..l1 across). */
   /** A rounded, kerbed nose closing a median of half-width hw centred on lateral c at s (towards dir·s). */
-  nose(s: number, c: number, hw: number, dir: 1 | -1): void {
+  nose(s: number, c: number, hw: number, dir: 1 | -1, top?: THREE.Color): void {
     const r = Math.max(0.3, hw - 0.22);
     const f = this.ts.f(s);
     const o = this.ts.p(s, c, 0);
     const grass = this.bag.acc(flatMaterial());
     const kerbC = new THREE.Color(0.82, 0.8, 0.77);
-    const lawn = new THREE.Color(SURFACE_COLOUR.grass);
+    const lawn = top ?? new THREE.Color(SURFACE_COLOUR.grass);
     const n = 10;
     const pt = (a: number, rr: number, dy: number): THREE.Vector3 => {
       // a = 0 … π sweeps from one median edge round the front to the other
@@ -386,7 +386,8 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
       const mid = ts.f((a + b) / 2);
       const garden = ped && ctx.greenAt(mid.x, mid.z);
       const outerMat = garden ? groundMaterial("grass") : ped ? groundMaterial("slabs") : hyd;
-      const sh = ped ? C1 : shade;
+      const sh = C1; // one pavement tone (no shaded band beside the runnable sidewalk)
+      void shade;
       if (garden) {
         for (const side of [1, -1] as const) {
           const lat = side > 0 ? lay.right + 0.35 : lay.left - 0.35;
@@ -465,9 +466,23 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
         // hard median: also ends before a roundabout (road surface beyond it)
         const away = (q: number): boolean => bridge || (P.ringGap(q, m.from) >= 4 && P.ringGap(q, m.to) >= 4);
         for (const run of runsOf(ss, away)) {
+          if (m.to - m.from < 0.8) {
+            // too narrow for a kerbed island: a painted hatched gore between the carriageways
+            for (let q = run[0]!; q < run[run.length - 1]! - 1e-6; q += 3) {
+              P.paint(q, Math.min(q + 3, run[run.length - 1]!), m.from, m.from + 0.12);
+              P.paint(q, Math.min(q + 3, run[run.length - 1]!), m.to - 0.12, m.to);
+              P.paintTri([[q, m.from], [q + 0.6, m.from], [q + 1.5, m.to]]);
+            }
+            continue;
+          }
           P.strip(groundMaterial("granite"), run, m.from, m.to, KERB + 0.04, 2, new THREE.Color(0.86, 0.85, 0.82));
           P.face(solidGroundMaterial("granite"), run, m.from, 0, KERB + 0.04, -1);
           P.face(solidGroundMaterial("granite"), run, m.to, 0, KERB + 0.04, 1);
+          // where the island begins or ends towards a ring: a rounded, kerbed nose (a splitter)
+          for (const [end, dirN] of [[run[0]!, -1], [run[run.length - 1]!, 1]] as const) {
+            if (away(end + dirN * 2.5)) continue;
+            P.nose(end, (m.from + m.to) / 2, (m.to - m.from) / 2, dirN, new THREE.Color(0.86, 0.85, 0.82));
+          }
         }
         for (const run of runsOf(ss, (q) => !away(q))) P.strip(surfMat, run, m.from, m.to, 0, GROUND_SCALE[surf]);
       } else if (lane >= 0) {
@@ -538,7 +553,10 @@ function markings(ctx: CityCtx, P: RoadPainter, lay: LaneLayout, sec: CitySectio
         const m = (q + q1) / 2;
         const oi = laneOffsetAt(ctx.track, i, m);
         const oj = laneOffsetAt(ctx.track, j, m);
-        if (Math.abs(oj - oi) < (lay.widths[i]! + lay.widths[j]!) / 2 - 0.05) continue;
+        // overlapping lanes: skip while one of them is merging/opening (the engine's taper), or
+        // when they overlap a lot; a small overlap where widths change keeps the line continuous
+        const overlap = (lay.widths[i]! + lay.widths[j]!) / 2 - Math.abs(oj - oi);
+        if (overlap > 0.3 || (overlap > 0.05 && (mergingAt(ctx, i, m) || mergingAt(ctx, j, m)))) continue;
         const dx = (oi + lay.widths[i]! / 2 + oj - lay.widths[j]! / 2) / 2 - x;
         // nor where the line would fall inside a third lane (lanes re-ordering at a stretch boundary)
         const lc = (l0 + l1) / 2 + dx;
@@ -701,6 +719,7 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
       const A = P.ts.p(s0, edge + side * 0.15, KERB);
       const B = P.ts.p(s1, edge + side * 0.15, KERB);
       if (P.exclude?.(A.x, A.z, -1) || P.exclude?.(B.x, B.z, -1) || P.ringGap(s0, edge) < 8) continue; // the roundabout's own ground and mouth
+      if (P.ctxRef && (onAnyCarriageway(P.ctxRef, A.x, A.z, 0.1) || onAnyCarriageway(P.ctxRef, B.x, B.z, 0.1))) continue; // never on a road
       p.beam([A.x, A.y + 0.9, A.z], [B.x, B.y + 0.9, B.z], 0.06, PAL.darkGrey, m);
       if (k % 2 === 0) p.beam([A.x, A.y, A.z], [A.x, A.y + 0.92, A.z], 0.06, PAL.darkGrey, m);
     }
@@ -708,7 +727,9 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
   // carriageways nobody runs on (the far side of an avenue): a hedge along their edge facing the route
   for (const c of lay.carriageways) {
     if (lanes.some((l) => l.kind === "road" && l.to > c.from && l.from < c.to)) continue;
-    const at = c.to <= lay.left + 0.6 ? c.to - 0.45 : c.from >= lay.right - 0.6 ? c.from + 0.45 : null;
+    // on the median side of that carriageway's kerb (a hedge never stands on the road itself)
+    const at = c.to <= lay.left + 0.6 ? c.to + 0.45 : c.from >= lay.right - 0.6 ? c.from - 0.45 : null;
+    if (at !== null && !lay.median.some((md) => at > md.from + 0.2 && at < md.to - 0.2)) continue;
     if (at === null) continue;
     for (let k = 0; k + 1 < ss.length; k++) {
       // not where a neighbouring stretch makes this carriageway runnable (boundary blends)
@@ -756,4 +777,13 @@ function runsOf(ss: number[], pred: (s: number) => boolean): number[][] {
   }
   if (cur.length > 1) out.push(cur);
   return out;
+}
+
+const mergeCache = new WeakMap<object, readonly { s0: number; s1: number; fromStretch: number; lane: number; into: number }[]>();
+/** Lane k of the stretch at s is in one of the engine's tapers (as the ending lane or its target). */
+function mergingAt(ctx: CityCtx, k: number, s: number): boolean {
+  let ms = mergeCache.get(ctx.track);
+  if (!ms) mergeCache.set(ctx.track, (ms = engineMerges(ctx.track)));
+  // any taper here moves the lanes: be conservative about which index it names across stretches
+  return ms.some((m) => s > m.s0 - 4 && s < m.s1 + 4 && (m.lane === k || m.into === k || m.lane === k + 1 || m.lane === k - 1));
 }

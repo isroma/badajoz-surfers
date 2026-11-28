@@ -17,7 +17,7 @@ import { hash01 } from "./shared";
 import { emitTree, type Species, type TreeSpec } from "./trees";
 import { buildRelief } from "./relief";
 import { pointInRing } from "./geo";
-import { ringsOf } from "./roundabouts";
+import { onAnyCarriageway, ringsOf } from "./roundabouts";
 import { buildCar } from "../vehicles";
 
 const T_SPHERE = new THREE.SphereGeometry(1, 6, 4);
@@ -51,6 +51,7 @@ export function placementBlocked(ctx: CityCtx, ground: GroundLayer, x: number, z
   const onDeck = Math.abs(pr.lateral) < 40 && pr.lateral > lo - 0.5 && pr.lateral < hi + 0.5;
   if (!onDeck && (ground.river.at(x, z) || ground.heightAt(x, z) < ctx.waterLevel + 1.0)) return "water";
   for (const pb of ctx.buildingGrid.query(x, z, x, z)) if (!pb.upperRing && pointInRing(x, z, pb.ring)) return "building";
+  if (onAnyCarriageway(ctx, x, z, 0.1)) return "carriageway";
   for (const r of ringsOf(ctx)) {
     const d = Math.hypot(x - r.rb.cx, z - r.rb.cz);
     if (d > r.rb.rInner - 0.3 && d < r.rb.rOuter + 0.5) return "ring";
@@ -391,6 +392,7 @@ function plaqueUv(name: string, ceramic: boolean): [number, number, number, numb
 }
 
 function plaque(b: Bag, x: number, y: number, z: number, ry: number, name: string, ceramic: boolean, pole: boolean): void {
+  if (pole && blockedAt(x, z)) return;
   const p = b.props;
   if (pole) {
     p.cyl(x, y, z, 0.05, 3.0, 0x3b3f43, 6, metalMaterial());
@@ -426,11 +428,25 @@ export function buildChunkDressing(ctx: CityCtx, bag: Bag, ts: TS, chunk: number
   }
   if (pass === "relief" || pass === "relief2") {
     // the facade relief in two halves (one per frame)
-    buildRelief(ctx, bag, chunk, s0, s1, pass === "relief" ? 0 : 1);
+    guard = (x, z) => placementBlocked(ctx, ground, x, z) !== null;
+    try {
+      buildRelief(ctx, bag, chunk, s0, s1, pass === "relief" ? 0 : 1);
+    } finally {
+      guard = null;
+    }
     return;
   }
 
-  // street lamps
+  // street lamps (the same placement rule as all furniture: never on a road, in water or a building)
+  guard = (x, z) => placementBlocked(ctx, ground, x, z) !== null;
+  try {
+    roadPassDressing(ctx, bag, ts, s0, s1, edges);
+  } finally {
+    guard = null;
+  }
+}
+
+function roadPassDressing(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: number, edges: EdgeSample[]): void {
   const zoneOf = (s: number): ZoneId => ctx.track.zoneAt(s).id;
   const SP = 26;
   for (let s = Math.ceil(s0 / SP) * SP; s < s1; s += SP) {
