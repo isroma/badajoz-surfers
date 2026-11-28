@@ -11,6 +11,7 @@ import type { Bag, TS } from "./bag";
 import { flatMaterial, paintMaterial, signMaterial, signSlot } from "./cmats";
 import type { CityCtx } from "./context";
 import { mergeEdgeAt, mergesIn } from "./merges";
+import { onAnyCarriageway } from "./roundabouts";
 import { laneOffsetAt } from "../../game/lanes";
 import { KERB } from "./road";
 
@@ -39,9 +40,11 @@ export function chevronDraw(dir: "left" | "right"): (ctx: CanvasRenderingContext
 }
 
 /** A chevron board on two posts, facing back down the route at s. */
-function board(bag: Bag, ts: TS, s: number, lat: number, dir: "left" | "right"): void {
+function board(bag: Bag, ts: TS, s: number, lat: number, dir: "left" | "right", ctx?: CityCtx): void {
   const f = ts.f(s);
   const p = ts.p(s, lat, 0);
+  // never on a carriageway (the board and both its posts)
+  if (ctx && [-1, 0, 1].some((k) => onAnyCarriageway(ctx, p.x + f.tz * k * 0.8 * -1 + f.nx * 0, p.z + f.tx * k * 0.8, 0.4) || onAnyCarriageway(ctx, p.x - f.nx * k * 0.9, p.z - f.nz * k * 0.9, 0.4))) return;
   const ry = Math.atan2(-f.tx, -f.tz); // +Z faces the approaching runner
   const b = bag.props;
   const m = flatMaterial();
@@ -119,12 +122,12 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
       const outside = t.roundabout ? -1 : dir === "right" ? -1 : 1;
       void islandSide;
       const lat = outside > 0 ? lay.right + 2.6 : lay.left - 2.6;
-      board(bag, ts, s, lat, dir);
+      board(bag, ts, s, lat, dir, ctx);
     }
     // the exit of a roundabout: a board pointing out of the ring
     if (t.roundabout && t.exitS !== null && inChunk(t.exitS - 4)) {
       const lay = ctx.wideLayout(t.exitS - 4);
-      board(bag, ts, t.exitS - 4, lay.left - 2.6, "right");
+      board(bag, ts, t.exitS - 4, lay.left - 2.6, "right", ctx);
     }
     // painted arrows ~40 m before, in every own road lane
     const as = t.s - 40;

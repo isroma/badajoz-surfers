@@ -15,6 +15,7 @@ import { drawLabel, flatMaterial, glowMaterial, signMaterial, signSlot } from ".
 import { CLEARANCE, plausibleName, type CityCtx, type PreparedBuilding } from "./context";
 import { hash01 } from "./shared";
 import { newFrame } from "./track";
+import { onAnyCarriageway } from "./roundabouts";
 
 const AWNINGS = [0x3e7bd6, 0xe5484d, 0x8db87a, 0xd9a066];
 
@@ -178,7 +179,7 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
       const look = nameLook(pb, pb.name);
       p.push(new THREE.Matrix4().makeRotationY(Math.atan2(nx, nz)).setPosition(mx, 0, mz));
       if (pb.typ !== "theatre") textQuad(bag, `bname-${pb.typ}-${pb.name}`, look, 0, y, 0.02, w); // the theatre names itself on the frieze
-      if (pb.typ === "school" && !overRunnable(mx + nx * 3, mz + nz * 3, pb.src.s)) {
+      if (pb.typ === "school" && !overRunnable(mx + nx * 3, mz + nz * 3, pb.src.s) && ![-0.45, 0, 0.45].some((t) => onAnyCarriageway(ctx, mx + nx * 3 + (d.x - a.x) * t, mz + nz * 3 + (d.z - a.z) * t, 0.3))) {
         // the school yard wall with railings in front
         p.box(0, g + 0.5, 3, len, 1.0, 0.3, PAL.buildings[2], m);
         p.box(0, g + 1.5, 3, len, 1.0, 0.05, PAL.darkGrey, m);
@@ -275,6 +276,7 @@ function poiSign(ctx: CityCtx, bag: Bag, poi: CityPoi, at: { x: number; z: numbe
         const lat = pr.lateral - side * Math.min(room - 1.5, 1.6);
         const sx = fr.x + fr.nx * lat + fr.tx * k * 2.6;
         const sz = fr.z + fr.nz * lat + fr.tz * k * 2.6;
+        if (onAnyCarriageway(ctx, sx, sz, 1.4)) continue; // a terrace never stands on a street
         const y = at.g;
         p.cyl(sx, y, sz, 0.04, 0.72, PAL.darkGrey, 5, m);
         p.cyl(sx, y + 0.72, sz, 0.38, 0.04, 0xfcf8f1, 8, m);

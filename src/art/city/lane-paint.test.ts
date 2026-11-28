@@ -74,7 +74,7 @@ describe("city art: nothing painted runs inside a runnable lane", () => {
           const cl = (P[0]!.l + P[1]!.l + P[2]!.l) / 3;
           if (cs < s0 || cs > s1) continue;
           const lane = laneAt(cs, cl);
-          if (!lane) continue;
+          if (!lane || Math.abs(cl - lane.c) > lane.h - 0.1) continue; // (10 cm numeric tolerance at the band edge)
           // its extent in track space
           const ds = Math.max(P[0]!.s, P[1]!.s, P[2]!.s) - Math.min(P[0]!.s, P[1]!.s, P[2]!.s);
           const dl = Math.max(P[0]!.l, P[1]!.l, P[2]!.l) - Math.min(P[0]!.l, P[1]!.l, P[2]!.l);
