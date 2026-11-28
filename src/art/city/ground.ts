@@ -8,7 +8,8 @@ import type { CityArea } from "../../city/data";
 import { Acc } from "./acc";
 import { PAL } from "../palette";
 import { groundMaterial, terrainMaterial, waterMaterial } from "./cmats";
-import { routeRings, widthOf } from "./network";
+import { widthOf } from "./network";
+import { ringsOf } from "./roundabouts";
 import type { CityCtx } from "./context";
 import { Grid, pointInFlat } from "./geo";
 import { newFrame } from "./track";
@@ -175,8 +176,9 @@ export function buildGround(ctx: CityCtx): GroundLayer {
       }
     }
     for (let i = 0; i < nx * nz; i++) if (under[i] && kind[i] !== 2) H[i] = H[i]! - 0.3;
-    for (const r of routeRings(ctx)) {
-      const R = r.rc + r.hw + 3 + STEP * 0.5;
+    for (const ring of ringsOf(ctx)) {
+      const r = { cx: ring.rb.cx, cz: ring.rb.cz, y: Math.min(ring.y, ...ring.samples.map((q) => q[1])) };
+      const R = ring.rb.rOuter + 3 + STEP * 0.5;
       const ix0 = Math.max(0, Math.floor((r.cx - R - x0) / STEP));
       const iz0 = Math.max(0, Math.floor((r.cz - R - z0) / STEP));
       for (let iz = iz0; iz <= Math.min(nz - 1, iz0 + Math.ceil((2 * R) / STEP) + 1); iz++) {

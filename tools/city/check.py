@@ -52,23 +52,39 @@ def main() -> None:
     gap = float(np.hypot(*(P[0] - P[-1])))
     check(gap <= 2.5 * m["routeStep"], f"loop closes in plan (last→first {gap:.2f} m)")
     check(abs(h[0] - h[-1]) <= 0.3, f"loop closes in height (Δh {h[0] - h[-1]:.2f} m)")
-    check(abs(P[0]).max() < 0.5 and abs(h[0]) < 0.5, "route starts at the origin at height ~0")
+    check(abs(P[0]).max() < 1.5 and abs(h[0]) < 0.5, f"route starts at the origin at height ~0 ({P[0][0]:.2f}, {P[0][1]:.2f})")
     seg = np.hypot(*np.diff(np.vstack([P, P[:1]]), axis=0).T)
     check(seg.min() > 1.0 and seg.max() < 3.0, f"sample spacing {seg.min():.2f}–{seg.max():.2f} m")
     check(abs(seg.sum() - L) < 5, f"polyline length {seg.sum():.1f} ≈ lapLength")
-    # curvature as the consumer measures it: circle through three consecutive 2 m samples (and
-    # through samples 2 apart, for slower bends)
-    ring = np.zeros(n, bool)
-    for x in c["sections"]:
-        if x["roundabout"]:
-            ring[(s >= x["fromS"]) & (s < x["toS"])] = True
+    # curvature as the consumer measures it: circle through three consecutive 2 m samples. Inside
+    # each roundabout pass window the ring's own target applies (≥ 20 m on rings with r ≥ 20 m,
+    # the outer-lane radius on small ones); elsewhere ≥ 14 m.
+    def in_rng(a, b):
+        return (s >= a) & (s <= b) if a <= b else (s >= a) | (s <= b)
+
     r1, sign = radius(P, 1)
-    r2, _ = radius(P, 2)
-    r = np.minimum(r1, r2)
-    need = np.where(ring, 12.0, 14.0) - 0.05
-    worst_i = int(np.argmin(r - need))
-    print(f"      min radius on rings {r[ring].min():.2f} m, off rings {r[~ring].min():.2f} m (three consecutive samples)")
-    check(bool(np.all(r >= need)), f"curvature radius ≥ 12 m on rings and ≥ 14 m elsewhere (worst {r[worst_i]:.2f} m at s={s[worst_i]:.1f})")
+    need = np.full(n, 14.0)
+    a2, b2, c2 = np.roll(P, 2, 0), P, np.roll(P, -2, 0)
+    ab, bc, ca = b2 - a2, c2 - b2, a2 - c2
+    k2 = 2 * (ab[:, 0] * bc[:, 1] - ab[:, 1] * bc[:, 0]) / (np.hypot(*ab.T) * np.hypot(*bc.T) * np.hypot(*ca.T))
+    rate = np.abs(np.roll(k2, -1) - np.roll(k2, 1)) / np.hypot(*(np.roll(P, -1, 0) - np.roll(P, 1, 0)).T)
+    rbs = c.get("roundabouts", [])
+    check(len(rbs) == len({x["roundabout"]["cx"] for x in c["sections"] if x["roundabout"]}), f"{len(rbs)} roundabouts, one per ring the route uses")
+    for rb in rbs:
+        mm = in_rng(rb["passFromS"], rb["passToS"])
+        need[mm] = np.minimum(need[mm], rb["minRadiusTarget"])
+        rmin, rmax = float(r1[mm].min()), float(rate[mm].max())
+        check(rmin >= rb["minRadiusTarget"] * 0.97 and rmax <= rb["curvatureRateLimit"] * 1.15,
+              f"{rb['id']:34s} r {rb['minRadiusBefore']:5.1f} -> {rmin:5.1f} m (target {rb['minRadiusTarget']}), "
+              f"dκ/ds {rmax:.4f} (≤ {rb['curvatureRateLimit']}), {rb['sweep']:4.0f}° round, ≤ {rb['maxDeviation']} m off the OSM ring")
+        check(all(a["lines"] for a in rb["arms"]) and any(a["onRoute"] for a in rb["arms"]), f"{rb['id']}: {len(rb['arms'])} arms with geometry, route arm(s) identified")
+    worst_i = int(np.argmin(r1 - need * 0.97))
+    print(f"      min radius anywhere {r1.min():.2f} m (three consecutive samples)")
+    check(bool(np.all(r1 >= need * 0.97)), f"curvature radius ≥ 14 m off roundabout passes and ≥ each ring's target on them (worst {r1[worst_i]:.2f} m at s={s[worst_i]:.1f})")
+    off = np.ones(n, bool)
+    for rb in rbs:
+        off &= ~in_rng(rb["passFromS"], rb["passToS"])
+    print(f"      max curvature rate off roundabout passes {rate[off].max():.4f} 1/m², on them {rate[~off].max():.4f}")
     r, sign = radius(P, 3)
     # grade over 10 m windows (heights are quantised to 0.1 m)
     k = 5

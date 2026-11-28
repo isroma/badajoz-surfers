@@ -38,6 +38,8 @@ export interface CityData {
   furniture: CityFurniture[];
   pois: CityPoi[];
   terrain: CityTerrain;
+  /** Every roundabout the route goes round (13), with full ring geometry. Added in a later round. */
+  roundabouts: CityRoundabout[];
 }
 
 export interface CityMeta {
@@ -314,4 +316,78 @@ export interface CityTerrain {
   /** Estimated Guadiana water level relative to the origin (DTM inside the river polygons). */
   waterLevel: number | null;
   note: string;
+}
+
+export interface CityRoundabout {
+  /** "rb-<slug of the ring's OSM name>" or "rb-<cx>-<cz>" when unnamed. */
+  id: string;
+  name: string | null;
+  cx: number;
+  cz: number;
+  /** DTM ground height at the centre, relative to the origin. */
+  h: number;
+  /** Radius of the OSM ring centreline (equivalent circle of the island it encloses). */
+  r: number;
+  /** Island kerb and outer kerb of the circulating carriageway. From r ± width/2, or from a
+   *  mapped island area (grass, garden, fountain…) when one reaches the kerb (`islandMapped`). */
+  rInner: number;
+  rOuter: number;
+  islandMapped: boolean;
+  /** Lanes on the ring (OSM `lanes`, else 2 on trunk/primary/secondary, 1 otherwise). */
+  lanes: number;
+  /** Carriageway width: OSM `width` or lanes × 3.5 m. */
+  width: number;
+  highway: string;
+  /** Reference radius of the runner's line on the ring: the outer (kerb) lane, rOuter − 1.75 m. */
+  rRef: number;
+  /** s range the route spends on the ring's OSM ways. */
+  entryS: number;
+  exitS: number;
+  /** Compass bearing of the running direction at entryS / exitS. */
+  entryBearing: number;
+  exitBearing: number;
+  /** Angle the route goes round the centre (degrees, anticlockwise on the map = positive). */
+  sweep: number;
+  /** s range of the re-solved fluid line (≈ 40 m before entry to 40 m after exit; passToS < passFromS
+   *  when it wraps through s = 0). */
+  passFromS: number;
+  passToS: number;
+  /** Limits the line was solved for: minimum radius and max |d curvature / ds| (1/m²). */
+  minRadiusTarget: number;
+  curvatureRateLimit: number;
+  /** Measured on the 2 m route samples within the pass (three consecutive samples / curvature over
+   *  ±2 samples differenced over ±1). */
+  minRadius: number;
+  maxCurvatureRate: number;
+  /** Minimum radius of the previous (OSM-following) line over the same pass. */
+  minRadiusBefore: number;
+  /** Largest |distance to centre − r| of the route on the ring ways. */
+  maxDeviation: number;
+  /** False when the solver failed and the old line was kept (none at present). */
+  solved: boolean;
+  /** Every street meeting the ring, clockwise by bearing. */
+  arms: CityRoundaboutArm[];
+  /** Mapped things inside the island (fountain, trees, monument, grass…). */
+  island: { osm: string; x: number; z: number; area?: number; tags: Record<string, string> }[];
+}
+
+export interface CityRoundaboutArm {
+  name: string | null;
+  highway: string;
+  /** Compass bearing from the ring centre to where the arm meets the ring. */
+  bearing: number;
+  /** Traffic flow relative to the ring. */
+  flow: "entry" | "exit" | "both";
+  lanesIn: number;
+  lanesOut: number;
+  /** Carriageway widths into / out of the ring (OSM width, or lanes × lane width); 0 if none. */
+  widthIn: number;
+  widthOut: number;
+  /** OSM maps the arm as two one-way ways (entry and exit) with a splitter island between. */
+  splitter: boolean;
+  /** First ~40 m of each of the arm's ways from the ring outwards, flat [x, z, ...]. */
+  lines: FlatXZ[];
+  osmWays: number[];
+  /** The route arrives by / leaves by this arm. */
+  onRoute: "entry" | "exit" | "entry-exit" | null;
 }

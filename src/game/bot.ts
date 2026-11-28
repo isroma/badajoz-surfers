@@ -119,6 +119,8 @@ export class Bot {
       speed: () => speed,
       layout: run.layoutFn,
       pickupValue: value,
+      // The human-like bot takes the obvious route: roofs only when they are clearly worth it.
+      roofCost: this.human ? 0.6 : 0,
     });
     if (typeof performance !== "undefined") this.lastPlanMs = performance.now() - t0;
     return action;

@@ -43,6 +43,8 @@ export interface CityData {
   furniture: CityFurniture[];
   pois: CityPoi[];
   terrain: CityTerrain;
+  /** Every roundabout the route goes round (13), with full ring geometry. Added in a later round. */
+  roundabouts: CityRoundabout[];
 }
 
 export interface CityMeta {
@@ -133,6 +135,7 @@ export interface CitySection {
   bridge: string | null;
   /** Width of the bridge deck from its OSM man_made=bridge outline. */
   deckWidth: number | null;
+  /** OSM tunnel, or a covered way (under an arch: Arco del Peso, Puerta de Palmas). */
   tunnel: boolean;
   /** OSM surface: asphalt, paving_stones, sett, paved… (null if untagged on a pedestrian way). */
   surface: string | null;
@@ -211,7 +214,7 @@ export interface CityBuilding {
   dist: number;
   /** The footprint reaches into the carriageway (data error, tight corner or a real arch). */
   passesThrough?: true;
-  /** …and the route runs through it on an OSM tunnel / building passage (an arch: Arco del Peso at Plaza Alta). */
+  /** …and the route runs through it on an OSM tunnel / covered passage (an arch: Arco del Peso at Plaza Alta, Puerta de Palmas). */
   passage?: true;
 }
 
@@ -320,6 +323,80 @@ export interface CityTerrain {
   note: string;
 }
 
+export interface CityRoundabout {
+  /** "rb-<slug of the ring's OSM name>" or "rb-<cx>-<cz>" when unnamed. */
+  id: string;
+  name: string | null;
+  cx: number;
+  cz: number;
+  /** DTM ground height at the centre, relative to the origin. */
+  h: number;
+  /** Radius of the OSM ring centreline (equivalent circle of the island it encloses). */
+  r: number;
+  /** Island kerb and outer kerb of the circulating carriageway. From r ± width/2, or from a
+   *  mapped island area (grass, garden, fountain…) when one reaches the kerb (`islandMapped`). */
+  rInner: number;
+  rOuter: number;
+  islandMapped: boolean;
+  /** Lanes on the ring (OSM `lanes`, else 2 on trunk/primary/secondary, 1 otherwise). */
+  lanes: number;
+  /** Carriageway width: OSM `width` or lanes × 3.5 m. */
+  width: number;
+  highway: string;
+  /** Reference radius of the runner's line on the ring: the outer (kerb) lane, rOuter − 1.75 m. */
+  rRef: number;
+  /** s range the route spends on the ring's OSM ways. */
+  entryS: number;
+  exitS: number;
+  /** Compass bearing of the running direction at entryS / exitS. */
+  entryBearing: number;
+  exitBearing: number;
+  /** Angle the route goes round the centre (degrees, anticlockwise on the map = positive). */
+  sweep: number;
+  /** s range of the re-solved fluid line (≈ 40 m before entry to 40 m after exit; passToS < passFromS
+   *  when it wraps through s = 0). */
+  passFromS: number;
+  passToS: number;
+  /** Limits the line was solved for: minimum radius and max |d curvature / ds| (1/m²). */
+  minRadiusTarget: number;
+  curvatureRateLimit: number;
+  /** Measured on the 2 m route samples within the pass (three consecutive samples / curvature over
+   *  ±2 samples differenced over ±1). */
+  minRadius: number;
+  maxCurvatureRate: number;
+  /** Minimum radius of the previous (OSM-following) line over the same pass. */
+  minRadiusBefore: number;
+  /** Largest |distance to centre − r| of the route on the ring ways. */
+  maxDeviation: number;
+  /** False when the solver failed and the old line was kept (none at present). */
+  solved: boolean;
+  /** Every street meeting the ring, clockwise by bearing. */
+  arms: CityRoundaboutArm[];
+  /** Mapped things inside the island (fountain, trees, monument, grass…). */
+  island: { osm: string; x: number; z: number; area?: number; tags: Record<string, string> }[];
+}
+
+export interface CityRoundaboutArm {
+  name: string | null;
+  highway: string;
+  /** Compass bearing from the ring centre to where the arm meets the ring. */
+  bearing: number;
+  /** Traffic flow relative to the ring. */
+  flow: "entry" | "exit" | "both";
+  lanesIn: number;
+  lanesOut: number;
+  /** Carriageway widths into / out of the ring (OSM width, or lanes × lane width); 0 if none. */
+  widthIn: number;
+  widthOut: number;
+  /** OSM maps the arm as two one-way ways (entry and exit) with a splitter island between. */
+  splitter: boolean;
+  /** First ~40 m of each of the arm's ways from the ring outwards, flat [x, z, ...]. */
+  lines: FlatXZ[];
+  osmWays: number[];
+  /** The route arrives by / leaves by this arm. */
+  onRoute: "entry" | "exit" | "entry-exit" | null;
+}
+
 /** Zone ids as used by the game (identical to `ZoneIdData`; kept local so src/city has no game deps). */
 export type ZoneId = ZoneIdData;
 
@@ -379,7 +456,7 @@ export function validateCity(json: unknown, source = "city.json"): CityData {
   }
   if (!((s[s.length - 1] as number) < lap)) fail("route.s must end before meta.lapLength (the lap is closed)");
   for (const v of pts) if (typeof v !== "number" || !Number.isFinite(v)) fail("route.points must be finite numbers");
-  for (const key of ["sections", "zones", "buildings", "landmarks", "water", "green", "squares", "parking", "trees", "furniture", "pois", "junctions", "streets"]) {
+  for (const key of ["sections", "zones", "buildings", "landmarks", "water", "green", "squares", "parking", "trees", "furniture", "pois", "junctions", "streets", "roundabouts"]) {
     if (!Array.isArray(json[key])) fail(`${key} must be an array`);
   }
   const contiguous = (key: string, list: unknown[]): void => {

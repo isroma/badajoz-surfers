@@ -17,6 +17,7 @@ import { hash01 } from "./shared";
 import { emitTree, type Species, type TreeSpec } from "./trees";
 import { buildRelief } from "./relief";
 import { pointInRing } from "./geo";
+import { ringsOf } from "./roundabouts";
 import { buildCar } from "../vehicles";
 
 const T_SPHERE = new THREE.SphereGeometry(1, 6, 4);
@@ -50,6 +51,10 @@ export function placementBlocked(ctx: CityCtx, ground: GroundLayer, x: number, z
   const onDeck = Math.abs(pr.lateral) < 40 && pr.lateral > lo - 0.5 && pr.lateral < hi + 0.5;
   if (!onDeck && (ground.river.at(x, z) || ground.heightAt(x, z) < ctx.waterLevel + 1.0)) return "water";
   for (const pb of ctx.buildingGrid.query(x, z, x, z)) if (!pb.upperRing && pointInRing(x, z, pb.ring)) return "building";
+  for (const r of ringsOf(ctx)) {
+    const d = Math.hypot(x - r.rb.cx, z - r.rb.cz);
+    if (d > r.rb.rInner - 0.3 && d < r.rb.rOuter + 0.5) return "ring";
+  }
   return null;
 }
 
@@ -139,24 +144,18 @@ export function allTrees(ctx: CityCtx, ground: GroundLayer): TreeSpec[] {
     const near = Math.abs(lat) < 70;
     out.push({ x, z, y, h: Math.max(3, h), r: Math.max(1, r), sp, seed, chunk: near ? ctx.chunkOf(pr.s) : -1 });
   }
-  // roundabout islands: palms and a ring of low shrubs where a local expects them
-  const seen = new Set<string>();
-  for (const st of ctx.track.stretches) {
-    const rb = st.section.roundabout;
-    if (!rb) continue;
-    const key = `${Math.round(rb.cx)},${Math.round(rb.cz)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const mid = (st.fromS + st.toS) / 2;
-    const fr = ctx.frame(mid);
-    const R = Math.hypot(fr.x - rb.cx, fr.z - rb.cz) + st.layout.left - 1.5;
-    if (R < 4) continue;
-    const n = R > 14 ? 5 : 3;
-    for (let k = 0; k < n; k++) {
-      const a = (k / n) * Math.PI * 2 + 0.4;
-      const d = k === 0 && n === 5 ? 0 : R * 0.45;
-      out.push({ x: rb.cx + Math.cos(a) * d, z: rb.cz + Math.sin(a) * d, y: fr.h + 0.3, h: 7 + hash01(k, 3) * 4, r: 3, sp: "palm", seed: hash01(k, Math.round(rb.cx)), chunk: ctx.chunkOf(mid) });
-    }
+  // roundabout islands: the mapped trees, else a few palms round the centre feature (big rings)
+  for (const ring of ringsOf(ctx)) {
+    const rb = ring.rb;
+    const mapped = rb.island.filter((i) => i.tags["natural"] === "tree" && Math.hypot(i.x - rb.cx, i.z - rb.cz) < rb.rInner - 1);
+    const spots = mapped.length ? mapped.map((i) => ({ x: i.x, z: i.z })) : rb.rInner > 6 ? Array.from({ length: rb.rInner > 14 ? 5 : 3 }, (_, k) => {
+      const a = (k / (rb.rInner > 14 ? 5 : 3)) * Math.PI * 2 + 0.4;
+      return { x: rb.cx + Math.cos(a) * rb.rInner * 0.6, z: rb.cz + Math.sin(a) * rb.rInner * 0.6 };
+    }) : [];
+    spots.slice(0, 12).forEach((q, k) => {
+      const seed = hash01(k, Math.round(rb.cx));
+      out.push({ x: q.x, z: q.z, y: ring.y + 0.16, h: 7 + seed * 4, r: 3, sp: seed < 0.6 ? "palm" : "washingtonia", seed, chunk: -1 });
+    });
   }
   treeCache = out.filter((t) => !placementBlocked(ctx, ground, t.x, t.z));
   treeCacheCtx = ctx;

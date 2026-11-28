@@ -6,6 +6,7 @@
  * de Espantaperros, the Puerta de Palmas, the Puente de Palmas (granite arches, cutwaters), the
  * Universidad and Autonomía bridges, the templete of Paseo de San Francisco, storks' nests.
  */
+import { buildRoundabout, ringsOf, type Ring } from "./roundabouts";
 import { pool as lightPool } from "./dressing";
 import * as THREE from "three";
 import type { CityLandmark } from "../../city/data";
@@ -148,13 +149,20 @@ export function buildLandmarks(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     const l = L(id);
     if (l?.footprint?.[0]) part(id, (bag) => simpleBridge(bag, ctx, cwRing(l.footprint![0]!), id === "puente-universidad" ? 1.3 : Math.max(-1.9, ctx.waterLevel + 8)));
   }
-  const rGroups = new Map<string, number[]>();
-  for (const st of ctx.track.stretches) if (st.section.roundabout) {
-    const k = tileOf(st.fromS);
-    rGroups.set(k, [...(rGroups.get(k) ?? []), st.fromS]);
+  // roundabouts: each ring one coherent object from city.roundabouts (roundabouts.ts), per tile
+  const inSpan = (x: number, z: number): boolean => {
+    const pr = ctx.track.project(x, z);
+    if (Math.abs(pr.lateral) > 40) return false;
+    const sp = ctx.routeSpan(pr.s);
+    return pr.lateral > sp.lo - 0.3 && pr.lateral < sp.hi + 0.3;
+  };
+  const rGroups = new Map<string, Ring[]>();
+  for (const r of ringsOf(ctx)) {
+    const k = `${Math.floor(r.rb.cx / 600)},${Math.floor(r.rb.cz / 600)}`;
+    rGroups.set(k, [...(rGroups.get(k) ?? []), r]);
   }
   for (const [k, list] of rGroups) part(`roundabouts-${k}`, (bag) => {
-    for (const fs of list) roundabouts(ctx, bag, ts, fs);
+    for (const r of list) buildRoundabout(ctx, bag, r, inSpan);
   });
   part("bar-el-puente", (bag, fac, top) => {
     barElPuente(ctx, bag, fac, top, ts);
@@ -1118,101 +1126,7 @@ function keepClear(ctx: CityCtx, x: number, z: number, r: number, nearS?: number
 }
 
 /** Roundabout islands: granite kerb ring, setts apron, lawn and a flower ring, a fountain on the big ones, chevron signs. */
-const roundaboutsDone = new WeakMap<CityCtx, Set<string>>();
-function roundabouts(ctx: CityCtx, bag: Bag, ts: TS, only: number): void {
-  let done = roundaboutsDone.get(ctx);
-  if (!done) roundaboutsDone.set(ctx, (done = new Set()));
-  const m = propMaterial(true);
-  const p = bag.props;
-  for (const st of ctx.track.stretches) {
-    const rb = st.section.roundabout;
-    if (!rb || st.fromS !== only) continue;
-    const key = `${Math.round(rb.cx)},${Math.round(rb.cz)}`;
-    if (done.has(key)) continue;
-    done.add(key);
-    let dmin = Infinity;
-    let hSum = 0;
-    let n = 0;
-    for (let s = st.fromS; s <= st.toS; s += 2) {
-      const f = ts.f(s);
-      dmin = Math.min(dmin, Math.hypot(f.x - rb.cx, f.z - rb.cz));
-      hSum += f.h;
-      n++;
-    }
-    // the island ends where the widest runnable layout round the ring begins (+ a margin)
-    let R = Infinity;
-    for (let s = st.fromS - 12; s <= st.toS + 12; s += 2) {
-      const f = ts.f(s);
-      const d = Math.hypot(f.x - rb.cx, f.z - rb.cz);
-      const wl = ctx.wideLayout(s);
-      let inner = wl.left;
-      for (const w of wl.sidewalks) inner = Math.min(inner, w.from);
-      for (const c of wl.carriageways) inner = Math.min(inner, c.from);
-      if (d < dmin + 25) R = Math.min(R, d + inner - 0.3);
-    }
-    if (R < 3) continue;
-    const y = hSum / Math.max(1, n);
-    const seg = Math.max(24, Math.round(R * 2.5));
-    const acc = bag.acc(m);
-    const kerbC = new THREE.Color(0xd2cec6);
-    const grass = new THREE.Color(0x7d9648);
-    const earth = new THREE.Color(0x8a6e4e);
-    const P = (a: number, r: number, yy: number): THREE.Vector3 => new THREE.Vector3(rb.cx + Math.cos(a) * r, yy, rb.cz + Math.sin(a) * r);
-    for (let k = 0; k < seg; k++) {
-      const a0 = (k / seg) * Math.PI * 2;
-      const a1 = ((k + 1) / seg) * Math.PI * 2;
-      // kerb face (outward) and top
-      acc.quad(P(a1, R, y - 0.3), P(a0, R, y - 0.3), P(a0, R, y + 0.22), P(a1, R, y + 0.22), [0, 0], [1, 0], [1, 1], [0, 1], kerbC);
-      acc.quad(P(a0, R, y + 0.22), P(a0, R - 0.3, y + 0.22), P(a1, R - 0.3, y + 0.22), P(a1, R, y + 0.22), [0, 0], [1, 0], [1, 1], [0, 1], kerbC, kerbC, kerbC, kerbC, new THREE.Vector3(0, 1, 0));
-      // lawn (slightly domed) with a ring of flowers / earth
-      const rings: [number, number, number, number, THREE.Color][] = [
-        [R - 0.3, R - 1.3, 0.24, 0.3, earth],
-        [R - 1.3, R * 0.25, 0.3, 0.55, grass],
-      ];
-      for (const [r0, r1, y0, y1, c] of rings) {
-        if (r1 <= 0.2 || r0 <= r1) continue;
-        acc.quad(P(a0, r0, y + y0), P(a0, r1, y + y1), P(a1, r1, y + y1), P(a1, r0, y + y0), [0, 0], [1, 0], [1, 1], [0, 1], c, c, c, c, new THREE.Vector3(0, 1, 0));
-      }
-      acc.tri(P(a0, R * 0.25, y + 0.55), new THREE.Vector3(rb.cx, y + 0.6, rb.cz), P(a1, R * 0.25, y + 0.55), [0, 0], [0, 0], [0, 0], grass, new THREE.Vector3(0, 1, 0));
-    }
-    // flowers on the earth ring
-    for (let k = 0; k < seg; k++) {
-      const a = (k / seg) * Math.PI * 2;
-      const q = P(a, R - 0.8, y + 0.3);
-      p.blob(q.x, q.y + 0.12, q.z, 0.28, 0.18, 0.28, k % 3 === 0 ? 0xe5484d : k % 3 === 1 ? 0x8db87a : 0xfcf8f1, m);
-    }
-    if (R > 15) {
-      // a round fountain basin with a jet
-      p.cyl(rb.cx, y + 0.5, rb.cz, R * 0.22, 0.6, 0xe2dccf, 20, m);
-      p.cyl(rb.cx, y + 1.05, rb.cz, R * 0.2, 0.06, 0x6c8fa0, 20, waterLike());
-      p.cyl(rb.cx, y + 1.05, rb.cz, 0.5, 1.2, 0xe2dccf, 10, m);
-      p.cone(rb.cx, y + 2.2, rb.cz, 0.35, 2.4, 0xdfeef5, 10, waterLike());
-    }
-    // chevron signs on the island facing the entry
-    const e = ts.f(st.fromS + 3);
-    const dx = rb.cx - e.x;
-    const dz = rb.cz - e.z;
-    const dl = Math.hypot(dx, dz) || 1;
-    const sx = e.x + (dx / dl) * (dmin - R + 1.0) + (dx / dl) * 0.5;
-    const sz = e.z + (dz / dl) * (dmin - R + 1.0) + (dz / dl) * 0.5;
-    const ry = Math.atan2(-dx, -dz);
-    p.cyl(sx, y + 0.2, sz, 0.05, 1.1, 0x8a9096, 6, m);
-    p.cyl(sx + Math.cos(ry) * 0.9, y + 0.2, sz - Math.sin(ry) * 0.9, 0.05, 1.1, 0x8a9096, 6, m);
-    p.push(xf(sx + Math.cos(ry) * 0.45, y + 1.55, sz - Math.sin(ry) * 0.45, 1, 1, 1, 0, ry, 0));
-    p.box(0, 0, 0, 1.9, 0.5, 0.04, 0x1d4f9e, m);
-    for (let k = 0; k < 3; k++) {
-      const x = -0.55 + k * 0.55;
-      p.add(T.box, xf(x - 0.06, 0.07, 0.025, 0.08, 0.26, 0.01, 0, 0, -0.6), 0xffffff, m);
-      p.add(T.box, xf(x - 0.06, -0.07, 0.025, 0.08, 0.26, 0.01, 0, 0, 0.6), 0xffffff, m);
-    }
-    p.pop();
-  }
-}
 
-let waterLikeMat: THREE.Material | null = null;
-function waterLike(): THREE.Material {
-  return (waterLikeMat ??= new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.85 }));
-}
 
 /**
  * Puerta de Palmas' opening: when the lap runs through the gate it is centred on the route, open

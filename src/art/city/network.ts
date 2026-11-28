@@ -18,6 +18,7 @@ import type { CityCtx } from "./context";
 import { Grid, pointInFlat } from "./geo";
 import type { GroundLayer } from "./ground";
 import { newFrame } from "./track";
+import { ARM_LEN, inRingFootprint, ringsOf, type Ring } from "./roundabouts";
 
 const UP = new THREE.Vector3(0, 1, 0);
 export const NEAR = 50;
@@ -81,16 +82,21 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
   // the roundabouts the route uses: each whole ring is ONE smooth annulus round the real centre and
   // radius (drawn below); the OSM ring ways off the route are not drawn as polylines (they gave
   // polygonal arcs clipped segment by segment into a saw-tooth where they met the route's ring)
-  const rings = routeRings(ctx);
+  // the roundabouts are whole objects (roundabouts.ts): their ring ways are not drawn here, and their
+  // arms' first ARM_LEN m beyond the outer kerb belong to them too
+  const rings = ringsOf(ctx);
   const isRingWay = (st: CityStreet): boolean => {
     if (!st.roundabout) return false;
     for (const r of rings) {
       let all = true;
-      for (let i = 0; i + 1 < st.pts.length && all; i += 2) if (Math.abs(Math.hypot(st.pts[i]! - r.cx, st.pts[i + 1]! - r.cz) - r.rc) > r.hw + 4) all = false;
+      for (let i = 0; i + 1 < st.pts.length && all; i += 2) if (Math.abs(Math.hypot(st.pts[i]! - r.rb.cx, st.pts[i + 1]! - r.rb.cz) - (r.rb.rInner + r.rb.rOuter) / 2) > (r.rb.rOuter - r.rb.rInner) / 2 + 4) all = false;
       if (all) return true;
     }
     return false;
   };
+  const armWays = new Map<number, Ring>();
+  for (const r of rings) for (const arm of r.rb.arms) for (const w of arm.osmWays) armWays.set(w, r);
+  let curArm: Ring | undefined;
   const streets = ctx.city.streets.filter((st) => !st.onRoute && !st.tunnel && !isRingWay(st));
   // index the near vehicle streets' centrelines (pavements must not cross another street)
   const segGrid = new Grid<Seg>(30);
@@ -129,6 +135,10 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     const c1x = (A0.x + A1.x + B1.x) / 3, c1z = (A0.z + A1.z + B1.z) / 3;
     const c2x = (A0.x + B1.x + B0.x) / 3, c2z = (A0.z + B1.z + B0.z) / 3;
     if (onRoute(c1x, c1z, 0.3) || onRoute(c2x, c2z, 0.3) || onRoute((c1x + c2x) / 2, (c1z + c2z) / 2, 0.3)) return;
+    const mxx = (c1x + c2x) / 2;
+    const mzz = (c1z + c2z) / 2;
+    if (inRingFootprint(ctx, mxx, mzz, 0.5)) return;
+    if (curArm && Math.hypot(mxx - curArm.rb.cx, mzz - curArm.rb.cz) < curArm.rb.rOuter + ARM_LEN) return;
     const cy = (A1.z - A0.z) * (B0.x - A0.x) - (A1.x - A0.x) * (B0.z - A0.z);
     if (cy < 0) acc.quad(A0, B0, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], col, col, col, col, UP);
     else acc.quad(A0, A1, B1, B0, [0, 0], [0, 0], [0, 0], [0, 0], col, col, col, col, UP);
@@ -139,6 +149,9 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     const B0 = new THREE.Vector3(b.x + nb.x * l, b.y, b.z + nb.y * l);
     const B1 = B0.clone().setY(b.y + KERB_H);
     const A1 = A0.clone().setY(a.y + KERB_H);
+    const kx = (A0.x + B0.x) / 2;
+    const kz = (A0.z + B0.z) / 2;
+    if (onRoute(kx, kz, 0.3) || inRingFootprint(ctx, kx, kz, 0.5) || (curArm && Math.hypot(kx - curArm.rb.cx, kz - curArm.rb.cz) < curArm.rb.rOuter + ARM_LEN)) return;
     // face the road centre (one winding)
     const n = new THREE.Vector3().subVectors(B0, A0).cross(new THREE.Vector3(0, 1, 0));
     const towards = new THREE.Vector3(a.x - A0.x, 0, a.z - A0.z);
@@ -157,6 +170,7 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     for (let i = 0; i + 1 < st.pts.length; i += 2) raw.push({ x: st.pts[i]!, z: st.pts[i + 1]! });
     if (raw.length < 2) return;
     useTile(raw[0]!.x, raw[0]!.z);
+    curArm = armWays.get(st.osmWay);
     const w = widthOf(st);
     // 8 m pieces, and 2 m pieces only where the street comes within 30 m of the route, so a side
     // street stops cleanly at the route's span without densifying whole streets
@@ -166,7 +180,7 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
     for (let i = 0; i + 1 < coarse.length; i++) {
       const a = coarse[i]!;
       const b = coarse[i + 1]!;
-      const n = Math.min(latAt[i]!, latAt[i + 1]!) < 30 ? Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 2)) : 1;
+      const n = Math.min(latAt[i]!, latAt[i + 1]!) < 20 ? Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 2)) : 1;
       for (let k = 0; k < n; k++) pts.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n });
     }
     if (coarse.length) pts.push(coarse[coarse.length - 1]!);
@@ -244,52 +258,6 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
       along += len;
     }
   });
-
-  // the rings: the arcs the route does not travel, as smooth annulus sectors under the route's own
-  // ring (overlapping it a little), an inner kerb line and an outer raised pavement with openings
-  for (const r of rings) {
-    useTile(r.cx, r.cz);
-    const n = Math.max(48, Math.ceil((2 * Math.PI * r.rc) / 1.5));
-    const P = (a: number, rad: number, dy: number): THREE.Vector3 => new THREE.Vector3(r.cx + Math.cos(a) * rad, r.y + dy, r.cz + Math.sin(a) * rad);
-    const covered: boolean[] = [];
-    for (let k = 0; k < n; k++) {
-      const a = (k / n) * Math.PI * 2;
-      // a sector is drawn only when its whole width lies outside the route's span (no overlap)
-      const ca = Math.cos(a);
-      const sa = Math.sin(a);
-      covered.push([r.rc - r.hw, r.rc, r.rc + r.hw].some((rad) => onRoute(r.cx + ca * rad, r.cz + sa * rad, 0.3)));
-    }
-    const draw = covered.map((c) => !c);
-    const cKerbD = new THREE.Color(PAL.kerb);
-    for (let k = 0; k < n; k++) {
-      if (!draw[k]) continue;
-      const a0 = (k / n) * Math.PI * 2;
-      const a1 = ((k + 1) / n) * Math.PI * 2;
-      const quad = (acc: Acc, r0: number, r1: number, dy: number, c: THREE.Color): void => {
-        // same winding rule as band(): facing up
-        const A0 = P(a0, r0, dy), A1 = P(a0, r1, dy), B1 = P(a1, r1, dy), B0 = P(a1, r0, dy);
-        const cy = (A1.z - A0.z) * (B0.x - A0.x) - (A1.x - A0.x) * (B0.z - A0.z);
-        if (cy < 0) acc.quad(A0, B0, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], c, c, c, c, UP);
-        else acc.quad(A0, A1, B1, B0, [0, 0], [0, 0], [0, 0], [0, 0], c, c, c, c, UP);
-      };
-      quad(road, r.rc - r.hw, r.rc + r.hw, -0.03, cRoad);
-      if (covered[k]) continue;
-      quad(paint, r.rc - r.hw - 0.05, r.rc - r.hw + 0.12, -0.02, cWhite);
-      const am = (a0 + a1) / 2;
-      const ox = r.cx + Math.cos(am) * (r.rc + r.hw + 1.2);
-      const oz = r.cz + Math.sin(am) * (r.rc + r.hw + 1.2);
-      if (inOtherStreet(ox, oz, -1, 0.3) || onRoute(ox, oz, 0.3)) continue;
-      quad(raised, r.rc + r.hw, r.rc + r.hw + 2.4, KERB_H + 0.01, cPave);
-      {
-        // kerb face looking in at the carriageway
-        const A0 = P(a0, r.rc + r.hw, -0.03), B0 = P(a1, r.rc + r.hw, -0.03);
-        const A1 = P(a0, r.rc + r.hw, KERB_H + 0.01), B1 = P(a1, r.rc + r.hw, KERB_H + 0.01);
-        const n = new THREE.Vector3().subVectors(B0, A0).cross(UP);
-        if (n.dot(new THREE.Vector3(r.cx - A0.x, 0, r.cz - A0.z)) > 0) raised.quad(A0, B0, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], cKerbD);
-        else raised.quad(B0, A0, A1, B1, [0, 0], [0, 0], [0, 0], [0, 0], cKerbD);
-      }
-    }
-  }
 
   // zebra crossings mapped on the near side streets
   for (const fu of ctx.city.furniture) {
@@ -384,41 +352,4 @@ export function buildNetwork(ctx: CityCtx, ground: GroundLayer): THREE.Group {
   const sm = sq.mesh(decalMaterial(1), "plazas");
   if (sm) g.add(sm);
   return g;
-}
-
-export interface RouteRing {
-  cx: number;
-  cz: number;
-  /** centreline radius of the carriageway */
-  rc: number;
-  /** half width of the carriageway */
-  hw: number;
-  /** mean height of the route round the ring */
-  y: number;
-}
-
-/** The roundabouts the route goes round: real centre and radius, the route's ring width and height. */
-export function routeRings(ctx: CityCtx): RouteRing[] {
-  const out: RouteRing[] = [];
-  const f = newFrame();
-  for (const st of ctx.track.stretches) {
-    const rb = st.section.roundabout;
-    if (!rb || out.some((o) => Math.hypot(o.cx - rb.cx, o.cz - rb.cz) < 1)) continue;
-    const lay = ctx.track.layoutAt((st.fromS + st.toS) / 2);
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (const c of lay.carriageways) {
-      lo = Math.min(lo, c.from);
-      hi = Math.max(hi, c.to);
-    }
-    const hw = Number.isFinite(lo) ? (hi - lo) / 2 : (st.section.width ?? 7) / 2;
-    let h = 0;
-    let n = 0;
-    for (let s = st.fromS; s <= st.toS; s += 2) {
-      h += ctx.track.frameAt(s, f).h;
-      n++;
-    }
-    out.push({ cx: rb.cx, cz: rb.cz, rc: rb.r, hw, y: h / Math.max(1, n) });
-  }
-  return out;
 }

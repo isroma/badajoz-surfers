@@ -16,7 +16,7 @@ import { KERB } from "./road";
 const SUN = new THREE.Color(PAL.sun);
 const WHITE = new THREE.Color(PAL.white);
 
-function chevronDraw(dir: "left" | "right"): (ctx: CanvasRenderingContext2D, w: number, h: number) => void {
+export function chevronDraw(dir: "left" | "right"): (ctx: CanvasRenderingContext2D, w: number, h: number) => void {
   return (ctx, w, h) => {
     ctx.fillStyle = "#ffc53d";
     ctx.fillRect(0, 0, w, h);
@@ -103,8 +103,10 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
   };
   // --- turns -----------------------------------------------------------------------------------
   for (const t of tr.turns ?? []) {
-    const straightRing = t.roundabout && Math.abs(t.angle) < 20;
-    const dir: "left" | "right" = t.roundabout ? "left" : t.direction;
+    // roundabouts carry their own island signs and chevrons (roundabouts.ts)
+    if (t.roundabout || t.direction === "straight") continue;
+    const straightRing = false;
+    const dir: "left" | "right" = t.direction;
     // chevron boards along the bend, every 9 m, on the outside (island side on roundabouts)
     const a = t.roundabout && t.entryS !== null ? t.entryS : t.s;
     const b = t.roundabout && t.exitS !== null ? t.exitS : t.endS;

@@ -177,9 +177,73 @@ def profile_png(c, P, s):
     plt.close(fig)
 
 
+def ring_png(c, P, s, ax, rb):
+    from matplotlib.collections import LineCollection as LC
+    cx, cz = rb["cx"], rb["cz"]
+    span = rb["rOuter"] + 45
+    for b in c["buildings"]:
+        r = pts(b["ring"])
+        if abs(r[:, 0].mean() - cx) < span + 30 and abs(r[:, 1].mean() - cz) < span + 30:
+            ax.fill(r[:, 0], r[:, 1], color="0.88", lw=0)
+    th = np.linspace(0, 2 * np.pi, 200)
+    ax.fill(cx + rb["rOuter"] * np.cos(th), cz + rb["rOuter"] * np.sin(th), color="0.75", lw=0)
+    ax.fill(cx + rb["rInner"] * np.cos(th), cz + rb["rInner"] * np.sin(th), color="#b7dfa5" if rb["islandMapped"] else "#d9ead3", lw=0)
+    ax.plot(cx + rb["r"] * np.cos(th), cz + rb["r"] * np.sin(th), "w--", lw=0.8)
+    for a in rb["arms"]:
+        for ln in a["lines"]:
+            q = pts(ln)
+            ax.plot(q[:, 0], q[:, 1], color={"entry": "tab:blue", "exit": "tab:red", "entry-exit": "purple"}.get(a["onRoute"], "0.45"), lw=2.5 if a["onRoute"] else 1.5)
+        q = pts(a["lines"][0])[-1]
+        ax.text(q[0], q[1], f"{a['name'] or a['highway']} ({a['lanesIn']}/{a['lanesOut']}{', splitter' if a['splitter'] else ''})", fontsize=6)
+    for it in rb["island"]:
+        ax.plot(it["x"], it["z"], "g^" if it["tags"].get("natural") == "tree" else "bs", ms=4)
+    def in_rng(a, b):
+        return (s >= a) & (s <= b) if a <= b else (s >= a) | (s <= b)
+    m = in_rng(rb["passFromS"] - 30, rb["passToS"] + 30)
+    idx = np.where(m)[0]
+    if len(idx) and idx[0] == 0 and idx[-1] == len(s) - 1:
+        idx = np.r_[idx[idx > len(s) // 2], idx[idx <= len(s) // 2]]
+    Q = P[idx, :2]
+    a_, b_, c_ = np.roll(P[:, :2], 1, 0), P[:, :2], np.roll(P[:, :2], -1, 0)
+    ab, bc, ca = b_ - a_, c_ - b_, a_ - c_
+    cross = ab[:, 0] * bc[:, 1] - ab[:, 1] * bc[:, 0]
+    r1 = np.hypot(*ab.T) * np.hypot(*bc.T) * np.hypot(*ca.T) / (2 * np.abs(cross) + 1e-12)
+    segs = np.stack([Q[:-1], Q[1:]], 1)
+    lc = LC(segs, cmap="RdYlGn", norm=plt.Normalize(10, 40), linewidths=2.5, zorder=5)
+    lc.set_array(np.minimum(r1[idx][:-1], 40))
+    ax.add_collection(lc)
+    ax.annotate("", xy=Q[min(25, len(Q) - 1)], xytext=Q[0], arrowprops=dict(arrowstyle="->", lw=1.5), zorder=6)
+    ax.set_xlim(cx - span, cx + span)
+    ax.set_ylim(cz - span, cz + span)
+    flip(ax)
+    ax.set_title(f"{rb['name'] or rb['id']}: r {rb['r']} (kerbs {rb['rInner']}–{rb['rOuter']}), {rb['lanes']} lanes\n"
+                 f"min R {rb['minRadiusBefore']} -> {rb['minRadius']} m, sweep {rb['sweep']}°", fontsize=8)
+
+
+def rings_png(c, P, s):
+    rbs = c.get("roundabouts", [])
+    cols = 4
+    rows = (len(rbs) + cols - 1) // cols
+    fig, axs = plt.subplots(rows, cols, figsize=(cols * 6, rows * 6), dpi=90)
+    for ax in axs.ravel():
+        ax.axis("off")
+    for ax, rb in zip(axs.ravel(), rbs):
+        ax.axis("on")
+        ring_png(c, P, s, ax, rb)
+        f2, a2 = plt.subplots(figsize=(8, 8), dpi=110)
+        ring_png(c, P, s, a2, rb)
+        f2.savefig(CACHE / f"ring-{rb['id']}.png", bbox_inches="tight")
+        plt.close(f2)
+    fig.tight_layout()
+    fig.savefig(CACHE / "rings.png", bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     c, P, s = load()
-    which = sys.argv[1:] or ["route", "profile"] + [z["id"] for z in c["zones"]]
+    which = sys.argv[1:] or ["route", "profile", "rings"] + [z["id"] for z in c["zones"]]
+    if "rings" in which:
+        rings_png(c, P, s)
     if "route" in which:
         route_png(c, P[:, :2], s)
     if "profile" in which:

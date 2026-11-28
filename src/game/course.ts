@@ -77,6 +77,69 @@ export interface Course {
    * `wallsBetween`.
    */
   walls(): Walls;
+  /**
+   * The route's bendiness, per metre (built on first use): |curvature| averaged over 15 m, and
+   * the pace factor it gives (see `paceFactor`), eased over PACE_EASE m.
+   */
+  bends(): Bends;
+}
+
+export interface Bends {
+  /** Smoothed |curvature| (1/m) per metre of the lap. */
+  readonly curvature: Float32Array;
+  /** Speed factor per metre of the lap (PACE_MIN..1). */
+  readonly pace: Float32Array;
+}
+
+/** Tight bends slow the run down to this factor (at radius PACE_TIGHT m), not at all from PACE_OPEN m. */
+export const PACE_MIN = 0.85;
+export const PACE_TIGHT = 12;
+export const PACE_OPEN = 35;
+/** The pace eases over this many metres. */
+export const PACE_EASE = 16;
+
+/** Speed factor for a bend of radius `r` (m). Pure. */
+export function paceFactor(r: number): number {
+  const t = Math.min(1, Math.max(0, (PACE_OPEN - r) / (PACE_OPEN - PACE_TIGHT)));
+  return 1 - (1 - PACE_MIN) * t * t * (3 - 2 * t);
+}
+
+function buildBends(track: Track): Bends {
+  const L = track.lapLength;
+  const n = Math.ceil(L) + 1;
+  const raw = new Float32Array(n);
+  for (let i = 0; i < n; i++) raw[i] = Math.abs(track.frameAt(i).curvature);
+  // Moving averages over the lap (wrapping): 15 m of curvature, then PACE_EASE m of pace.
+  const average = (src: Float32Array, half: number): Float32Array => {
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let j = -half; j <= half; j++) sum += src[(((i + j) % (n - 1)) + (n - 1)) % (n - 1)] ?? 0;
+      out[i] = sum / (2 * half + 1);
+    }
+    return out;
+  };
+  const curvature = average(raw, 7);
+  const pace0 = new Float32Array(n);
+  for (let i = 0; i < n; i++) pace0[i] = paceFactor(1 / Math.max(1e-6, curvature[i] ?? 0));
+  // Ease: the slowest of the coming PACE_EASE/2 m, then a moving average (slows before the bend).
+  const ahead = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 1;
+    for (let j = 0; j <= PACE_EASE / 2; j++) m = Math.min(m, pace0[(i + j) % (n - 1)] ?? 1);
+    ahead[i] = m;
+  }
+  return { curvature, pace: average(ahead, PACE_EASE / 2) };
+}
+
+/** Value of a per-metre lap table at distance s (any lap), linearly interpolated. */
+export function tableAt(table: Float32Array, lapLength: number, s: number): number {
+  const w = ((s % lapLength) + lapLength) % lapLength;
+  const i = Math.floor(w);
+  const f = w - i;
+  const a = table[i] ?? 0;
+  const b = table[Math.min(table.length - 1, i + 1)] ?? a;
+  return a + (b - a) * f;
 }
 
 /**
@@ -228,6 +291,7 @@ export function buildCourse(city: CityData, track: Track): Course {
     list.push(i);
   }
   let walls: Walls | null = null;
+  let bends: Bends | null = null;
   const trees: { s: number; lateral: number; r: number }[] = [];
   const T = city.trees;
   for (let i = 0; i + 4 < T.length; i += 5) {
@@ -296,6 +360,7 @@ export function buildCourse(city: CityData, track: Track): Course {
     turns: buildTurns(track),
     track,
     walls: () => (walls ??= buildWalls(city, track)),
+    bends: () => (bends ??= buildBends(track)),
   };
 }
 
@@ -373,6 +438,8 @@ export function getCourse(): Course | null {
 /** Called whenever the course changes (tuning keeps its zone tables in sync). */
 export function onCourse(listener: (c: Course | null) => void): void {
   listeners.push(listener);
+  // A module loaded after the course was installed still gets it.
+  if (current) listener(current);
 }
 
 /** Entries of a sorted-by-s list within [from, to) of the unbounded distance (wraps laps). */

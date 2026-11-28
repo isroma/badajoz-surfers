@@ -8,7 +8,7 @@ import { Run } from "./run";
 import { TrackSpace } from "./space";
 import { footprintOf } from "./traffic";
 import { TrackGenerator } from "./track";
-import { LAP_LENGTH, TICK, speedAt, zoneAt } from "./tuning";
+import { LAP_LENGTH, TICK, paceAt, speedAt, zoneAt } from "./tuning";
 import { useRealCourse } from "./test-course";
 
 const course = useRealCourse();
@@ -41,10 +41,12 @@ describe("the real course", () => {
   });
 
   it("speed builds slowly over the 8.2 km lap: 15 m/s by 2 km, ~21 by 5 km, faster on lap 2", () => {
-    expect(speedAt(0)).toBeCloseTo(11, 6);
-    expect(speedAt(2000)).toBeCloseTo(15, 1);
-    expect(speedAt(5000)).toBeGreaterThan(20);
-    expect(speedAt(5000)).toBeLessThan(23);
+    // (the planned ramp; tight bends take PACE_MIN..1 of it: see paceAt)
+    const ramp = (d: number): number => speedAt(d) / paceAt(d);
+    expect(ramp(0)).toBeCloseTo(11, 6);
+    expect(ramp(2000)).toBeCloseTo(15, 1);
+    expect(ramp(5000)).toBeGreaterThan(20);
+    expect(ramp(5000)).toBeLessThan(23);
     expect(speedAt(LAP_LENGTH + 100)).toBeGreaterThan(speedAt(LAP_LENGTH - 100));
   });
 

@@ -10,8 +10,8 @@
  * has heading + the lap's total turning (±2π).
  * curvature = dθ/ds signed, + when turning towards the runner's right.
  */
-import type { CityData, CitySection, ZoneId } from "./data";
-import { buildStretches, mapLanes, type LaneLayout, type LaneTransition } from "./lanes";
+import type { CityData, CityRoundabout, CitySection, ZoneId } from "./data";
+import { buildStretches, mapLanes, ringLayoutFromData, type LaneLayout, type LaneTransition } from "./lanes";
 import { findTurns, TURN_LOOKAHEAD, type Turn } from "./turns";
 import { computeWalls, fitStretches, type Pinch, type Walls } from "./walls";
 
@@ -40,6 +40,14 @@ export interface TrackZone {
   id: ZoneId;
   fromS: number;
   toS: number;
+}
+
+export interface TrackRoundabout extends CityRoundabout {
+  /** s range where the route is on the ring arc (= entryS..exitS); the ring layout applies here. */
+  arcFromS: number;
+  arcToS: number;
+  /** Indices into track.stretches of the ring arc's stretch(es). */
+  stretchIndices: number[];
 }
 
 export interface TrackStretch {
@@ -81,6 +89,8 @@ export interface Track {
    * transitions; null if it continues for at least LANE_END_LOOKAHEAD m.
    */
   laneEndsAhead(s: number, laneIndex: number): number | null;
+  /** The roundabouts of the lap (city.roundabouts) with their ring-arc s range and stretches. */
+  readonly roundabouts: readonly TrackRoundabout[];
   /** Nearest building wall per metre on each side (see walls.ts; also via wallClearance()). */
   readonly walls: Walls;
   /** Short places where a wall still reaches into the outer lane (the art clips that face). */
@@ -336,7 +346,26 @@ export function createTrack(city: CityData): Track {
   const secFrom = sections.map((x) => x.fromS);
   // Lanes are fitted between the real walls (walls.ts).
   const walls = computeWalls(city, lap, project);
-  const fitted = fitStretches(buildStretches(sections, lap), walls, city.buildings);
+  const rbFor = (sec: CitySection): CityRoundabout | undefined =>
+    (city.roundabouts ?? []).find((r) => sec.fromS < r.exitS - 0.5 && sec.toS > r.entryS + 0.5);
+  const ringFor = (sec: CitySection, approach: LaneLayout): LaneLayout | null => {
+    const rb = rbFor(sec);
+    if (!rb) return null;
+    const f = createFrame();
+    let dMin = Infinity;
+    let sum = 0;
+    let cnt = 0;
+    for (let s = rb.entryS; s <= rb.exitS; s += 0.5) {
+      frameAt(s, f);
+      const dd = Math.hypot(f.x - rb.cx, f.z - rb.cz);
+      dMin = Math.min(dMin, dd);
+      sum += dd;
+      cnt++;
+    }
+    // dMin less a little: the curve between samples can come slightly closer.
+    return ringLayoutFromData({ lanes: rb.lanes, rInner: rb.rInner, rOuter: rb.rOuter, dMin: dMin - 0.05, dMean: sum / Math.max(1, cnt) }, approach);
+  };
+  const fitted = fitStretches(buildStretches(sections, lap, ringFor), walls, city.buildings);
   const stretches = fitted.stretches;
   const pinches = fitted.pinches;
   const stFrom = stretches.map((x) => x.fromS);
@@ -383,7 +412,13 @@ export function createTrack(city: CityData): Track {
     return null;
   }
 
-  const turns = findTurns(lap, frameAt, sections, streetNameAt, createFrame());
+  const roundabouts: TrackRoundabout[] = (city.roundabouts ?? []).map((rb) => ({
+    ...rb,
+    arcFromS: rb.entryS,
+    arcToS: rb.exitS,
+    stretchIndices: stretches.flatMap((st, i) => (st.fromS < rb.exitS - 0.5 && st.toS > rb.entryS + 0.5 ? [i] : [])),
+  }));
+  const turns = findTurns(lap, frameAt, roundabouts, streetNameAt, createFrame());
   function turnAhead(s: number): Turn | null {
     const w = wrap(s);
     let best: Turn | null = null;
@@ -419,6 +454,7 @@ export function createTrack(city: CityData): Track {
     },
     streetNameAt,
     transitions,
+    roundabouts,
     walls,
     pinches,
     laneEndsAhead,

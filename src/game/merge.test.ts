@@ -125,10 +125,12 @@ describe("lane tapers, passages and guides on the real lap", () => {
       if (mid - 1 > st.fromS) expect(laneShownAt(track, m.lane, mid - 1)).toBe(true);
       expect(laneShownAt(track, m.lane, Math.min(m.end - 0.1, mid + 1))).toBe(false);
       expect(laneShownAt(track, m.into, mid + 1)).toBe(true);
-      // Every taper is at least MERGE_LENGTH long (the short ring stretch borrows the one before).
-      expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
+      // Every taper is at least MERGE_LENGTH long (the short ring stretch borrows the one before);
+      // a ring lane that begins and ends in the ring is never offered (zero length at its start).
+      if (m.s1 === m.s0) expect(m.s0).toBe(st.fromS);
+      else expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
     }
-    const short = merges(track).find((m) => Math.abs(m.end - 3132) < 2)!;
+    const short = merges(track).find((m) => track.stretches[m.fromStretch]!.layout.ids[m.lane] === "own-2" && track.stretches[m.fromStretch]!.section.roundabout !== null)!;
     expect(short.s0).toBeLessThan(track.stretches[short.fromStretch]!.fromS);
   });
 
