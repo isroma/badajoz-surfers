@@ -195,8 +195,9 @@ export function buildPermanentDressing(ctx: CityCtx, ground: GroundLayer): THREE
     const cell = (x: number, z: number): string => `${Math.floor(x / 30)},${Math.floor(z / 30)}`;
     for (const t of trees) near.set(cell(t.x, t.z), (near.get(cell(t.x, t.z)) ?? 0) + 1);
     const occupied = (x: number, z: number): boolean => {
-      for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) if (near.get(`${Math.floor(x / 30) + dx},${Math.floor(z / 30) + dz}`)) return true;
-      return ctx.buildingGrid.query(x - 22, z - 22, x + 22, z + 22).size > 0;
+      if ((near.get(`${Math.floor(x / 30)},${Math.floor(z / 30)}`) ?? 0) >= 2) return true; // already planted
+      // (inside a footprint is rejected by placementBlocked; beside a block a plot still gets shrubs)
+      return false;
     };
     const f = ctx.frame(0);
     for (let s = 0; s < ctx.track.lapLength; s += 12) {
@@ -214,8 +215,10 @@ export function buildPermanentDressing(ctx: CityCtx, ground: GroundLayer): THREE
         const seed = hash01(k, 47);
         if (ground.green.at(x, z)) {
           if (seed < 0.55) extra.push({ x, z, y, h: 6 + seed * 6, r: 3, sp: speciesFor(ctx, ground, x, z, 8, false, s, lat, ctx.track.zoneAt(s).id, seed), seed, chunk: -1 });
-        } else if (seed < 0.45) {
+        } else if (seed < 0.6) {
           extra.push({ x, z, y, h: 1.2 + seed * 1.6, r: 1.5, sp: "shrub", seed, chunk: -1 });
+          // now and then an olive / pine on the dry plot
+          if (seed < 0.15) extra.push({ x: x + f.tx * 5, z: z + f.tz * 5, y, h: 5 + seed * 8, r: 2.5, sp: "pine", seed, chunk: -1 });
         }
       }
     }

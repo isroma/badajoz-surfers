@@ -11,7 +11,7 @@ import type { Bag, TS } from "./bag";
 import { flatMaterial, paintMaterial, signMaterial, signSlot } from "./cmats";
 import type { CityCtx } from "./context";
 import { mergeEdgeAt, mergesIn } from "./merges";
-import { onAnyCarriageway } from "./roundabouts";
+import { inRingFootprint, onAnyCarriageway } from "./roundabouts";
 import { laneOffsetAt } from "../../game/lanes";
 import { KERB } from "./road";
 
@@ -182,7 +182,9 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
     const b = Math.min(m.s1, s1);
     if (b - a < 0.5) continue;
     const road = m.kind === "road";
-    const raisedKind = m.kind === "sidewalk" || m.kind === "median";
+    // raised only beside a carriageway (on a pedestrian street the floor is flush), and never
+    // inside a ring's footprint (the ring object draws its own lanes)
+    const raisedKind = (m.kind === "sidewalk" || m.kind === "median") && m.layout.carriageways.length > 0;
     const y = raisedKind ? KERB + 0.06 : 0.016;
     const colRoad = new THREE.Color(PAL.roadOff);
     const colWalk = m.kind === "median" ? new THREE.Color(PAL.grass) : new THREE.Color(PAL.pavement);
@@ -192,6 +194,10 @@ export function buildGuides(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: numb
       const t = Math.min(b, s + step);
       const e0 = mergeEdgeAt(m, s);
       const e1 = mergeEdgeAt(m, t);
+      {
+        const q = ts.p((s + t) / 2, (e0 + m.edgeFull) / 2, 0);
+        if (inRingFootprint(ctx, q.x, q.z)) continue; // the ring object owns that ground
+      }
       // a road lane funnelling into a street without carriageway (shared / pedestrian street) is
       // drawn in that street's surface, not in asphalt tones
       const lw = Math.min(e0, m.edgeFull);

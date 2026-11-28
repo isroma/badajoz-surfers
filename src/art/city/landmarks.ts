@@ -12,7 +12,7 @@ import * as THREE from "three";
 import type { CityLandmark } from "../../city/data";
 import { Acc } from "./acc";
 import { Bag, TS, samples } from "./bag";
-import { drawLabel, flatMaterial, signMaterial, signSlot, glassMaterial, glowMaterial, metalMaterial, propMaterial } from "./cmats";
+import { drawLabel, flatMaterial, signMaterial, signSlot, glassMaterial, glowMaterial, metalMaterial, paintMaterial, propMaterial } from "./cmats";
 import { PAL } from "../palette";
 import type { CityCtx } from "./context";
 import { centroid, obb, pointInFlat, ringPoints, signedArea, type P2 } from "./geo";
@@ -338,20 +338,29 @@ function puenteReal(ctx: CityCtx, bag: Bag, ts: TS): void {
   // the shaft: narrow across the deck (fits the median), long along it, tapering, down to the river
   const water = ctx.waterLevel;
   p.push(xf(base.x, 0, base.z, 1, 1, 1, 0, heading, 0));
-  const segs = 12;
+  // a slender leg inside the median up to 6 m (nothing solid in a lane below 5.5 m), then the mast
+  // flares to a heavy white concrete body (≈ 5 m across, 3.5 m along at 8 m) tapering to ≈ 2.5 m at
+  // the top, under a capital / anchor block where the stays attach
+  const LEG = 6;
+  p.box(0, base.y + LEG / 2, 0, halfW * 2, LEG + 0.02, 3.5, CONCRETE, m);
+  const segs = 14;
   for (let k = 0; k < segs; k++) {
-    const y0 = base.y + (H * k) / segs;
-    const y1 = base.y + (H * (k + 1)) / segs;
-    const t0 = k / segs;
-    const len = 5.6 - 2.4 * t0;
-    // in the median at deck level, broadening above the clearance into the real mast's bulk
-    const wide = y0 - base.y > 6 ? Math.max(halfW * 2, 2.6 - 1.0 * t0) : halfW * 2;
-    p.box(0, (y0 + y1) / 2, 0, wide, y1 - y0 + 0.02, len, CONCRETE, m);
+    const y0 = base.y + LEG + ((H - LEG) * k) / segs;
+    const y1 = base.y + LEG + ((H - LEG) * (k + 1)) / segs;
+    const ym = (y0 + y1) / 2 - base.y;
+    // flare 6 → 8 m, then a gentle taper to the top
+    const flare = Math.min(1, (ym - LEG) / 2);
+    const taper = Math.max(0, (ym - 8) / Math.max(1, H - 8));
+    const across = halfW * 2 + (5 - halfW * 2) * flare - (5 - 2.5) * taper;
+    const along = 3.5 - 0.8 * taper;
+    p.box(0, (y0 + y1) / 2, 0, across, y1 - y0 + 0.02, along, k % 2 ? CONCRETE : 0xf4f2ec, m);
   }
-  // crown and anchorage zone
-  p.box(0, base.y + H + 0.6, 0, halfW * 1.7, 1.2, 3.0, CONCRETE_SHADE, m);
-  p.box(0, base.y + H - 12, 0, halfW * 1.85, 22, 3.4, 0xe6e3dc, m);
-  p.box(0, base.y + H + 1.5, 0, 0.5, 0.5, 0.5, 0xff3b30, glowMaterial());
+  // the flare's underside (shade) so the body reads as one heavy form above the lanes
+  p.box(0, base.y + LEG + 0.3, 0, halfW * 2 + (5 - halfW * 2) * 0.15, 0.6, 3.55, CONCRETE_SHADE, m);
+  // capital / anchor block, beacon
+  p.box(0, base.y + H + 1.6, 0, 3.0, 3.2, 3.8, 0xe9e6df, m);
+  p.box(0, base.y + H + 3.3, 0, 3.3, 0.3, 4.1, CONCRETE_SHADE, m);
+  p.box(0, base.y + H + 3.8, 0, 0.5, 0.5, 0.5, 0xff3b30, glowMaterial());
   // below the deck: the pier down to the river bed, wider
   p.box(0, (water - 3 + base.y - 2.6) / 2, 0, 6, base.y - 2.6 - water + 3, 7, CONCRETE_SHADE, m);
   p.pop();
@@ -377,12 +386,14 @@ function puenteReal(ctx: CityCtx, bag: Bag, ts: TS): void {
         const y = anchor.y + (yTop - anchor.y) * t;
         const z = anchor.z + (az - anchor.z) * t;
         const pr = ctx.track.project(x, z, sa);
-        if (y - ctx.track.frameAt(pr.s).h >= 5) break;
+        if (y - ctx.track.frameAt(pr.s).h >= 5.5) break;
         const lw = ctx.wideLayout(pr.s);
         if (lw.offsets.some((o, j) => Math.abs(pr.lateral - o) < (lw.widths[j] ?? 0) / 2 + 0.3)) clear = false;
       }
       if (!clear) continue;
-      p.beam([anchor.x, anchor.y, anchor.z], [ax, yTop, az], 0.035, 0xf6f6f2, m, 4);
+      // ≈ 15 cm pale cable with a darker underside line: the fan reads from 300 m
+      p.beam([anchor.x, anchor.y, anchor.z], [ax, yTop, az], 0.075, 0xf8f8f4, m, 4);
+      p.beam([anchor.x, anchor.y - 0.07, anchor.z], [ax, yTop - 0.07, az], 0.05, 0xa9aeb3, m, 4);
       p.box(anchor.x, anchor.y - 0.15, anchor.z, 0.35, 0.4, 0.5, CONCRETE_SHADE, m);
     }
   }
@@ -836,7 +847,8 @@ function puentePalmas(ctx: CityCtx, bag: Bag, fac: Acc, ts: TS): void {
         texWall(fac, B2.x, B2.z, B2.y - 1.2, B2.y + 1.0, A2.x, A2.z, A2.y - 1.2, A2.y + 1.0, FT.stonePlain, tint);
         texWall(fac, A.x, A.z, A.y, A.y + 1.0, B.x, B.z, B.y, B.y + 1.0, FT.stonePlain, tint);
       }
-      p.beam([(A.x + A2.x) / 2, A.y + 1.08, (A.z + A2.z) / 2], [(B.x + B2.x) / 2, B.y + 1.08, (B.z + B2.z) / 2], 0.18, 0xd9d0bc, m);
+      // a darker granite coping on the parapet
+      p.beam([(A.x + A2.x) / 2, A.y + 1.08, (A.z + A2.z) / 2], [(B.x + B2.x) / 2, B.y + 1.08, (B.z + B2.z) / 2], 0.2, 0xb3a68c, m);
     }
   }
   // arches: piers every SPAN m
@@ -888,9 +900,55 @@ function puentePalmas(ctx: CityCtx, bag: Bag, fac: Acc, ts: TS): void {
       }
     }
   }
-  // classic iron lamps on the parapets
+  // the deck's paving: granite slab joints across it every 1.5 m (painted, flat), a darker band
+  // along each parapet foot
+  {
+    const joints = bag.acc(paintMaterial());
+    const jc = new THREE.Color(0xcdbd9f);
+    const up = new THREE.Vector3(0, 1, 0);
+    for (let s = a + 1; s < b - 1; s += 1.5) {
+      const A = ts.p(s, -half + 0.05, 0.012), B = ts.p(s, half - 0.05, 0.012);
+      const C = ts.p(s + 0.07, half - 0.05, 0.012), D = ts.p(s + 0.07, -half + 0.05, 0.012);
+      const n = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(D, A));
+      if (n.y > 0) joints.quad(A, B, C, D, [0, 0], [0, 0], [0, 0], [0, 0], jc, jc, jc, jc, up);
+      else joints.quad(A, D, C, B, [0, 0], [0, 0], [0, 0], [0, 0], jc, jc, jc, jc, up);
+    }
+    for (const side of [1, -1] as const) {
+      for (let i = 0; i + 1 < ss.length; i++) {
+        const l0 = side * (half - 0.35), l1 = side * half;
+        const A = ts.p(ss[i]!, l0, 0.013), B = ts.p(ss[i]!, l1, 0.013), C = ts.p(ss[i + 1]!, l1, 0.013), D = ts.p(ss[i + 1]!, l0, 0.013);
+        const n = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(D, A));
+        if (n.y > 0) joints.quad(A, B, C, D, [0, 0], [0, 0], [0, 0], [0, 0], jc, jc, jc, jc, up);
+        else joints.quad(A, D, C, B, [0, 0], [0, 0], [0, 0], [0, 0], jc, jc, jc, jc, up);
+      }
+    }
+  }
+  // refuge bays over the piers, outside the parapet line, every second pier, each with its lamp
+  for (let s = a + SPAN / 2, k = 0; s < b - 2; s += SPAN, k++) {
+    if (k % 2) continue;
+    for (const side of [1, -1] as const) {
+      const f = ts.f(s);
+      const heading = Math.atan2(f.tx, f.tz);
+      const q = ts.p(s, side * (half + 0.45 + 1.1), 0);
+      p.push(xf(q.x, 0, q.z, 1, 1, 1, 0, heading, 0));
+      // the half-round bay: a platform on a corbel and its own parapet, in the bridge's granite
+      p.add(T.cyl(10), xf(0, q.y - 1.6, 0, 1.0, 1.6, 1.5), GRANITE, m);
+      p.add(T.cyl(10), xf(0, q.y + 0.5, 0, 1.0, 1.0, 1.5), 0xe6dbc4, m);
+      p.add(T.cyl(10), xf(0, q.y + 1.06, 0, 1.05, 0.14, 1.55), 0xb3a68c, m);
+      p.pop();
+      const lq = ts.p(s, side * (half + 0.45 + 1.4), 1.05);
+      p.cyl(lq.x, lq.y, lq.z, 0.14, 0.5, 0x1d2022, 8, m);
+      p.cyl(lq.x, lq.y + 0.5, lq.z, 0.07, 3.0, 0x1d2022, 6, m);
+      p.cyl(lq.x, lq.y + 3.5, lq.z, 0.2, 0.6, 0xffffff, 6, glowMaterial(), 0.24);
+      p.cone(lq.x, lq.y + 4.1, lq.z, 0.34, 0.3, 0x1d2022, 6, m);
+      const d = ts.p(s, side * (half - 1.6), 0.03);
+      lightPool(bag, d.x, d.y, d.z, 3.4);
+    }
+  }
+  // classic iron lamps on the parapets between the refuges
   for (let s = a + 10; s < b - 14; s += 24) {
     for (const side of [1, -1]) {
+      if (Math.abs(((s + (side > 0 ? 0 : 12) - a - SPAN / 2) % (2 * SPAN)) - 0) < 6) continue; // a refuge lamp is here
       const q = ts.p(s + (side > 0 ? 0 : 12), side * (half + 0.2), 1.05);
       p.cyl(q.x, q.y, q.z, 0.12, 0.5, 0x1d2022, 8, m);
       p.cyl(q.x, q.y + 0.5, q.z, 0.06, 2.8, 0x1d2022, 6, m);

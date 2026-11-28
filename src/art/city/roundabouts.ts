@@ -602,6 +602,15 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     return pr.lateral > lo + 0.2 && pr.lateral < hi - 0.2;
   };
   /** Within 2.5 m beyond the route's span (pedestrian streets draw out to their walls). */
+  /** On the floor of a pedestrian (carriageway-less) route street, out to its walls. */
+  const pedRoute = (x: number, z: number): boolean => {
+    const pr = ctx.track.project(x, z);
+    if (Math.abs(pr.lateral) >= 12) return false;
+    if (ctx.track.layoutAt(pr.s).carriageways.length > 0) return false;
+    const sp = ctx.routeSpan(pr.s);
+    return pr.lateral > sp.lo - 1.0 && pr.lateral < sp.hi + 1.0;
+  };
+  const pavePed = new THREE.Color(SURFACE_COLOUR.slabs);
   const nearRouteSurface = (x: number, z: number): boolean => {
     const pr = ctx.track.project(x, z);
     if (Math.abs(pr.lateral) >= 40) return false;
@@ -668,7 +677,12 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
         const inside = mid.distanceTo(c) < rb.rOuter + 2.5;
         const V = (pt: THREE.Vector2, n: THREE.Vector2, l: number, dy: number): THREE.Vector3 => new THREE.Vector3(pt.x + n.x * l, yAt(pt.x, pt.y) + dy, pt.y + n.y * l);
         const drawn = !inside && routeDrawn(mid.x, mid.y);
-        if (drawn || (!inside && (onRouteSpan(mid.x, mid.y) || nearRouteSurface(mid.x, mid.y)))) {
+        if (pedRoute(mid.x, mid.y)) {
+          // a pedestrian approach: its own flush paving (inside the footprint the ring draws it)
+          checked = false;
+          if (inside) up(flat, V(prev.p, nA, -prev.h, 0), V(prev.p, nA, prev.h, 0), V(cur.p, nB, cur.h, 0), V(cur.p, nB, -cur.h, 0), pavePed);
+          checked = true;
+        } else if (drawn || (!inside && (onRouteSpan(mid.x, mid.y) || nearRouteSurface(mid.x, mid.y)))) {
           // the route draws its own surface here: only a road underlay where its layout surely is
           // (it closes any sliver at the handover), nothing over its outer pavements
           // (below it: the route's own surface may be cambered, it stays the visible one)
@@ -680,7 +694,7 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
             const fl = wy.fillets.find((f) => f.side === sd);
             if (!fl || prev.d < fl.dE) continue;
             const pm = new THREE.Vector2(mid.x + (nA.x + nB.x) * 0.5 * sd * (prev.h + 1), mid.y + (nA.y + nB.y) * 0.5 * sd * (prev.h + 1));
-            if (onRoadLane(pm)) continue;
+            if (onRoadLane(pm) || pedRoute(pm.x, pm.y)) continue;
             const pw = wy.walk;
             const drop = prev.d >= zebraD - 0.5 && prev.d <= zebraD + 3.5;
             const yy = drop ? 0.05 : KERB;
@@ -705,6 +719,8 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
         const q1 = new THREE.Vector2(f.C.x + Math.cos(b1) * f.R, f.C.y + Math.sin(b1) * f.R);
         const qm = q0.clone().add(q1).multiplyScalar(0.5);
         if (qm.distanceTo(c) > rb.rOuter + 2.5 && onRouteSpan(qm.x, qm.y)) continue;
+        // a kerb return never stands on a pedestrian approach's floor
+        if (pedRoute(qm.x, qm.y) || pedRoute(apex.x, apex.y)) continue;
         // under the route's own surfaces where they are drawn (no two road surfaces flush on each other)
         const cen = apex.clone().add(q0).add(q1).multiplyScalar(1 / 3);
         if (routeDrawn(cen.x, cen.y)) {
@@ -790,7 +806,7 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
       if (!probe.some(exactLane)) break;
       pts = pts.map((q) => cen.clone().add(q.clone().sub(cen).multiplyScalar(0.85)));
     }
-    if (pts[0]!.distanceTo(pts[1]!) < 0.8) continue;
+    if (pts[0]!.distanceTo(pts[1]!) < 0.8 || pts.some((q) => pedRoute(q.x, q.y))) continue;
     tri(flat, V3(pts[0]!, KERB + 0.02), V3(pts[1]!, KERB + 0.02), V3(pts[2]!, KERB + 0.02), pave);
     for (let i = 0; i < 3; i++) {
       const q0 = pts[i]!;
@@ -811,6 +827,15 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     const a0 = (k / N) * Math.PI * 2;
     const a1 = ((k + 1) / N) * Math.PI * 2;
     const am = (a0 + a1) / 2;
+    const pm = P(am, rb.rOuter + 1.4, 0);
+    const pc = [P(a0, rb.rOuter + 0.4, 0), P(a1, rb.rOuter + 0.4, 0), P(a0, footR(rb), 0), P(a1, footR(rb), 0), pm];
+    if (pc.some((q) => pedRoute(q.x, q.z))) {
+      // a pedestrian approach crosses here: one flush floor, no kerb or raised pavement across it
+      checked = false;
+      sector(flat, a0, a1, rb.rOuter + 0.4, footR(rb) + 0.15, 0, pavePed);
+      checked = true;
+      continue;
+    }
     if (inOpening(am)) {
       const q = P(am, rb.rOuter + 1.4, 0);
       // a mouth is road (flush, out to where the arm / road.ts take over), except where walk-R crosses
