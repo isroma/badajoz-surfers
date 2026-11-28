@@ -65,6 +65,18 @@ describe("quality governor", () => {
     expect(g.level).toBe(0);
   });
 
+  it("a GPU-bound machine rendering steadily at 25-33 ms steps down even after long play (light CPU work)", () => {
+    for (const ms of [25, 33.3]) {
+      const g = new QualityGovernor();
+      feed(g, 5, ms, 5, { active: false });
+      const levels = feed(g, 30, ms, 5);
+      expect(g.level, `${ms} ms`).toBe(3);
+      expect(levels.indexOf(1)).toBeGreaterThan(0);
+      // And it keeps the session's 60 Hz refresh, not the slow frames.
+      expect(g.refreshMs).toBeCloseTo(16.67, 1);
+    }
+  });
+
   it("a throttled background tab (1 fps, hidden): no change, and nothing is measured", () => {
     const g = new QualityGovernor();
     feed(g, 60, 1000, 2, { hidden: true, focused: false });

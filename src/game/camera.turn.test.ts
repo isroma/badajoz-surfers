@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { YAW_ACCEL_HARD, YAW_ACCEL_MAX, YAW_RATE_HARD, YAW_RATE_MAX, YawFollower, chaseYawTarget, offBand, runnerBearing } from "./camera";
 import { createFrame } from "../city/track";
 import { useRealCourse } from "./test-course";
+import { bendCapAt } from "./tuning";
 
 const course = useRealCourse();
 const track = course.track;
@@ -31,7 +32,8 @@ export function lapYaw(speed: number, dt = 1 / 60): { rate: number; accel: numbe
   const run = { x: 0, y: 0, z: 0 };
   const L = track.lapLength;
   for (let t = 0; p < L + 20; t += dt) {
-    p += speed * dt;
+    // (the run's pace through bends caps the speed where the camera would have to turn faster)
+    p += Math.min(speed, bendCapAt(p)) * dt;
     const urgent = offBand(follower.yaw, runnerBearing(point, p, back), tanH);
     follower.step(chaseYawTarget(heading, point, p, back, tanH), dt, urgent);
     rate = Math.max(rate, Math.abs(follower.rate));
@@ -57,11 +59,12 @@ export function lapYaw(speed: number, dt = 1 / 60): { rate: number; accel: numbe
 }
 
 describe("smooth turning", () => {
-  it("over the whole lap at 11, 18 and 25 m/s: yaw rate and acceleration under the caps, the runner in the middle half of the screen", () => {
-    for (const v of [11, 18, 25]) {
+  it("over the whole lap at 11, 18, 25 and 30 m/s (paced through bends): yaw rate and acceleration under the caps, the runner in the middle half of the screen", () => {
+    for (const v of [11, 18, 25, 30]) {
       const r = lapYaw(v);
       // The soft caps hold everywhere except the few tight corners where the path itself turns
       // faster (then the hard caps, to keep the runner on screen), and those are rare.
+      // (paced through bends, the yaw never needs more than the hard cap, and rarely the soft one)
       expect(r.rate, `${v} m/s`).toBeLessThanOrEqual(YAW_RATE_HARD + 1e-9);
       expect(r.accel, `${v} m/s`).toBeLessThanOrEqual(YAW_ACCEL_HARD + 1e-6);
       expect(r.hard, `${v} m/s: share of the lap over the soft caps (rate ${r.rate.toFixed(2)}, accel ${r.accel.toFixed(2)})`).toBeLessThan(0.01);

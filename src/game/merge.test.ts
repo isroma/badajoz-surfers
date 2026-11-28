@@ -6,11 +6,13 @@
 import { describe, expect, it } from "vitest";
 import { OBSTACLE_DEFS, POWERUPS, type GameEvent, type ObstacleKind } from "../contracts";
 import { PASSAGE_AFTER, PASSAGE_BEFORE } from "./course";
-import { laneMergeAhead, laneShownAt, layoutAt, merges } from "./lanes";
+import { RING_FULL, laneMergeAhead, laneOffsetAt, laneOpenAt, laneShownAt, layoutAt, merges } from "./lanes";
+import { BoxSet } from "./collision";
+import { tableAt } from "./course";
 import { Run } from "./run";
 import { obstacleCentre } from "./spawns";
-import { MERGE_CLOSED, TARGET_CLEAR_AFTER, TARGET_CLEAR_BEFORE, TWO_LANE_FREE, TrackGenerator } from "./track";
-import { copyPlayer, createPlayer, laneChangeTime } from "./player";
+import { BOUNDARY_CLEAR, CALM_CURVATURE, MERGE_CLOSED, TARGET_CLEAR_AFTER, TARGET_CLEAR_BEFORE, TWO_LANE_FREE, TrackGenerator } from "./track";
+import { copyPlayer, createEvents, createPlayer, laneChangeTime, stepPlayer } from "./player";
 import { footprintOf } from "./traffic";
 import { LAP_BONUS_EASE, TICK, speedAt } from "./tuning";
 import { useRealCourse } from "./test-course";
@@ -23,7 +25,7 @@ describe("lane tapers, passages and guides on the real lap", () => {
   it("nothing in a tapering lane's last 80 m, its target kept clear, nothing under the arches (20 seeds × 2 laps)", () => {
     const bad: string[] = [];
     const zones: { from: number; to: number; x: number; what: string; target: boolean }[] = [];
-    for (const m of merges(track)) {
+    for (const m of merges(track).filter((x) => !x.opens)) {
       const lay = track.stretches[m.fromStretch]!.layout;
       zones.push({ from: m.s1 - MERGE_CLOSED, to: m.end, x: lay.offsets[m.lane]!, what: `${lay.ids[m.lane]} ending at ${m.end.toFixed(0)}`, target: false });
       zones.push({ from: m.s1 - TARGET_CLEAR_BEFORE, to: Math.min(m.end, m.s1 + TARGET_CLEAR_AFTER), x: lay.offsets[m.into]!, what: `target ${lay.ids[m.into]} at ${m.end.toFixed(0)}`, target: true });
@@ -109,7 +111,7 @@ describe("lane tapers, passages and guides on the real lap", () => {
   }, 120_000);
 
   it("the HUD drops a tapering lane from the midpoint of its taper; lanes drawn on a ring are runnable there", () => {
-    for (const m of merges(track)) {
+    for (const m of merges(track).filter((x) => !x.opens)) {
       const mid = (m.s0 + m.s1) / 2;
       const st = track.stretches[m.fromStretch]!;
       if (mid < st.fromS) {
@@ -131,11 +133,15 @@ describe("lane tapers, passages and guides on the real lap", () => {
       if (m.s1 === m.s0) expect(m.s0).toBe(st.fromS);
       else if (st.section.roundabout === null) expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
     }
-    // own-2 drawn on the 44 m ring at s ≈ 3100 is runnable there: it closes inside the ring.
-    const short = merges(track).find((m) => track.stretches[m.fromStretch]!.layout.ids[m.lane] === "own-2" && track.stretches[m.fromStretch]!.section.roundabout !== null)!;
-    const ring = track.stretches[short.fromStretch]!;
-    expect(short.s0).toBeGreaterThanOrEqual(ring.fromS);
-    expect(laneShownAt(track, short.lane, ring.fromS + 2)).toBe(true);
+    // A lane ending on a ring either is runnable there (closing inside the ring after at least
+    // RING_FULL m at full width) or tapers away before the ring (never offered on it).
+    for (const m of merges(track).filter((x) => !x.opens)) {
+      const ring = track.stretches[m.fromStretch]!;
+      if (ring.section.roundabout === null || m.s1 === m.s0) continue;
+      if (m.s1 <= ring.fromS + 1e-6) continue;
+      const open = merges(track).find((x) => x.opens && x.fromStretch === m.fromStretch && x.lane === m.lane);
+      expect(m.s0 - (open ? open.s1 : ring.fromS)).toBeGreaterThanOrEqual(RING_FULL - 1e-6);
+    }
   });
 
   it("no speed step at the lap seam: the new lap's bonus eases in", () => {
@@ -208,5 +214,79 @@ describe("two-lane streets and oncoming warnings", () => {
     // A shared pedestrian street (no traffic flow): neither a pedestrian nor a scooter honks.
     const shared = track.stretches.find((st) => st.layout.ids.join() === "ped-1,ped-2" && st.toS - st.fromS > 150)!;
     expect(scene(shared.fromS + 20, "ped-1", ["peaton", "moto"])).toEqual([]);
+  }, 120_000);
+});
+
+describe("second review regressions", () => {
+  it("a lane past the midpoint of its taper is not offered: pressing towards it bumps the edge", () => {
+    const world = new BoxSet([]);
+    let tested = 0;
+    for (const m of merges(track).filter((x) => !x.opens && x.s1 - x.s0 > 20)) {
+      const st = track.stretches[m.fromStretch]!;
+      const at = (m.s0 + m.s1) / 2 + 3;
+      if (at < st.fromS + 1 || at > m.s1 - 2) continue;
+      const lay = st.layout;
+      const s = createPlayer(at, m.into, lay);
+      const ev = createEvents();
+      s.speed = 15;
+      stepPlayer(s, [lay.offsets[m.lane]! < lay.offsets[m.into]! ? "left" : "right"], TICK, world, ev);
+      // Towards the closing lane: never a lane change into it.
+      if (Math.abs(m.lane - m.into) === 1) {
+        expect(ev.laneChanged, `${lay.ids[m.lane]} at ${at.toFixed(0)}`).toBe(false);
+        tested++;
+      }
+    }
+    expect(tested).toBeGreaterThan(5);
+  });
+
+  it("every lane that begins opens out of its neighbour (no lane appears at full width at once)", () => {
+    const opens = merges(track).filter((x) => x.opens);
+    expect(opens.length).toBeGreaterThan(5);
+    for (const o of opens) {
+      const lay = track.stretches[o.fromStretch]!.layout;
+      expect(o.s1 - o.s0).toBeGreaterThan(5);
+      expect(laneOffsetAt(track, o.lane, o.s0 + 0.01)).toBeCloseTo(laneOffsetAt(track, o.into, o.s0 + 0.01), 1);
+      expect(laneOffsetAt(track, o.lane, o.s1 + 0.5)).toBeCloseTo(lay.offsets[o.lane]!, 1);
+      expect(laneOpenAt(track, o.lane, (o.s0 + o.s1) / 2)).toBe(false);
+    }
+  });
+
+  it("no bellota in a lane the runner cannot be in, and every bellota sits on its lane's real line", () => {
+    const bad: string[] = [];
+    for (let seed = 1; seed <= 8; seed++) {
+      const gen = new TrackGenerator(seed * 211);
+      gen.generateUntil(L + 300);
+      for (const p of gen.pickups) {
+        if (p.ride || p.y > 2) continue;
+        // On (within 0.35 m of) the real line of a lane the runner can be in there.
+        const lay = layoutAt(p.d);
+        const ok = lay.offsets.some((_, l) => laneOpenAt(track, l, p.d) && Math.abs(laneOffsetAt(track, l, p.d) - p.x) < 0.35);
+        if (!ok) bad.push(`seed ${seed}: ${p.kind} at ${(p.d % L).toFixed(1)} x ${p.x.toFixed(2)} off every open lane`);
+      }
+    }
+    expect(bad.slice(0, 5)).toEqual([]);
+  }, 120_000);
+
+  it("nothing right after a layout boundary, nor within a reaction's running after a tight bend", () => {
+    const bad: string[] = [];
+    const bends = course.bends().curvature;
+    for (let seed = 1; seed <= 10; seed++) {
+      const gen = new TrackGenerator(seed * 307);
+      gen.generateUntil(2 * L);
+      for (const o of gen.obstacles) {
+        if (OBSTACLE_DEFS[o.kind].lanes === 3) continue;
+        const [a] = footprintOf(o);
+        const w = a % L;
+        for (const t of track.transitions) if (w > t.s && w - t.s < BOUNDARY_CLEAR) bad.push(`seed ${seed}: ${o.kind} ${(w - t.s).toFixed(1)} m after the boundary at ${t.s.toFixed(0)}`);
+        const back = speedAt(a) * 0.5;
+        for (let d = a - back; d < a; d += 1) {
+          if (tableAt(bends, L, d) > CALM_CURVATURE) {
+            bad.push(`seed ${seed}: ${o.kind} ${(a - d).toFixed(1)} m after a tight bend at ${w.toFixed(0)}`);
+            break;
+          }
+        }
+      }
+    }
+    expect(bad.slice(0, 6)).toEqual([]);
   }, 120_000);
 });

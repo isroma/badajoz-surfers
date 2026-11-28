@@ -31,7 +31,7 @@ import {
   type PlayerState,
 } from "./player";
 import { getCourse } from "./course";
-import { laneMergeAhead, laneOffset, laneOpenAt, layoutAt, type LayoutFn } from "./lanes";
+import { laneMergeAhead, laneOpenAt, layoutAt, type LayoutFn } from "./lanes";
 import { obstacleCentre, pickupD, type PickupSpawn } from "./spawns";
 import { TrackGenerator } from "./track";
 import { footprintOf } from "./traffic";
@@ -336,7 +336,7 @@ export class Run {
       // Not over a lane that is tapering away (it would move under the line of bellotas).
       const course = getCourse();
       if (course && this.layoutFn === layoutAt && (!laneOpenAt(course.track, lane, d) || laneMergeAhead(course.track, lane, d, 0) !== null)) continue;
-      list.push({ id: this.airIds++, kind: "bellota", lane, x: laneOffset(layout, lane), d, y: FLIGHT_HEIGHT + 0.9 });
+      list.push({ id: this.airIds++, kind: "bellota", lane, x: this.boxes.laneX(lane, d), d, y: FLIGHT_HEIGHT + 0.9 });
       if (--left <= 0) {
         // Neighbouring lanes reachable in flight (not across a median: the bridge cables).
         const options = layout.offsets

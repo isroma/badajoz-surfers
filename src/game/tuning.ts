@@ -162,7 +162,13 @@ export function speedAt(distance: number): number {
   // Gentle over the first 2 km (11 → 15 m/s), then towards ~23 by the end of the lap.
   const first = lap === 1 && w < GENTLE_RAMP ? START_SPEED + 4 * (w / GENTLE_RAMP) : NaN;
   const ramp = Number.isFinite(first) ? first : START_SPEED + 4 + 8.5 * (1 - Math.exp(-Math.max(0, d - GENTLE_RAMP) / 2500)) + 2 * laps;
-  return Math.min(cap, ramp) * paceAt(d);
+  return Math.min(Math.min(cap, ramp) * paceAt(d), bendCapAt(d));
+}
+
+/** Speed cap through bends so the camera's yaw stays under its cap (course.ts `Bends.cap`). */
+export function bendCapAt(distance: number): number {
+  const c = paceCourse;
+  return c ? tableAt(c.bends().cap, c.lapLength, distance) : Infinity;
 }
 
 /** Speed factor through bends: 85% at a 12 m radius, 100% from 35 m, eased (course.ts). */

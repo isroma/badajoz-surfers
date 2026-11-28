@@ -55,6 +55,8 @@ export interface PlayerWorld {
   laneX?(lane: number, p: number): number;
   followLane?(fromS: number, toS: number, lane: number): number | undefined;
   laneOpen?(lane: number, p: number): boolean;
+  /** Is the lane still offered (not past the midpoint of its taper: the HUD hides it)? */
+  laneShown?(lane: number, p: number): boolean;
 }
 
 export interface PlayerState {
@@ -206,7 +208,12 @@ function moveTo(s: PlayerState, layout: LaneLayout, lane: number, world: PlayerW
 /** The nearest lane in direction `dir` that is still there, or `from` when there is none. */
 function neighbour(s: PlayerState, layout: LaneLayout, dir: number, world: PlayerWorld | null): number {
   const n = layout.offsets.length;
-  for (let l = s.lane + dir; l >= 0 && l < n; l += dir) if (!world?.laneOpen || world.laneOpen(l, s.p)) return l;
+  for (let l = s.lane + dir; l >= 0 && l < n; l += dir) {
+    if (world?.laneOpen && !world.laneOpen(l, s.p)) continue;
+    // A lane past the midpoint of its taper is not offered (it is closing): an edge bump.
+    if (world?.laneShown && !world.laneShown(l, s.p)) continue;
+    return l;
+  }
   return s.lane;
 }
 
