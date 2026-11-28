@@ -49,7 +49,17 @@ type Spawnish = Omit<ObstacleSpawn, "id">;
  * run-up has no obvious way through, one entry at the end of that run-up (≈ where the blocking
  * row is). Empty = fair.
  */
-export function unfairPoints(obstacles: readonly Spawnish[], from: number, to: number, opts: FairnessOptions, limit = 50): Violation[] {
+interface Grid {
+  n: number;
+  d0: number;
+  step: number;
+  lanes: Int8Array;
+  xs: Float32Array;
+  pass(i: number, l: number): boolean;
+}
+
+/** Sampled lanes and what blocks them (see the module comment). */
+function grid(obstacles: readonly Spawnish[], from: number, to: number, opts: FairnessOptions): Grid {
   const step = opts.step ?? FAIR_STEP;
   // Samples on an absolute grid: any window gives the same verdict at the same distance.
   const d0 = Math.floor(from / step) * step;
@@ -87,6 +97,26 @@ export function unfairPoints(obstacles: readonly Spawnish[], from: number, to: n
     const b = bits[k]!;
     return open[k] === 1 && (b & 4) === 0 && b !== 3;
   };
+  return { n, d0, step, lanes, xs, pass };
+}
+
+/**
+ * Distances in [from, to) where no two neighbouring lanes are both passable (the welcoming
+ * opening of a run keeps two side by side everywhere). Pure.
+ */
+export function narrowPoints(obstacles: readonly Spawnish[], from: number, to: number, opts: FairnessOptions, limit = 20): number[] {
+  const g = grid(obstacles, from, to, opts);
+  const out: number[] = [];
+  for (let i = 0; i < g.n && out.length < limit; i++) {
+    let ok = false;
+    for (let l = 0; l + 1 < g.lanes[i]! && !ok; l++) ok = g.pass(i, l) && g.pass(i, l + 1);
+    if (!ok) out.push(g.d0 + i * g.step);
+  }
+  return out;
+}
+
+export function unfairPoints(obstacles: readonly Spawnish[], from: number, to: number, opts: FairnessOptions, limit = 50): Violation[] {
+  const { n, d0, step, lanes, xs, pass } = grid(obstacles, from, to, opts);
   // Lane l of sample i as an index at sample i + 1 (-1: gone).
   const next = new Int8Array(n * MAX_LANES).fill(-1);
   for (let i = 0; i + 1 < n; i++) {

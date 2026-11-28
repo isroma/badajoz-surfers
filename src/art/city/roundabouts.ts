@@ -15,6 +15,8 @@ import { SURFACE_COLOUR, flatMaterial, paintMaterial, signMaterial, signSlot } f
 import type { CityCtx } from "./context";
 import { chevronDraw } from "./guides";
 import { newFrame } from "./track";
+import { widthOf } from "./network";
+import { laneOffsetAt, merges as engineMerges } from "../../game/lanes";
 
 const UP = new THREE.Vector3(0, 1, 0);
 const KERB = 0.14;
@@ -96,10 +98,6 @@ function atRadius(pts: THREE.Vector2[], c: THREE.Vector2, d: number): { p: THREE
   return null;
 }
 
-function armWidth(arm: CityRoundaboutArm): number {
-  if (arm.splitter && arm.lines.length >= 2) return Math.max(arm.widthIn, arm.widthOut, 3.2);
-  return Math.max(3.2, arm.widthIn + arm.widthOut || 6.5);
-}
 
 /** Build one ring into the bag. `clear(x, z)` is false where the route's own span lies (outside the ring). */
 export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan: (x: number, z: number) => boolean): void {
@@ -143,62 +141,135 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     else flat.quad(B0, A0, A1, B1, [0, 0], [0, 0], [0, 0], [0, 0], col);
   };
 
-  const inLane = (x: number, z: number): boolean => {
-    const pr = ctx.track.project(x, z);
-    if (Math.abs(pr.lateral) >= 40) return false;
-    return [ctx.wideLayout(pr.s), ctx.track.layoutAt(pr.s)].some((lay) => lay.offsets.some((o, k) => Math.abs(pr.lateral - o) < (lay.widths[k] ?? 0) / 2 + 0.3));
-  };
   const W = rb.rOuter - rb.rInner;
   const lanes = Math.max(1, rb.lanes);
   const lw = W / lanes;
   const N = Math.max(40, Math.ceil((2 * Math.PI * rb.rOuter) / 3.5));
-  const arms = rb.arms.map((arm) => ({ arm, lines: armLines(arm), w: armWidth(arm) }));
-  // angular half-openings of the arms at the outer kerb (pavement and edge line break there)
-  const openings: [number, number][] = [];
-  for (const a of arms) {
-    for (const ln of a.lines) {
-      const at = atRadius(ln, c, rb.rOuter);
-      if (!at) continue;
-      const ang = Math.atan2(at.p.y - rb.cz, at.p.x - rb.cx);
-      openings.push([ang, (a.w / 2 + 2.2) / rb.rOuter]);
-    }
+  const O = c;
+  const Ro = rb.rOuter + 0.4;
+  const angOf = (q: THREE.Vector2): number => Math.atan2(q.y - rb.cz, q.x - rb.cx);
+  const angDiff = (a: number, b: number): number => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+  const V3 = (q: THREE.Vector2, dy: number): THREE.Vector3 => new THREE.Vector3(q.x, yAt(q.x, q.y) + dy, q.y);
+  const tri = (acc: typeof flat, A: THREE.Vector3, B: THREE.Vector3, C: THREE.Vector3, col: THREE.Color): void => {
+    const n = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(C, A));
+    if (n.y > 0) acc.tri(A, B, C, [0, 0], [0, 0], [0, 0], col, UP);
+    else acc.tri(A, C, B, [0, 0], [0, 0], [0, 0], col, UP);
+  };
+
+  // --- per arm way: entry or exit, its own width, the street it hands over to, the kerb returns ---
+  interface Way { arm: CityRoundaboutArm; pts: THREE.Vector2[]; M: THREE.Vector2; u: THREE.Vector2; n: THREE.Vector2; entry: boolean; w: number; wNet: number; walk: number; fillets: { side: 1 | -1; C: THREE.Vector2; R: number; E1: THREE.Vector2; T: THREE.Vector2; dE: number }[] }
+  const ways: Way[] = [];
+  for (const arm of rb.arms) {
+    const lines = armLines(arm);
+    const split = arm.splitter && lines.length >= 2;
+    lines.forEach((pts, li) => {
+      const at = atRadius(pts, c, rb.rOuter);
+      if (!at) return;
+      const n = new THREE.Vector2(-at.u.y, at.u.x);
+      const inboundRight = new THREE.Vector2(at.u.y, -at.u.x);
+      const other = split ? lines.find((o) => o !== pts) : undefined;
+      const ao = other ? atRadius(other, c, rb.rOuter) : null;
+      const entry = arm.flow === "entry" || (arm.flow === "both" && (!split || !ao || ao.p.clone().sub(at.p).dot(inboundRight) < 0));
+      const w = Math.max(3.2, split ? (entry ? arm.widthIn : arm.widthOut) || 3.5 : arm.widthIn + arm.widthOut || 6.5);
+      const st = ctx.city.streets.find((s) => s.osmWay === (arm.osmWays[li] ?? arm.osmWays[0]));
+      const wn = st ? widthOf(st) : { road: w, walk: 2.4 };
+      const way: Way = { arm, pts, M: at.p, u: at.u, n, entry, w, wNet: Math.max(3, wn.road), walk: Math.max(0.8, wn.walk), fillets: [] };
+      // kerb returns on the sides that face a street corner (not the splitter side)
+      for (const side of [1, -1] as const) {
+        if (ao && ao.p.clone().sub(at.p).dot(n) * side > 0) continue;
+        const h0 = w / 2;
+        for (const R of [9, 7, 5]) {
+          const A = at.p.clone().add(n.clone().multiplyScalar(side * (h0 + R))).sub(O);
+          const b = A.dot(at.u);
+          const disc = b * b - A.lengthSq() + (Ro + R) * (Ro + R);
+          if (disc < 0) continue;
+          const t = -b + Math.sqrt(disc);
+          if (t < 0 || t > ARM_LEN - 2) continue;
+          const C = at.p.clone().add(at.u.clone().multiplyScalar(t)).add(n.clone().multiplyScalar(side * (h0 + R)));
+          const E1 = at.p.clone().add(at.u.clone().multiplyScalar(t)).add(n.clone().multiplyScalar(side * h0));
+          const T = O.clone().add(C.clone().sub(O).normalize().multiplyScalar(Ro));
+          way.fillets.push({ side, C, R, E1, T, dE: rb.rOuter + t });
+          break;
+        }
+      }
+      ways.push(way);
+    });
   }
-  const angDiff = (a: number, b: number): number => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
-  const inOpening = (a: number, extra = 0): boolean => openings.some(([o, h]) => angDiff(a, o) < h + extra);
+  // openings in the ring's outer kerb: between a way's two kerb-return tangent points (or its width)
+  const openings: [number, number][] = [];
+  for (const wy of ways) {
+    const a0 = angOf(wy.M);
+    const hw = (wy.w / 2 + 0.5) / rb.rOuter;
+    let lo = -hw;
+    let hi = hw;
+    for (const f of wy.fillets) {
+      const d = angDiff(angOf(f.T), a0);
+      lo = Math.min(lo, d);
+      hi = Math.max(hi, d);
+    }
+    openings.push([a0 + lo, a0 + hi]);
+  }
+  const inOpening = (a: number, extra = 0): boolean => openings.some(([l, h]) => {
+    const mid = (l + h) / 2;
+    return Math.abs(angDiff(a, mid)) < (h - l) / 2 + extra;
+  });
+
+  // which ring lanes the runner is ever offered (engine merges: a zero-length merge = never offered)
+  const never = new Set<string>();
+  for (const mg of engineMerges(ctx.track)) if (mg.s1 - mg.s0 < 0.5) never.add(`${mg.fromStretch}:${mg.lane}`);
+  const runBand = new Array<boolean>(lanes).fill(false);
+  {
+    const f = newFrame();
+    const L = ctx.track.lapLength;
+    const len = (((rb.passToS - rb.passFromS) % L) + L) % L;
+    for (let d = 0; d <= len; d += 2) {
+      const s = (rb.passFromS + d) % L;
+      ctx.track.frameAt(s, f);
+      const si = ctx.track.stretches.findIndex((st) => s >= st.fromS && s < st.toS);
+      const lay = ctx.track.layoutAt(s);
+      lay.offsets.forEach((_, k) => {
+        if (never.has(`${si}:${k}`)) return;
+        const o = laneOffsetAt(ctx.track, k, s);
+        const r = Math.hypot(f.x + f.nx * o - rb.cx, f.z + f.nz * o - rb.cz);
+        const j = Math.floor((r - rb.rInner) / lw);
+        if (r > rb.rInner && r < rb.rOuter && j >= 0 && j < lanes) runBand[j] = true;
+      });
+    }
+    if (!runBand.some(Boolean)) runBand.fill(true);
+  }
 
   // --- 1. the circulating carriageway, complete, with lane lines, edge lines and arrows --------
+  const offC = new THREE.Color(PAL.roadOff);
   for (let k = 0; k < N; k++) {
     const a0 = (k / N) * Math.PI * 2;
     const a1 = ((k + 1) / N) * Math.PI * 2;
     sector(flat, a0, a1, rb.rInner, rb.rOuter + 0.4, 0, asphalt);
-    // inner edge line (solid), outer edge line broken at the arms
+    // lanes the runner is never offered: the "off" tint (they do not look like lanes)
+    for (let j = 0; j < lanes; j++) if (!runBand[j]) sector(paint, a0, a1, rb.rInner + j * lw, rb.rInner + (j + 1) * lw, 0.008, offC);
     sector(paint, a0, a1, rb.rInner + 0.25, rb.rInner + 0.4, 0.01, white);
     if (!inOpening((a0 + a1) / 2)) sector(paint, a0, a1, rb.rOuter - 0.4, rb.rOuter - 0.25, 0.01, white);
   }
   for (let j = 1; j < lanes; j++) {
     const r = rb.rInner + j * lw;
+    const solid = runBand[j - 1] !== runBand[j];
     const n = Math.max(12, Math.round((2 * Math.PI * r) / 6));
-    for (let k = 0; k < n; k++) {
-      const a0 = (k / n) * Math.PI * 2;
-      const a1 = a0 + (3 / r);
-      sector(paint, a0, a1, r - 0.06, r + 0.06, 0.01, white);
+    for (let k = 0; k < (solid ? N : n); k++) {
+      const a0 = (k / (solid ? N : n)) * Math.PI * 2;
+      const a1 = solid ? ((k + 1) / N) * Math.PI * 2 : a0 + 3 / r;
+      sector(paint, a0, a1, r - 0.06, r + 0.06, 0.011, white);
     }
   }
   for (let j = 0; j < lanes; j++) {
+    if (!runBand[j]) continue;
     const r = rb.rInner + (j + 0.5) * lw;
     const n = Math.max(3, Math.round((2 * Math.PI * r) / 20));
     for (let k = 0; k < n; k++) {
       const a = (k / n) * Math.PI * 2 + j * 0.3;
       if (inOpening(a, 0.05)) continue;
-      // shaft along the ring direction, then the head
       const a1 = a + (dir * 2.2) / r;
       sector(paint, Math.min(a, a1), Math.max(a, a1), r - 0.08, r + 0.08, 0.012, white);
-      const h0 = a1;
       const h1 = a1 + (dir * 1.4) / r;
-      const A = P(h0, r - 0.45, 0.012), B = P(h0, r + 0.45, 0.012), T = P(h1, r, 0.012);
-      const nn = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(T, A));
-      if (nn.y > 0) paint.tri(A, B, T, [0, 0], [0, 0], [0, 0], white, UP);
-      else paint.tri(A, T, B, [0, 0], [0, 0], [0, 0], white, UP);
+      tri(paint, P(a1, r - 0.45, 0.012), P(a1, r + 0.45, 0.012), P(h1, r, 0.012), white);
     }
   }
 
@@ -212,10 +283,15 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     up(flat, P(a0, Math.max(0.3, rb.rInner * 0.35), KERB + 0.02), new THREE.Vector3(rb.cx, y + KERB + 0.06, rb.cz), new THREE.Vector3(rb.cx, y + KERB + 0.06, rb.cz), P(a1, Math.max(0.3, rb.rInner * 0.35), KERB + 0.02), LAWN);
   }
   const tagged = (k: string, v?: RegExp): CityRoundabout["island"] => rb.island.filter((i) => i.tags[k] !== undefined && (!v || v.test(i.tags[k]!)));
-  const fountains = [...tagged("amenity", /fountain/), ...tagged("natural", /water/)];
   const monuments = [...tagged("historic"), ...tagged("tourism", /artwork/)];
-  if (fountains.length || (monuments.length === 0 && rb.rInner > 12 && tagged("natural", /tree/).length === 0)) {
-    // a simple low-poly fountain at the centre
+  // one water feature only: a mapped pond (drawn by the ground) wins over a generated fountain
+  const mappedPond = ctx.city.water.some((wa) => {
+    let sx = 0, sz = 0, n = 0;
+    for (let i = 0; i + 1 < wa.ring.length; i += 2) { sx += wa.ring[i]!; sz += wa.ring[i + 1]!; n++; }
+    return n > 0 && Math.hypot(sx / n - rb.cx, sz / n - rb.cz) < rb.rInner;
+  });
+  const fountainTag = [...tagged("amenity", /fountain/), ...tagged("natural", /water/)].length > 0;
+  if (!mappedPond && (fountainTag || (monuments.length === 0 && rb.rInner > 12 && tagged("natural", /tree/).length === 0))) {
     const R = Math.min(rb.rInner * 0.3, 6);
     p.cyl(rb.cx, y + KERB, rb.cz, R, 0.6, 0xe2dccf, 20, m);
     p.cyl(rb.cx, y + KERB + 0.55, rb.cz, R - 0.3, 0.08, PAL.water, 20, m);
@@ -230,17 +306,14 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
     p.box(x, y + KERB + 4.0, z, 0.6, 1.8, 0.6, 0x8a8f94, m);
   }
 
-  // signs on the island facing every entry: blue "sentido giratorio obligatorio" disc + chevrons
+  // signs on the island facing every entry, placed from the world geometry (always inside rInner)
   const chevUv = signSlot(`chevron-${dir > 0 ? "left" : "right"}`, chevronDraw(dir > 0 ? "left" : "right"));
-  for (const a of arms) {
-    if (a.arm.flow === "exit") continue;
-    const at = a.lines.map((ln) => atRadius(ln, c, rb.rOuter)).find((v) => v !== null);
-    if (!at) continue;
-    const ang = Math.atan2(at.p.y - rb.cz, at.p.x - rb.cx);
-    const q = P(ang, rb.rInner - 1.0, KERB);
-    const tx = -Math.sin(ang) * 1.2;
-    const tz = Math.cos(ang) * 1.2;
-    if (inLane(q.x, q.z) || inLane(q.x + tx, q.z + tz) || inLane(q.x - tx, q.z - tz)) continue;
+  const signed = new Set<CityRoundaboutArm>();
+  for (const wy of ways) {
+    if (!wy.entry || signed.has(wy.arm)) continue;
+    signed.add(wy.arm);
+    const ang = angOf(wy.M);
+    const q = P(ang, rb.rInner - 1.2, KERB);
     const ry = Math.atan2(Math.cos(ang), Math.sin(ang)); // local +Z points out at the arm
     p.push(new THREE.Matrix4().makeRotationY(ry).setPosition(q.x, q.y, q.z));
     p.cyl(0, 0, 0, 0.05, 2.2, 0x8a9096, 6, m);
@@ -263,127 +336,150 @@ export function buildRoundabout(ctx: CityCtx, bag: Bag, ring: Ring, onRouteSpan:
       if (k % 2) p.box(ax + (bx - ax) * t, yAt(ax, az) + 0.5, az + (bz - az) * t, (len / n) * 0.97, 0.22, 0.37, PAL.danger, m, ry);
     }
   };
-  for (const a of arms) {
-    const w = a.w;
-    const entryLines: THREE.Vector2[][] = [];
-    for (const ln of a.lines) {
-      // carriageway with flared kerbs, from just inside the ring to ARM_LEN beyond it
-      let prev: { p: THREE.Vector2; u: THREE.Vector2; h: number } | null = null;
-      for (let d = rb.rOuter - 1; d <= rb.rOuter + ARM_LEN + 0.01; d += 1) {
-        const at = atRadius(ln, c, d);
-        if (!at) break;
-        const flare = Math.max(0, 1 - (d - rb.rOuter) / 8) * 1.8;
-        const cur = { p: at.p, u: at.u, h: w / 2 + flare };
-        if (prev) {
-          const nA = new THREE.Vector2(-prev.u.y, prev.u.x);
-          const nB = new THREE.Vector2(-cur.u.y, cur.u.x);
-          const mid = prev.p.clone().add(cur.p).multiplyScalar(0.5);
-          const inside = mid.distanceTo(c) < rb.rOuter + 2.5;
-          if (inside || !onRouteSpan(mid.x, mid.y)) {
-            const V = (pt: THREE.Vector2, n: THREE.Vector2, l: number, dy: number): THREE.Vector3 => new THREE.Vector3(pt.x + n.x * l, yAt(pt.x, pt.y) + dy, pt.y + n.y * l);
-            up(flat, V(prev.p, nA, -prev.h, -0.02), V(prev.p, nA, prev.h, -0.02), V(cur.p, nB, cur.h, -0.02), V(cur.p, nB, -cur.h, -0.02), asphalt);
-            // pavements either side (outside the ring's own pavement) with their kerb line
-            if (mid.distanceTo(c) > rb.rOuter + 2.4 && !a.arm.splitter) {
-              for (const sd of [1, -1]) {
-                up(flat, V(prev.p, nA, sd * prev.h, KERB), V(prev.p, nA, sd * (prev.h + 2.4), KERB), V(cur.p, nB, sd * (cur.h + 2.4), KERB), V(cur.p, nB, sd * cur.h, KERB), pave);
-                up(paint, V(prev.p, nA, sd * prev.h, KERB + 0.01), V(prev.p, nA, sd * (prev.h + 0.25), KERB + 0.01), V(cur.p, nB, sd * (cur.h + 0.25), KERB + 0.01), V(cur.p, nB, sd * cur.h, KERB + 0.01), kerbC);
-              }
-            }
+  const exactLane = (q: THREE.Vector2): boolean => {
+    const pr = ctx.track.project(q.x, q.y);
+    if (Math.abs(pr.lateral) >= 40) return false;
+    const lay = ctx.track.layoutAt(pr.s);
+    return lay.offsets.some((o, k) => Math.abs(pr.lateral - o) < (lay.widths[k] ?? 0) / 2 + 0.15);
+  };
+  const smooth = (t: number): number => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+  for (const wy of ways) {
+    const halfAt = (d: number): number => wy.w / 2 + (wy.wNet / 2 - wy.w / 2) * smooth((d - rb.rOuter - 4) / (ARM_LEN - 4));
+    const zebraD = Math.max(rb.rOuter + 6, ...wy.fillets.map((f) => f.dE + 1));
+    let prev: { p: THREE.Vector2; u: THREE.Vector2; h: number; d: number } | null = null;
+    for (let d = rb.rOuter - 1; d <= rb.rOuter + ARM_LEN + 0.01; d += 1) {
+      const at = atRadius(wy.pts, c, d);
+      if (!at) break;
+      const cur = { p: at.p, u: at.u, h: halfAt(d), d };
+      if (prev) {
+        const nA = new THREE.Vector2(-prev.u.y, prev.u.x);
+        const nB = new THREE.Vector2(-cur.u.y, cur.u.x);
+        const mid = prev.p.clone().add(cur.p).multiplyScalar(0.5);
+        const inside = mid.distanceTo(c) < rb.rOuter + 2.5;
+        if (inside || !onRouteSpan(mid.x, mid.y)) {
+          const V = (pt: THREE.Vector2, n: THREE.Vector2, l: number, dy: number): THREE.Vector3 => new THREE.Vector3(pt.x + n.x * l, yAt(pt.x, pt.y) + dy, pt.y + n.y * l);
+          up(flat, V(prev.p, nA, -prev.h, -0.02), V(prev.p, nA, prev.h, -0.02), V(cur.p, nB, cur.h, -0.02), V(cur.p, nB, -cur.h, -0.02), asphalt);
+          // pavements beyond the kerb return (flush "dropped kerb" across the zebra), splitter side bare
+          for (const sd of [1, -1] as const) {
+            const fl = wy.fillets.find((f) => f.side === sd);
+            if (!fl || prev.d < fl.dE) continue;
+            const pw = wy.walk;
+            const drop = prev.d >= zebraD - 0.5 && prev.d <= zebraD + 3.5;
+            const yy = drop ? 0.02 : KERB;
+            up(flat, V(prev.p, nA, sd * prev.h, yy), V(prev.p, nA, sd * (prev.h + pw), yy), V(cur.p, nB, sd * (cur.h + pw), yy), V(cur.p, nB, sd * cur.h, yy), pave);
+            up(paint, V(prev.p, nA, sd * prev.h, yy + 0.01), V(prev.p, nA, sd * (prev.h + 0.25), yy + 0.01), V(cur.p, nB, sd * (cur.h + 0.25), yy + 0.01), V(cur.p, nB, sd * cur.h, yy + 0.01), kerbC);
           }
         }
-        prev = cur;
       }
-      // which half carries traffic INTO the ring (keep right: inbound right = (u.z, −u.x) here)
-      const at0 = atRadius(ln, c, rb.rOuter + 0.6);
-      if (!at0) continue;
-      const nrm = new THREE.Vector2(-at0.u.y, at0.u.x);
-      const inboundRight = new THREE.Vector2(at0.u.y, -at0.u.x);
-      const entrySide = nrm.dot(inboundRight) > 0 ? 1 : -1;
-      const isEntry = a.arm.flow !== "exit" && (!a.arm.splitter || a.lines.length < 2 || (() => {
-        const other = a.lines.find((o) => o !== ln);
-        const ao = other ? atRadius(other, c, rb.rOuter + 0.6) : null;
-        return !ao || ao.p.clone().sub(at0.p).dot(inboundRight) < 0;
-      })());
-      if (isEntry) entryLines.push(ln);
-      const [l0, l1] = !a.arm.splitter || a.lines.length < 2 ? (entrySide > 0 ? [0, w / 2] : [-w / 2, 0]) : [-w / 2, w / 2];
-      const across = (d: number, f0: number, f1: number, depth: number, col: THREE.Color): void => {
-        const q = atRadius(ln, c, d);
-        if (!q) return;
+      prev = cur;
+    }
+    // kerb returns: asphalt fill to the curved kerb, the pavement continuing round the corner
+    for (const f of wy.fillets) {
+      const aE = Math.atan2(f.E1.y - f.C.y, f.E1.x - f.C.x);
+      const aT = Math.atan2(f.T.y - f.C.y, f.T.x - f.C.x);
+      const span = angDiff(aT, aE);
+      const k = Math.max(4, Math.ceil(Math.abs(span) * f.R / 1.2));
+      const apex = wy.M.clone().add(wy.n.clone().multiplyScalar(f.side * (wy.w / 2)));
+      for (let i = 0; i < k; i++) {
+        const b0 = aE + (span * i) / k;
+        const b1 = aE + (span * (i + 1)) / k;
+        const q0 = new THREE.Vector2(f.C.x + Math.cos(b0) * f.R, f.C.y + Math.sin(b0) * f.R);
+        const q1 = new THREE.Vector2(f.C.x + Math.cos(b1) * f.R, f.C.y + Math.sin(b1) * f.R);
+        const qm = q0.clone().add(q1).multiplyScalar(0.5);
+        if (qm.distanceTo(c) > rb.rOuter + 2.5 && onRouteSpan(qm.x, qm.y)) continue;
+        tri(flat, V3(apex, -0.02), V3(q0, -0.02), V3(q1, -0.02), asphalt);
+        const pw = Math.min(wy.walk, f.R - 0.5);
+        const r0 = (q: number): THREE.Vector2 => new THREE.Vector2(f.C.x + Math.cos(q) * (f.R - pw), f.C.y + Math.sin(q) * (f.R - pw));
+        up(flat, V3(q0, KERB), V3(q1, KERB), V3(r0(b1), KERB), V3(r0(b0), KERB), pave);
+        const k0 = new THREE.Vector2(f.C.x + Math.cos(b0) * (f.R - 0.25), f.C.y + Math.sin(b0) * (f.R - 0.25));
+        const k1 = new THREE.Vector2(f.C.x + Math.cos(b1) * (f.R - 0.25), f.C.y + Math.sin(b1) * (f.R - 0.25));
+        up(paint, V3(q0, KERB + 0.01), V3(q1, KERB + 0.01), V3(k1, KERB + 0.01), V3(k0, KERB + 0.01), kerbC);
+        const F0 = V3(q0, -0.03), F1 = V3(q1, -0.03), G0 = V3(q0, KERB), G1 = V3(q1, KERB);
+        flat.quad(F0, F1, G1, G0, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
+        flat.quad(F1, F0, G0, G1, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
+      }
+    }
+    // give way + "ceda el paso" on entries; zebra over the dropped kerbs; barriers on closed arms
+    const across = (d: number, f0: number, f1: number, depth: number, col: THREE.Color): void => {
+      const q = atRadius(wy.pts, c, d);
+      if (!q) return;
+      const n = new THREE.Vector2(-q.u.y, q.u.x);
+      const A = q.p.clone().add(n.clone().multiplyScalar(f0));
+      const B = q.p.clone().add(n.clone().multiplyScalar(f1));
+      const U = q.u.clone().multiplyScalar(depth);
+      up(paint, V3(A, 0.01), V3(B, 0.01), V3(B.clone().add(U), 0.01), V3(A.clone().add(U), 0.01), col);
+    };
+    const split = wy.arm.splitter && wy.arm.lines.length >= 2;
+    const entrySide = wy.n.dot(new THREE.Vector2(wy.u.y, -wy.u.x)) > 0 ? 1 : -1;
+    const [l0, l1] = split ? [-wy.w / 2, wy.w / 2] : entrySide > 0 ? [0, wy.w / 2] : [-wy.w / 2, 0];
+    if (wy.entry) {
+      for (let l = Math.min(l0, l1) + 0.3; l + 0.5 < Math.max(l0, l1) - 0.2; l += 1) across(rb.rOuter + 0.4, l, l + 0.5, 0.4, white);
+      const q = atRadius(wy.pts, c, rb.rOuter + 4);
+      if (q) {
         const n = new THREE.Vector2(-q.u.y, q.u.x);
-        const yq = yAt(q.p.x, q.p.y);
-        const A = new THREE.Vector3(q.p.x + n.x * f0, yq + 0.01, q.p.y + n.y * f0);
-        const B = new THREE.Vector3(q.p.x + n.x * f1, yq + 0.01, q.p.y + n.y * f1);
-        const C = B.clone().add(new THREE.Vector3(q.u.x * depth, 0, q.u.y * depth));
-        const D = A.clone().add(new THREE.Vector3(q.u.x * depth, 0, q.u.y * depth));
-        up(paint, A, B, C, D, col);
-      };
-      if (isEntry) {
-        // give-way line (dashed) and the "ceda el paso" triangle
-        for (let l = Math.min(l0, l1) + 0.3; l + 0.5 < Math.max(l0, l1) - 0.2; l += 1) across(rb.rOuter + 0.4, l, l + 0.5, 0.4, white);
-        const q = atRadius(ln, c, rb.rOuter + 4);
-        if (q) {
-          const n = new THREE.Vector2(-q.u.y, q.u.x);
-          const lc = (l0 + l1) / 2;
-          const yq = yAt(q.p.x, q.p.y) + 0.012;
-          const T = new THREE.Vector3(q.p.x + n.x * lc, yq, q.p.y + n.y * lc);
-          const A = new THREE.Vector3(q.p.x + n.x * (lc - 0.6) + q.u.x * 2.4, yq, q.p.y + n.y * (lc - 0.6) + q.u.y * 2.4);
-          const B = new THREE.Vector3(q.p.x + n.x * (lc + 0.6) + q.u.x * 2.4, yq, q.p.y + n.y * (lc + 0.6) + q.u.y * 2.4);
-          const nn = new THREE.Vector3().subVectors(A, T).cross(new THREE.Vector3().subVectors(B, T));
-          if (nn.y > 0) paint.tri(T, A, B, [0, 0], [0, 0], [0, 0], white, UP);
-          else paint.tri(T, B, A, [0, 0], [0, 0], [0, 0], white, UP);
-        }
-      }
-      // zebra across the whole way, ~6 m back from the ring
-      const zq = atRadius(ln, c, rb.rOuter + 6);
-      if (zq && !onRouteSpan(zq.p.x, zq.p.y)) for (let l = -w / 2 + 0.3; l + 0.5 <= w / 2 - 0.2; l += 1) across(rb.rOuter + 6, l, l + 0.5, 3, white);
-      // arms the route does not take: barrier row a few metres in, the junction stays visible
-      if (a.arm.onRoute === null) {
-        const bq = atRadius(ln, c, rb.rOuter + 10.5);
-        if (bq) {
-          const n = new THREE.Vector2(-bq.u.y, bq.u.x);
-          barrier(bq.p.x - n.x * (w / 2 + 0.2), bq.p.y - n.y * (w / 2 + 0.2), bq.p.x + n.x * (w / 2 + 0.2), bq.p.y + n.y * (w / 2 + 0.2));
-        }
+        const lc = (l0 + l1) / 2;
+        const T = q.p.clone().add(n.clone().multiplyScalar(lc));
+        const A = q.p.clone().add(n.clone().multiplyScalar(lc - 0.6)).add(q.u.clone().multiplyScalar(2.4));
+        const B = q.p.clone().add(n.clone().multiplyScalar(lc + 0.6)).add(q.u.clone().multiplyScalar(2.4));
+        tri(paint, V3(T, 0.012), V3(A, 0.012), V3(B, 0.012), white);
       }
     }
-    // splitter island between the arm's entry and exit ways
-    if (a.arm.splitter && a.lines.length >= 2) {
-      const A0 = atRadius(a.lines[0]!, c, rb.rOuter + 1.5);
-      const B0 = atRadius(a.lines[1]!, c, rb.rOuter + 1.5);
-      const A1 = atRadius(a.lines[0]!, c, rb.rOuter + ARM_LEN);
-      const B1 = atRadius(a.lines[1]!, c, rb.rOuter + ARM_LEN);
-      if (A0 && B0 && A1 && B1) {
-        const shrink = (pa: THREE.Vector2, pb: THREE.Vector2): THREE.Vector2 => pa.clone().add(pb.clone().sub(pa).normalize().multiplyScalar(w / 2 + 0.3));
-        const gap = A0.p.distanceTo(B0.p) - w - 0.6;
-        const cen = A0.p.clone().add(B0.p).add(A1.p).add(B1.p).multiplyScalar(0.25);
-        if (gap > 0.8 && !inLane(cen.x, cen.y) && !inLane(A0.p.clone().add(B0.p).multiplyScalar(0.5).x, A0.p.clone().add(B0.p).multiplyScalar(0.5).y)) {
-          const a0 = shrink(A0.p, B0.p);
-          const b0 = shrink(B0.p, A0.p);
-          const apex = A1.p.clone().add(B1.p).multiplyScalar(0.5);
-          const V = (q: THREE.Vector2, dy: number): THREE.Vector3 => new THREE.Vector3(q.x, yAt(q.x, q.y) + dy, q.y);
-          const T = [V(a0, KERB + 0.02), V(b0, KERB + 0.02), V(apex, KERB + 0.02)] as const;
-          const nn = new THREE.Vector3().subVectors(T[1], T[0]).cross(new THREE.Vector3().subVectors(T[2], T[0]));
-          if (nn.y > 0) flat.tri(T[0], T[1], T[2], [0, 0], [0, 0], [0, 0], pave, UP);
-          else flat.tri(T[0], T[2], T[1], [0, 0], [0, 0], [0, 0], pave, UP);
-          // kerb faces round it
-          const pts = [a0, b0, apex];
-          for (let i = 0; i < 3; i++) {
-            const q0 = pts[i]!;
-            const q1 = pts[(i + 1) % 3]!;
-            const F0 = V(q0, -0.02), F1 = V(q1, -0.02), G1 = V(q1, KERB + 0.02), G0 = V(q0, KERB + 0.02);
-            flat.quad(F0, F1, G1, G0, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
-            flat.quad(F1, F0, G0, G1, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
-          }
-          // keep-right sign on the nose
-          const nose = a0.clone().add(b0).multiplyScalar(0.5).add(A1.u.clone().multiplyScalar(0.8));
-          p.cyl(nose.x, yAt(nose.x, nose.y) + KERB, nose.y, 0.04, 1.6, 0x8a9096, 6, m);
-          p.cyl(nose.x, yAt(nose.x, nose.y) + KERB + 1.75, nose.y, 0.28, 0.04, 0x1f5fbf, 14, m);
-        }
+    const zq = atRadius(wy.pts, c, zebraD);
+    if (zq && !onRouteSpan(zq.p.x, zq.p.y)) {
+      const h = halfAt(zebraD);
+      for (let l = -h + 0.3; l + 0.5 <= h - 0.2; l += 1) across(zebraD, l, l + 0.5, 3, white);
+    }
+    if (wy.arm.onRoute === null) {
+      const bd = zebraD + 4.5;
+      const bq = atRadius(wy.pts, c, bd);
+      if (bq) {
+        const n = new THREE.Vector2(-bq.u.y, bq.u.x);
+        const h = halfAt(bd) + 0.2;
+        barrier(bq.p.x - n.x * h, bq.p.y - n.y * h, bq.p.x + n.x * h, bq.p.y + n.y * h);
       }
     }
-    void entryLines;
+  }
+  // splitter islands between an arm's entry and exit ways, kept clear of the runnable lanes
+  for (const arm of rb.arms) {
+    if (!arm.splitter) continue;
+    const ws = ways.filter((wy) => wy.arm === arm);
+    if (ws.length < 2) continue;
+    const [wa, wb] = [ws[0]!, ws[1]!];
+    const A0 = atRadius(wa.pts, c, rb.rOuter + 1.5);
+    const B0 = atRadius(wb.pts, c, rb.rOuter + 1.5);
+    const A1 = atRadius(wa.pts, c, rb.rOuter + ARM_LEN);
+    const B1 = atRadius(wb.pts, c, rb.rOuter + ARM_LEN);
+    if (!A0 || !B0 || !A1 || !B1) continue;
+    if (A0.p.distanceTo(B0.p) - wa.w / 2 - wb.w / 2 - 0.6 < 0.8) continue;
+    const a0 = A0.p.clone().add(B0.p.clone().sub(A0.p).normalize().multiplyScalar(wa.w / 2 + 0.3));
+    const b0 = B0.p.clone().add(A0.p.clone().sub(B0.p).normalize().multiplyScalar(wb.w / 2 + 0.3));
+    const apex = A1.p.clone().add(B1.p).multiplyScalar(0.5);
+    let pts = [a0, b0, apex];
+    const cen = a0.clone().add(b0).add(apex).multiplyScalar(1 / 3);
+    if (exactLane(cen)) continue;
+    // shrink towards its centre until no corner or edge midpoint lies on a runnable lane
+    for (let it = 0; it < 12; it++) {
+      const probe = [...pts, ...pts.map((q, i) => q.clone().add(pts[(i + 1) % 3]!).multiplyScalar(0.5))];
+      if (!probe.some(exactLane)) break;
+      pts = pts.map((q) => cen.clone().add(q.clone().sub(cen).multiplyScalar(0.85)));
+    }
+    if (pts[0]!.distanceTo(pts[1]!) < 0.8) continue;
+    tri(flat, V3(pts[0]!, KERB + 0.02), V3(pts[1]!, KERB + 0.02), V3(pts[2]!, KERB + 0.02), pave);
+    for (let i = 0; i < 3; i++) {
+      const q0 = pts[i]!;
+      const q1 = pts[(i + 1) % 3]!;
+      const F0 = V3(q0, -0.02), F1 = V3(q1, -0.02), G1 = V3(q1, KERB + 0.02), G0 = V3(q0, KERB + 0.02);
+      flat.quad(F0, F1, G1, G0, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
+      flat.quad(F1, F0, G0, G1, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
+    }
+    const nose = pts[0]!.clone().add(pts[1]!).multiplyScalar(0.5).add(A1.u.clone().multiplyScalar(0.6));
+    if (!exactLane(nose)) {
+      p.cyl(nose.x, yAt(nose.x, nose.y) + KERB, nose.y, 0.04, 1.6, 0x8a9096, 6, m);
+      p.cyl(nose.x, yAt(nose.x, nose.y) + KERB + 1.75, nose.y, 0.28, 0.04, 0x1f5fbf, 14, m);
+    }
   }
 
-  // --- outer pavement all round, broken at the arms (dropped kerbs at the crossings) -------------
+  // --- outer pavement all round, open only between each mouth's kerb-return tangent points -------
   for (let k = 0; k < N; k++) {
     const a0 = (k / N) * Math.PI * 2;
     const a1 = ((k + 1) / N) * Math.PI * 2;

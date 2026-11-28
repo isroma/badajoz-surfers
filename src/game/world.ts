@@ -211,6 +211,13 @@ export function segmentHitsBox(
   return true;
 }
 
+/** Something tall right beside the lens (within SIDE_FADE_FAR m of it) is see-through. Pure. */
+export const SIDE_FADE_FAR = 2.6;
+export function sideFade(distanceToLens: number): number {
+  const t = Math.min(1, Math.max(0, (distanceToLens - FADE_FAR) / (SIDE_FADE_FAR - FADE_FAR)));
+  return OCCLUDER_ALPHA + (1 - OCCLUDER_ALPHA) * t * t * (3 - 2 * t);
+}
+
 /** Opacity target for an object: fades near the lens and while it hides the runner. Pure. */
 export function fadeTarget(distanceToLens: number, blocksRunner: boolean): number {
   const t = Math.min(1, Math.max(0, (distanceToLens - FADE_NEAR) / (FADE_FAR - FADE_NEAR)));
@@ -1101,7 +1108,9 @@ export class World {
       const standingOn = run.player.supportId === spawn.id;
       const blocks = !standingOn && dist < 14 &&
         segmentHitsBox(camera.x, camera.y, camera.z, chest.x, chest.y, chest.z, x0 + 0.15, x1 - 0.15, def.yMin, def.yMax - 0.05, z0 + 0.15, z1 - 0.15);
-      this.applyFade(obj, view.fade, fadeTarget(dist, blocks), dt);
+      // Beside the lens (a van on the inner lane of a bend): fades too, not only on the boom line.
+      const beside = def.yMax > 1 && camera.z > z0 - 2 && camera.z < z1 + 2 ? sideFade(dist) : 1;
+      this.applyFade(obj, view.fade, Math.min(fadeTarget(dist, blocks), beside), dt);
       obj.visible = view.fade.alpha > 0.02;
     }
     for (const [id, view] of this.obstacles) {

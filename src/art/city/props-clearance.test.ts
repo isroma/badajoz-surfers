@@ -26,6 +26,10 @@ describe("city art: props stay out of the runnable surface", () => {
     const ground = buildGround(ctx);
     const bad: string[] = [];
     const v = new THREE.Vector3();
+    // a roundabout's island belongs to the ring (lanes never come within rInner + 0.3 m in the
+    // world; an approach's lanes may overlap it only in track space)
+    const { ringsOf } = await import("./roundabouts");
+    const onIsland = (x: number, z: number): boolean => ringsOf(ctx).some((r) => Math.hypot(x - r.rb.cx, z - r.rb.cz) < r.rb.rInner - 0.3);
     const check = (o: THREE.Object3D, what: string): void => {
       o.updateMatrixWorld(true);
       o.traverse((m) => {
@@ -33,6 +37,7 @@ describe("city art: props stay out of the runnable surface", () => {
         const pos = (m.geometry as THREE.BufferGeometry).getAttribute("position");
         for (let i = 0; i < pos.count; i += 3) {
           v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+          if (onIsland(v.x, v.z)) continue;
           const pr = track.project(v.x, v.z);
           const lay = track.layoutAt(pr.s);
           if (!lay.offsets.some((o, k) => Math.abs(pr.lateral - o) < (lay.widths[k] ?? 0) / 2 - 0.05)) continue;

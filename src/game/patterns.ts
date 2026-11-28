@@ -22,7 +22,7 @@ import { laneIndices, laneKind, laneOffset, laneWidth, runnableSpan, centreLane,
 import type { Rng } from "./rng";
 import { BRAKE_DISTANCE, meetingPoint, whenAhead, type ObstacleSpawn, type PickupSpawn, type Trajectory, type VehicleRole } from "./spawns";
 import { footprintOf, sweep, lateralOverlap, collides } from "./traffic";
-import { RUNNER_HALF_DEPTH, jumpAirtime, jumpApexTime, jumpHeightAt } from "./tuning";
+import { RUNNER_HALF_DEPTH, WELCOME_GAP, WELCOME_UNTIL, jumpAirtime, jumpApexTime, jumpHeightAt } from "./tuning";
 
 export type ObstacleDraft = Omit<ObstacleSpawn, "id">;
 export type PickupDraft = Omit<PickupSpawn, "id">;
@@ -1283,13 +1283,21 @@ const finale: PatternFn = (b) => {
   b.ignoreLive = true;
   let gap = ctx.entryLane;
   let front = b.start;
+  // The welcoming first kilometre of lap 1: a second lane beside the gap stays open too, and rows
+  // are WELCOME_GAP s apart.
+  const welcome = ctx.lap === 1 && b.start < WELCOME_UNTIL;
   for (let r = 0; r < rows; r++) {
     let rowLen = 0;
+    const second = welcome ? (b.neighbours(gap)[0] ?? gap) : gap;
     for (const l of b.otherLanes(gap)) {
+      if (l === second) continue;
       const pl = palette(b, l);
       const shortWalls = pl.wall.filter(([k]) => OBSTACLE_DEFS[k].length <= 5.4);
       if (pl.low.length === 0 && shortWalls.length === 0) continue;
-      const kind = (rng.chance(0.65) && shortWalls.length > 0) || pl.low.length === 0 ? rng.weighted(shortWalls) : rng.weighted(pl.low);
+      // (welcoming: in a road lane only something to dodge, never a jump)
+      const lowOk = pl.low.length > 0 && !(welcome && b.isRoad(l));
+      if (!lowOk && shortWalls.length === 0) continue;
+      const kind = (rng.chance(0.65) && shortWalls.length > 0) || !lowOk ? rng.weighted(shortWalls) : rng.weighted(pl.low);
       // Off the line, a lane that cannot take it (a tree on the median, traffic) just stays open.
       if (!b.canPlace(kind, l, front) || !b.clearOfTraffic(kind, l, front)) continue;
       b.place(kind, l, front, b.flow(l) === 0 ? "parked" : "lights");
@@ -1299,7 +1307,7 @@ const finale: PatternFn = (b) => {
     b.line = gap;
     // Lap 1: an extra beat between rows, and the gap only shifts every other row.
     const firstLap = ctx.lap === 1;
-    front += rowLen + rowGap(b, true) + (firstLap ? b.s(0.25) : 0);
+    front += rowLen + Math.max(rowGap(b, true) + (firstLap ? b.s(0.25) : 0), welcome ? b.s(WELCOME_GAP + 0.1) : 0);
     if (!firstLap || r % 2 === 1) gap = rng.pick(b.neighbours(gap));
   }
   const kind = pal.full.some(([k]) => k === "valla-larga") || pal.full.length === 0 ? "valla-larga" : rng.weighted(pal.full);
@@ -1425,7 +1433,7 @@ export type PatternName = keyof typeof PATTERNS;
  * obvious-way rule (fairness.ts) they are mostly roof routes beside an open lane; driving traffic
  * (overtake, oncoming) more common, so most vehicles still drive.
  */
-const REWEIGHT: Partial<Record<PatternName, number>> = { carHop: 0.5, trafficJam: 0.5, overtake: 1.6, oncoming: 1.2 };
+const REWEIGHT: Partial<Record<PatternName, number>> = { carHop: 0.5, trafficJam: 0.5, overtake: 1.8, oncoming: 1.2 };
 
 export function patternWeights(ctx: PatternContext): Weights<PatternName> {
   const kinds = ctx.layout.kinds ?? [];
