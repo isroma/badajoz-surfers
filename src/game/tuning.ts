@@ -93,13 +93,17 @@ export const MARGINAL_CLIP = 0.3;
 // --- Run --------------------------------------------------------------------------------------
 export const START_SPEED = 11;
 /**
- * The welcoming opening of lap 1 (track.ts): until WELCOME_UNTIL m nothing in a road lane needs a
- * jump or roll, rows are WELCOME_GAP s apart, two neighbouring lanes stay passable; the density
- * is back to normal by WELCOME_RAMP m.
+ * The opening of lap 1 (track.ts), from the bridge head:
+ * - until WELCOME_UNTIL m a warm-up: dodges only in the road lanes (clutter on the pavement),
+ *   two neighbouring lanes passable, rows WELCOME_GAP s apart, oncoming traffic only on the far
+ *   side;
+ * - from there jumps and rolls are fair, rows EARLY_GAP s apart, until WELCOME_RAMP m where the
+ *   density is back to normal.
  */
-export const WELCOME_UNTIL = 1000;
-export const WELCOME_RAMP = 2000;
+export const WELCOME_UNTIL = 250;
+export const WELCOME_RAMP = 900;
 export const WELCOME_GAP = 2.2;
+export const EARLY_GAP = 1.6;
 /** Metres over which the first lap eases from START_SPEED to START_SPEED + 4. */
 export const GENTLE_RAMP = 2000;
 export const PATINETE_SPEED_FACTOR = 1.25;

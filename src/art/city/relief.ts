@@ -137,6 +137,8 @@ export function buildRelief(ctx: CityCtx, bag: Bag, chunk: number, s0: number, s
         for (let k = 0; k < bays; k++) {
           if (hash01(pb.index * 31 + k, 17) > 0.45) continue;
           const t = (k + 0.5) * bw - len / 2;
+          // every bay's awning (1.3 m deep) must clear the runnable surface, not just the middle one
+          if ([-0.5, 0, 0.5].some((e) => overRunnable(mx + ux * (t + e * bw) + nx * 1.3, mz + uz * (t + e * bw) + nz * 1.3, pb.src.s))) continue;
           p.push(new THREE.Matrix4().makeRotationY(ry).setPosition(mx + ux * t, g, mz + uz * t));
           p.add(T.box, xf(0, 2.85, 0.6, bw - 0.4, 0.06, 1.3, 0.35, 0, 0), col, m);
           p.pop();
@@ -266,10 +268,11 @@ function poiSign(ctx: CityCtx, bag: Bag, poi: CityPoi, at: { x: number; z: numbe
     const side = pr.lateral > 0 ? 1 : -1;
     const runEdge = side > 0 ? lay.right + 0.5 : lay.left - 0.5;
     const room = Math.abs(pr.lateral - runEdge);
-    if (room > 2.4) {
+    // parasols (r 1.3 m) stay ≥ 1.5 m clear of the runnable edge
+    if (room > 3.0) {
       const fr = ctx.track.frameAt(pr.s);
       for (let k = -1; k <= 1; k++) {
-        const lat = pr.lateral - side * Math.min(room - 1.0, 1.6);
+        const lat = pr.lateral - side * Math.min(room - 1.5, 1.6);
         const sx = fr.x + fr.nx * lat + fr.tx * k * 2.6;
         const sz = fr.z + fr.nz * lat + fr.tz * k * 2.6;
         const y = at.g;

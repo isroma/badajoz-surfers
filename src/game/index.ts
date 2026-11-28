@@ -102,8 +102,14 @@ class Game implements GameApi {
   private fovKick = 0;
   private groundY = 0;
   private readonly focus = new THREE.Vector3();
-  /** Where the idle runner stands in the menu (on the bridge deck, before the pylon). */
-  private static readonly MENU_DISTANCE = 700;
+  /**
+   * Where the idle runner stands in the menu: on the Puente Real deck, the pylon and its cable fan
+   * ahead and the Guadiana on both sides (from the course's marks; 180 m without a course).
+   */
+  private get menuS(): number {
+    const m = getCourse()?.track.marks;
+    return m ? m.bridgeDeckStart + (m.pylon - m.bridgeDeckStart) * 0.5 : 180;
+  }
   private readonly path = new PathRecorder();
   private readonly pathSample: PathSample = { x: 0, y: 0, rolling: false, airborne: false };
   /** 0..1 smoothed stork flight (camera blend). */
@@ -219,7 +225,7 @@ class Game implements GameApi {
     const camera = this.cam.camera;
     this.ready = (async () => {
       this.render(0, 0);
-      await gameWorld.prewarm(renderer, camera, Game.MENU_DISTANCE, 1);
+      await gameWorld.prewarm(renderer, camera, this.menuS, 1);
       this.render(0, 0);
       this.loadMs = performance.now() - t0;
       this.isReady = true;
@@ -413,7 +419,7 @@ class Game implements GameApi {
     this.world.setOutfit(this.options.outfit?.());
     this.resetVisuals();
     this.fade = 0;
-    this.world.preload(Game.MENU_DISTANCE, 1);
+    this.world.preload(this.menuS, 1);
     this.world.waiter.root.visible = false;
   }
 
@@ -666,7 +672,7 @@ class Game implements GameApi {
     let lap = 1;
     if (!run) {
       // The menu: on the Puente Real deck, the pylon ahead, in the right-hand lane.
-      p = Game.MENU_DISTANCE;
+      p = this.menuS;
       const layout = layoutAt(p);
       px = layout.offsets[layout.offsets.length - 1] ?? 0;
       this.space.place(runner.root, p, px, 0, 0.35, 0);
@@ -729,18 +735,24 @@ class Game implements GameApi {
         sample.airborne = false;
         this.waiterX += (px - this.waiterX) * Math.min(1, dt * 3);
       }
-      // Intro: he storms out of the bar on the right-hand side and into the runner's lane.
+      // Intro: he storms out of the bar (the real bar site, behind the start on the right) and
+      // into the runner's lane.
       let wx = this.waiterX;
+      let wz = wp;
       if (run.intro && run.countdown > 0) {
         const t = Math.min(1, Math.max(0, (COUNTDOWN_TIME - run.countdown) / COUNTDOWN_TIME));
+        const e = t * t * (3 - 2 * t);
+        const bar = getCourse()?.track.marks.barSite;
         const layout = layoutAt(p);
-        const kerb = (layout.right ?? px + 2) + 1.5;
-        wx = kerb + (px - kerb) * t * t * (3 - 2 * t);
+        const kerb = bar ? bar.lateral : (layout.right ?? px + 2) + 1.5;
+        const behind = bar && run.player.p < 1 ? Math.max(gap, -bar.s) : gap;
+        wx = kerb + (px - kerb) * e;
+        wz = p - (behind + (gap - behind) * e);
         this.waiterX = wx;
       }
-      this.space.place(waiter.root, wp, wx, wy, 0, 0);
-      world.placeBlob("waiter", wp, wx, 0, wy);
-      this.waiterZ = -wp;
+      this.space.place(waiter.root, wz, wx, wy, 0, 0);
+      world.placeBlob("waiter", wz, wx, 0, wy);
+      this.waiterZ = -wz;
       waiter.update(animDt, this.waiterAnim(run), Math.max(speed, run.phase === "ending" ? 7 : 0));
       waiter.root.visible = gap < 40;
 

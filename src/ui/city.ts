@@ -106,6 +106,7 @@ export function turnAt(s: number): TurnInfo | null {
   const toEnd = ahead + (turn.endS - turn.s);
   const roundabout = turn.roundabout === true;
   // Straight through a roundabout: the net heading change is about 0°.
-  const straight = roundabout && Number.isFinite(turn.angle) && Math.abs(turn.angle) < 20;
-  return { ahead, toEnd, dir: straight ? "straight" : turn.direction === "left" ? "left" : "right", roundabout, exitName: turn.exitName ?? null };
+  const dir = String(turn.direction);
+  const straight = dir === "straight" || (roundabout && Number.isFinite(turn.angle) && Math.abs(turn.angle) < 20);
+  return { ahead, toEnd, dir: straight ? "straight" : dir === "left" ? "left" : "right", roundabout, exitName: turn.exitName ?? null };
 }

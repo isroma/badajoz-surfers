@@ -138,14 +138,13 @@ describe("track generator", () => {
     expect(runs).toBeGreaterThan(0);
   }, 120_000);
 
-  it("opens lap 1 with the first obstacle around 45-80 m", () => {
+  it("opens lap 1 (on the bridge head) with the first obstacle at 30-40 m", () => {
     for (let seed = 1; seed <= 40; seed++) {
       const gen = new TrackGenerator(seed);
       gen.generateUntil(300);
       const first = Math.min(...gen.obstacles.map((o) => interval(o)[0]));
-      expect(first).toBeGreaterThanOrEqual(45);
-      // (the welcoming first kilometre only takes dodges and pavement clutter: a beat later)
-      expect(first).toBeLessThanOrEqual(80);
+      expect(first).toBeGreaterThanOrEqual(30);
+      expect(first).toBeLessThanOrEqual(40);
     }
   });
 
@@ -160,12 +159,15 @@ describe("track generator", () => {
         const index = serial % ZONES.length;
         const start = zoneStartDistance(index, lap);
         const zone = ZONES[index]!;
-        const inZone = gen.placed.filter((p) => p.start >= start && p.start < start + zone.length);
+        // (the zone's real extent from the course: the nominal ZONES lengths differ)
+        const end = zoneAt(start + 1).end;
+        const inZone = gen.placed.filter((p) => p.start >= start && p.start < end);
         // A stork landing reserved at the end of the zone may take the finale's place.
-        const end = start + zone.length;
         const light = lightFor(zoneAt(start + 1));
         const landing = gen.flights.some((f) => f.clearTo > light - 60 && f.clearFrom < end);
-        if (!landing) expect(inZone.some((p) => p.name === "finale"), `seed ${seed} ${zone.id} lap ${lap}: finale`).toBe(true);
+        // (lap 1 on the bridge: the pylon's set piece, an oncoming convoy, stands in for the finale)
+        const bridgeSetPiece = lap === 1 && zone.id === "puente-real" && inZone.some((p) => p.name === "oncoming");
+        if (!landing && !bridgeSetPiece) expect(inZone.some((p) => p.name === "finale"), `seed ${seed} ${zone.id} lap ${lap}: finale`).toBe(true);
         if (zone.id === "valdepasillas" || zone.id === "margen-derecha") {
           roofZones++;
           if (inZone.some((p) => p.name === "rampRoof")) roofs++;

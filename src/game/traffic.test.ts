@@ -66,6 +66,8 @@ describe("traffic model", () => {
           continue;
         }
         if (o.d > lightFor(span)) continue; // The finale: everything stands at the zone-end light.
+        // The ramp-and-roofs route is a set piece of standing vehicles (now also on the bridge).
+        if (gen.placed.some((p) => p.name === "rampRoof" && o.d > p.start - 5 && o.d < p.end + 5)) continue;
         // Queued at a light: drove up and stopped (counted neither way).
         if (o.k !== 0 && o.stop !== undefined && Math.abs(o.d - o.stop) < 0.05) continue;
         if (o.k !== 0) driving++;

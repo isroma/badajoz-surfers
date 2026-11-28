@@ -11,7 +11,7 @@ import { Bag, TS, samples } from "./bag";
 import { SURFACE_COLOUR, flatMaterial, groundMaterial, paintMaterial, solidGroundMaterial } from "./cmats";
 import type { CityCtx } from "./context";
 import { hash01 } from "./shared";
-import { inRingFootprint } from "./roundabouts";
+import { clipOutsideRings, inRingFootprint, ringsOf } from "./roundabouts";
 import { GROUND_SCALE, type GroundName } from "./textures";
 import { PAL } from "../palette";
 import type { LaneLayout, TrackStretch } from "./track";
@@ -23,6 +23,8 @@ const TRANSITION = 12;
 const WHITE = new THREE.Color(0xf2f0ea);
 const YELLOW = new THREE.Color(0xffffff); // bus-stop zigzags in white: sun yellow is reserved for guidance
 const C1 = new THREE.Color(1, 1, 1);
+/** Tint of pavements that are not runnable: lighter than the pavement colour, so they recede. */
+const WALK_OFF = new THREE.Color(1.03, 1.045, 1.07);
 
 /** Per-sample pavement extents, kept for the furniture (lamps at the kerb, terraces). */
 export interface EdgeSample {
@@ -60,7 +62,8 @@ class RoadPainter {
     return { acc: this.bag.acc(flatMaterial()), tint: new THREE.Color(SURFACE_COLOUR[surf]) };
   }
 
-  strip(mat: THREE.Material, ss: number[], l0: number | ((s: number) => number), l1: number | ((s: number) => number), y: number, scale: number, col = C1, colOuter?: THREE.Color): void {
+  strip(mat: THREE.Material, ss: number[], l0: number | ((s: number) => number), l1: number | ((s: number) => number), yIn: number | ((s: number) => number), scale: number, col = C1, colOuter?: THREE.Color): void {
+    const Y = typeof yIn === "number" ? () => yIn : yIn;
     const { acc, tint } = this.accFor(mat);
     col = col.clone().multiply(tint);
     if (colOuter) colOuter = colOuter.clone().multiply(tint);
@@ -69,13 +72,44 @@ class RoadPainter {
     for (let i = 0; i + 1 < ss.length; i++) {
       const s0 = ss[i]!;
       const s1 = ss[i + 1]!;
-      const p0 = this.ts.p(s0, L0(s0), y, this.a);
-      const p1 = this.ts.p(s0, L1(s0), y, this.b);
-      const p2 = this.ts.p(s1, L1(s1), y, this.c);
-      const p3 = this.ts.p(s1, L0(s1), y, this.d);
+      const p0 = this.ts.p(s0, L0(s0), Y(s0), this.a);
+      const p1 = this.ts.p(s0, L1(s0), Y(s0), this.b);
+      const p2 = this.ts.p(s1, L1(s1), Y(s1), this.c);
+      const p3 = this.ts.p(s1, L0(s1), Y(s1), this.d);
       if (L1(s0) - L0(s0) < 0.01 && L1(s1) - L0(s1) < 0.01) continue;
-      if (this.owned((p0.x + p1.x + p2.x + p3.x) / 4, (p0.z + p1.z + p2.z + p3.z) / 4, p0, p1, p2, p3)) continue;
       const uv = (p: THREE.Vector3): [number, number] => [p.x / scale, p.z / scale];
+      const cxq = (p0.x + p1.x + p2.x + p3.x) / 4;
+      const czq = (p0.z + p1.z + p2.z + p3.z) / 4;
+      if (this.exclude !== null && this.exclude(cxq, czq, 10)) {
+        // near a roundabout: cut the strip across into ≤ 1.5 m pieces so it stops exactly at the
+        // ring's footprint (a wide piece dropped whole left bare ground at the mouths)
+        const w = Math.max(L1(s0) - L0(s0), L1(s1) - L0(s1));
+        const k = Math.max(1, Math.ceil(w / 1.5));
+        for (let j = 0; j < k; j++) {
+          const la = (t: number, s: number): number => L0(s) + (L1(s) - L0(s)) * t;
+          const q0 = this.ts.p(s0, la(j / k, s0), Y(s0));
+          const q1 = this.ts.p(s0, la((j + 1) / k, s0), Y(s0));
+          const q2 = this.ts.p(s1, la((j + 1) / k, s1), Y(s1));
+          const q3 = this.ts.p(s1, la(j / k, s1), Y(s1));
+          const cOut = j === 0 ? colOuter ?? col : col;
+          if (!this.offRoad && this.exclude !== null) {
+            // stop exactly at the ring's footprint circle (no sliver of bare ground, no overlap)
+            const poly = clipOutsideRings(this.ctxRef!, [q0, q1, q2, q3]);
+            if (poly !== null) {
+              for (let t = 1; t + 1 < poly.length; t++) {
+                const A = poly[0]!, B = poly[t]!, C = poly[t + 1]!;
+                const nn = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(C, A));
+                if (nn.y > 0) acc.tri(A, B, C, uv(A), uv(B), uv(C), cOut, UP);
+                else acc.tri(A, C, B, uv(A), uv(C), uv(B), cOut, UP);
+              }
+              continue;
+            }
+          }
+          acc.quad(q0, q1, q2, q3, uv(q0), uv(q1), uv(q2), uv(q3), cOut, col, col, cOut, UP);
+        }
+        continue;
+      }
+      if (this.owned(cxq, czq, p0, p1, p2, p3)) continue;
       acc.quad(p0, p1, p2, p3, uv(p0), uv(p1), uv(p2), uv(p3), colOuter ?? col, col, col, colOuter ?? col, UP);
     }
   }
@@ -110,13 +144,51 @@ class RoadPainter {
   }
 
   /** Paint rectangle in track space (s0..s1 along, l0..l1 across). */
+  /** A rounded, kerbed nose closing a median of half-width hw centred on lateral c at s (towards dir·s). */
+  nose(s: number, c: number, hw: number, dir: 1 | -1): void {
+    const r = Math.max(0.3, hw - 0.22);
+    const f = this.ts.f(s);
+    const o = this.ts.p(s, c, 0);
+    const grass = this.bag.acc(flatMaterial());
+    const kerbC = new THREE.Color(0.82, 0.8, 0.77);
+    const lawn = new THREE.Color(SURFACE_COLOUR.grass);
+    const n = 10;
+    const pt = (a: number, rr: number, dy: number): THREE.Vector3 => {
+      // a = 0 … π sweeps from one median edge round the front to the other
+      const along = Math.sin(a) * rr * dir;
+      const across = -Math.cos(a) * rr;
+      return new THREE.Vector3(o.x + f.tx * along + f.nx * across, o.y + dy, o.z + f.tz * along + f.nz * across);
+    };
+    for (let k = 0; k < n; k++) {
+      const a0 = (k / n) * Math.PI;
+      const a1 = ((k + 1) / n) * Math.PI;
+      const C = new THREE.Vector3(o.x, o.y + KERB + 0.03, o.z);
+      const A = pt(a0, r, KERB + 0.03), B = pt(a1, r, KERB + 0.03);
+      const nn = new THREE.Vector3().subVectors(A, C).cross(new THREE.Vector3().subVectors(B, C));
+      if (nn.y > 0) grass.tri(C, A, B, [0, 0], [0, 0], [0, 0], lawn, UP);
+      else grass.tri(C, B, A, [0, 0], [0, 0], [0, 0], lawn, UP);
+      // kerb top and face round the nose
+      const A1 = pt(a0, r + 0.22, KERB + 0.05), B1 = pt(a1, r + 0.22, KERB + 0.05);
+      const A0 = pt(a0, r, KERB + 0.05), B0 = pt(a1, r, KERB + 0.05);
+      const nk = new THREE.Vector3().subVectors(A1, A0).cross(new THREE.Vector3().subVectors(B0, A0));
+      if (nk.y > 0) grass.quad(A0, A1, B1, B0, [0, 0], [0, 0], [0, 0], [0, 0], kerbC, kerbC, kerbC, kerbC, UP);
+      else grass.quad(A0, B0, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], kerbC, kerbC, kerbC, kerbC, UP);
+      const F0 = pt(a0, r + 0.22, 0), F1 = pt(a1, r + 0.22, 0);
+      grass.quad(F0, F1, B1, A1, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
+      grass.quad(F1, F0, A1, B1, [0, 0], [0, 0], [0, 0], [0, 0], kerbC);
+    }
+  }
+
+  /** Distance (m) from the route at s to the nearest roundabout's footprint (∞ when none). */
+  ringGap: (s: number, l?: number) => number = () => Infinity;
   /** Ground the roundabout objects own (inside a ring's footprint the route draws nothing). */
   exclude: ((x: number, z: number, margin: number) => boolean) | null = null;
+  ctxRef: CityCtx | null = null;
   /** Centroid inside the footprint, or any corner inside the ring's outer kerb (+0.4 m). */
   private owned(x: number, z: number, ...corners: THREE.Vector3[]): boolean {
     // runnable-lane tints (offRoad paint) stay on top of the roundabout object
     if (this.exclude === null || this.offRoad) return false;
-    return this.exclude(x, z, -1) || corners.some((c) => this.exclude!(c.x, c.z, -2.1));
+    return this.exclude(x, z, -1) || corners.some((c) => this.exclude!(c.x, c.z, -3.2));
   }
 
   /** While true, paint is clipped to the carriageways actually laid at each s (road markings never on paving). */
@@ -128,7 +200,8 @@ class RoadPainter {
     return this.ts.track.layoutAt(s).carriageways.find((c) => l >= c.from - 0.01 && l <= c.to + 0.01) ?? null;
   }
 
-  paint(s0: number, s1: number, l0In: number, l1In: number, col = WHITE, y = 0.006): void {
+  paint(s0: number, s1: number, l0In: number, l1In: number, col = WHITE, yIn: number | ((s: number) => number) = 0.006): void {
+    const Yp = typeof yIn === "number" ? () => yIn : yIn;
     const acc = this.bag.acc(paintMaterial());
     const ss = samples(s0, s1, 2);
     for (let i = 0; i + 1 < ss.length; i++) {
@@ -149,14 +222,14 @@ class RoadPainter {
         let pieces: [number, number][] = [[l0, l1]];
         for (const c of cws) pieces = pieces.flatMap(([p0, p1]) => (c.to <= p0 || c.from >= p1 ? [[p0, p1]] : ([[p0, c.from], [c.to, p1]] as [number, number][]).filter(([q0, q1]) => q1 - q0 > 0.05)));
         if (pieces.length !== 1 || pieces[0]![0] !== l0 || pieces[0]![1] !== l1) {
-          for (const [q0, q1] of pieces) this.paint(ss[i]!, ss[i + 1]!, q0, q1, col, y);
+          for (const [q0, q1] of pieces) this.paint(ss[i]!, ss[i + 1]!, q0, q1, col, yIn);
           continue;
         }
       }
-      const a = this.ts.p(ss[i]!, l0, y, this.a);
-      const b = this.ts.p(ss[i]!, l1, y, this.b);
-      const c = this.ts.p(ss[i + 1]!, l1, y, this.c);
-      const d = this.ts.p(ss[i + 1]!, l0, y, this.d);
+      const a = this.ts.p(ss[i]!, l0, Yp(ss[i]!), this.a);
+      const b = this.ts.p(ss[i]!, l1, Yp(ss[i]!), this.b);
+      const c = this.ts.p(ss[i + 1]!, l1, Yp(ss[i + 1]!), this.c);
+      const d = this.ts.p(ss[i + 1]!, l0, Yp(ss[i + 1]!), this.d);
       if (this.owned((a.x + b.x + c.x + d.x) / 4, (a.z + b.z + c.z + d.z) / 4, a, b, c, d)) continue;
       acc.quad(a, b, c, d, [a.x / 2, a.z / 2], [b.x / 2, b.z / 2], [c.x / 2, c.z / 2], [d.x / 2, d.z / 2], col, col, col, col, UP);
     }
@@ -211,6 +284,13 @@ function innerExtents(lay: LaneLayout): [number, number] {
 export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: number): RoadResult {
   const P = new RoadPainter(bag, ts, (s) => ctx.wideLayout(s));
   P.exclude = (x, z, margin) => inRingFootprint(ctx, x, z, margin) !== null;
+  P.ctxRef = ctx;
+  P.ringGap = (s, l = 0) => {
+    const q = ts.p(s, l, 0);
+    let gap = Infinity;
+    for (const r of ringsOf(ctx)) gap = Math.min(gap, Math.hypot(q.x - r.rb.cx, q.z - r.rb.cz) - (r.rb.rOuter + 2.5));
+    return gap;
+  };
   const edges: EdgeSample[] = [];
   const hyd = groundMaterial("hydraulic");
   for (const { a, b, st } of piecesOf(ctx, s0, s1)) {
@@ -352,7 +432,10 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
         P.kerb(ss, wt, 1, 0, 0.05);
         return;
       }
-      P.strip(hyd, ss, wf, wt, KERB, GROUND_SCALE.hydraulic);
+      // pavements nobody runs on recede: a lighter paving (the runnable ones carry the warmer
+      // runnable colour and its edge lines on top, see legibility)
+      const runnable = lay.offsets.some((o, k) => lay.kinds[k] !== "road" && o > w.from - 0.1 && o < w.to + 0.1);
+      P.strip(hyd, ss, wf, wt, KERB, GROUND_SCALE.hydraulic, runnable ? C1 : WALK_OFF);
     });
     // kerbs at every carriageway edge that meets something raised
     if (!ped) {
@@ -368,9 +451,14 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
       const lane = lay.kinds.findIndex((k, i) => (k as string) === "median" && lay.offsets[i]! > m.from && lay.offsets[i]! < m.to);
       const mk = sec.medianKind;
       if (bridge || w < 2.2 || (mk !== null && mk !== "planting" && mk !== "promenade" && mk !== "unmapped")) {
-        P.strip(groundMaterial("granite"), ss, m.from, m.to, KERB + 0.04, 2, new THREE.Color(0.86, 0.85, 0.82));
-        P.face(solidGroundMaterial("granite"), ss, m.from, 0, KERB + 0.04, -1);
-        P.face(solidGroundMaterial("granite"), ss, m.to, 0, KERB + 0.04, 1);
+        // hard median: also ends before a roundabout (road surface beyond it)
+        const away = (q: number): boolean => bridge || (P.ringGap(q, m.from) >= 4 && P.ringGap(q, m.to) >= 4);
+        for (const run of runsOf(ss, away)) {
+          P.strip(groundMaterial("granite"), run, m.from, m.to, KERB + 0.04, 2, new THREE.Color(0.86, 0.85, 0.82));
+          P.face(solidGroundMaterial("granite"), run, m.from, 0, KERB + 0.04, -1);
+          P.face(solidGroundMaterial("granite"), run, m.to, 0, KERB + 0.04, 1);
+        }
+        for (const run of runsOf(ss, (q) => !away(q))) P.strip(surfMat, run, m.from, m.to, 0, GROUND_SCALE[surf]);
       } else if (lane >= 0) {
         // runnable boulevard: albero promenade in the lane width, planting either side
         const lc = lay.offsets[lane]!;
@@ -383,9 +471,20 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
         P.kerb(ss, m.from + 0.22, -1, 0, KERB + 0.05);
         P.kerb(ss, m.to, 1, 0, KERB + 0.05);
       } else {
-        P.strip(groundMaterial("grass"), ss, m.from + 0.22, m.to - 0.22, KERB + 0.03, GROUND_SCALE.grass);
-        P.kerb(ss, m.from + 0.22, -1, 0, KERB + 0.05);
-        P.kerb(ss, m.to, 1, 0, KERB + 0.05);
+        // a real median: lawn between kerbs; it ENDS before a roundabout at a rounded, kerbed nose,
+        // and the carriageway surface continues where it stopped (nothing reaches the ring's mouth)
+        const mid = (m.from + m.to) / 2;
+        const away = (q: number): boolean => P.ringGap(q, mid) >= 3 + (m.to - m.from) / 2 && P.ringGap(q, m.from) >= 3 && P.ringGap(q, m.to) >= 3;
+        for (const run of runsOf(ss, away)) {
+          P.strip(groundMaterial("grass"), run, m.from + 0.22, m.to - 0.22, KERB + 0.03, GROUND_SCALE.grass);
+          P.kerb(run, m.from + 0.22, -1, 0, KERB + 0.05);
+          P.kerb(run, m.to, 1, 0, KERB + 0.05);
+          for (const [end, dirN] of [[run[0]!, -1], [run[run.length - 1]!, 1]] as const) {
+            if (away(end + dirN * 2.5)) continue; // a nose only where the ring comes next
+            P.nose(end, mid, (m.to - m.from) / 2, dirN);
+          }
+        }
+        for (const run of runsOf(ss, (q) => !away(q))) P.strip(surfMat, run, m.from, m.to, 0, GROUND_SCALE[surf]);
       }
     }
 
@@ -459,7 +558,7 @@ function markings(ctx: CityCtx, P: RoadPainter, lay: LaneLayout, sec: CitySectio
         if (k !== "road" || prev.flow[i] !== 1) return;
         const lc = prev.offsets[i]!;
         const ts = entry - 7;
-        if (ts >= a && ts < b) P.paintTri([[ts - 1.6, lc], [ts + 1.6, lc - 0.55], [ts + 1.6, lc + 0.55]]);
+        void ts; // no "ceda" triangle in the runner's lanes: only the give-way line crosses them
         const as = ((entry - 28) % L + L) % L;
         if (as >= a && as + 5 < b) arrow(P, as, lc);
       });
@@ -530,7 +629,7 @@ const HEDGE = PAL.trees[2];
  * lane in the "off" road tint; a red edge on oncoming lanes; railings where non-runnable pavement
  * continues beyond the runnable edge; hedges on medians the runner cannot use.
  */
-function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: boolean, ss: number[], planted: boolean, bridge: boolean): void {
+function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: boolean, ss: number[], planted: boolean, _bridge: boolean): void {
   const lanes = lay.offsets.map((o, i) => ({ from: o - lay.widths[i]! / 2, to: o + lay.widths[i]! / 2, kind: lay.kinds[i] as string, flow: lay.flow[i]! }));
   // runnable path lanes
   P.offRoad = true;
@@ -567,13 +666,14 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
   for (const side of [1, -1] as const) {
     const edge = side > 0 ? lay.right : lay.left;
     const pave = lay.sidewalks.some((w) => (side > 0 ? w.to > edge + 0.8 : w.from < edge - 0.8));
-    if (!pave || ped || bridge) continue;
+    // (on bridges too: the walkway beside the runner reads as fenced off)
+    if (!pave || ped) continue;
     for (let k = 0; k + 1 < ss.length; k += 1) {
       const s0 = ss[k]!;
       const s1 = ss[k + 1]!;
       const A = P.ts.p(s0, edge + side * 0.15, KERB);
       const B = P.ts.p(s1, edge + side * 0.15, KERB);
-      if (P.exclude?.(A.x, A.z, -1) || P.exclude?.(B.x, B.z, -1)) continue; // the roundabout's own ground
+      if (P.exclude?.(A.x, A.z, -1) || P.exclude?.(B.x, B.z, -1) || P.ringGap(s0, edge) < 8) continue; // the roundabout's own ground and mouth
       p.beam([A.x, A.y + 0.9, A.z], [B.x, B.y + 0.9, B.z], 0.06, PAL.darkGrey, m);
       if (k % 2 === 0) p.beam([A.x, A.y, A.z], [A.x, A.y + 0.92, A.z], 0.06, PAL.darkGrey, m);
     }
@@ -605,9 +705,28 @@ function legibility(P: RoadPainter, lay: LaneLayout, a: number, b: number, ped: 
       if (wl.offsets.some((o, j) => Math.abs(mid - o) < (wl.widths[j] ?? 0) / 2 + w / 2 + 0.2)) continue;
       const A = P.ts.p(ss[k]!, mid, KERB);
       const B = P.ts.p(ss[k + 1]!, mid, KERB);
-      if (P.exclude?.(A.x, A.z, -1)) continue;
+      if (P.exclude?.(A.x, A.z, -1) || P.ringGap(ss[k]!) < 8) continue; // the hedge stops before the nose
       p.beam([A.x, A.y + 0.4, A.z], [B.x, B.y + 0.4, B.z], w, HEDGE, m);
     }
   }
   void b;
+}
+
+/** Consecutive runs of samples where pred holds (each run shares its end samples with the next). */
+function runsOf(ss: number[], pred: (s: number) => boolean): number[][] {
+  const out: number[][] = [];
+  let cur: number[] = [];
+  for (let i = 0; i < ss.length; i++) {
+    const ok = pred(ss[i]!);
+    if (ok) cur.push(ss[i]!);
+    else {
+      if (cur.length) {
+        cur.push(ss[i]!);
+        if (cur.length > 1) out.push(cur);
+      }
+      cur = [];
+    }
+  }
+  if (cur.length > 1) out.push(cur);
+  return out;
 }

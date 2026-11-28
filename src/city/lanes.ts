@@ -19,24 +19,26 @@
  * Rules (numbers are the constants below):
  * - Road lane width w = carriageway width / lanes, clamped ROAD_LANE_MIN..ROAD_LANE_MAX.
  * - Own lanes: dual or one-way: min(lanes, 3); single two-way with n lanes (2..4): ceil(n/2).
- * - "walk-R" (right pavement, flow 0) on every road stretch, rings and bridges included:
- *   centre = kerb + sw/2, sw from facades (SIDEWALK_* constants), 2.2 m default.
- * - Opposite lanes ("opp-*", flow −1) are runnable on single two-way carriageways (right next to
- *   own lanes) and on dual carriageways whose median is narrow (< MEDIAN_RUNNABLE_GAP) and
- *   crossable (medianKind cable-plane / kerb / unmapped / null), e.g. Puente Real.
- * - Wide or planted/paved medians (≥ 3.5 m, or planting/promenade): the opposite carriageway is
- *   NOT runnable; ONE "median" lane (flow 0) runs on the near side of the median, width
- *   clamp(gap − 0.6, 1.8, 3.0), 0.3 m from our inner kerb (≤ 4.5 m from the inner own lane).
- *   Barrier medians: neither. The gap is the data's `medianWidth` when present.
- * - "walk-L" (left pavement) only on one-way streets (nothing to the left), and only while the
- *   stretch has < MIN_LANES lanes.
+ * - Runnable lanes are car-road lanes. Opposite lanes ("opp-*", flow −1) are runnable on single
+ *   two-way carriageways (right next to own lanes) and on dual carriageways whose median is
+ *   narrow (< MEDIAN_RUNNABLE_GAP) and crossable (medianKind cable-plane / kerb / unmapped / null):
+ *   Puente Real = opp-2 opp-1 own-2 own-1. Medians are NEVER runnable (`median` strips are drawing
+ *   info only); the gap is the data's `medianWidth` when present.
+ * - Pavement lanes only to reach MIN_LANES: "walk-R" (centre = kerb + sw/2, sw from facades,
+ *   SIDEWALK_* constants) when road lanes < 3, then "walk-L" only on one-way streets (nothing on
+ *   the left). So 2-lane avenue carriageways = own-2 own-1 walk-R; two-way streets = opp-1 own-1
+ *   walk-R; one-lane one-way = walk-L own-1 walk-R; a one-lane carriageway of a dual avenue =
+ *   own-1 walk-R (its left is the median).
  * - Pedestrian streets / plazas / footbridges: "ped-1..3" centred (2 under PED_NARROW between
  *   walls), spacing clamp(U / n, PED_MIN_SPACING, PED_MAX_SPACING).
  * - Roundabout rings (the arc entryS..exitS): the ring's real circulating lanes from
- *   city.roundabouts (ringLayoutFromData): own-1 on the route (outer lane), further lanes inward,
- *   ids own-j when the approach has them, else ring-j; walk-R outside the outer kerb. Oncoming,
- *   median and walk-L lanes end before the ring. The approach is the stretch before the ring, or
- *   after it when the one before is pedestrian. Without data, the approach's own lanes + walk-R.
+ *   city.roundabouts (ringLayoutFromData). Lanes flow through the ring 1:1 in order from the kerb
+ *   (mapLanesInOrder, aligned so a pavement on one side only does not shift the pairing): own-1 ↔
+ *   the outer ring lane, own-2 ↔ the second, the approach's next lane inward (opp-1 on Puente
+ *   Real, ped-1) ↔ the third; walk-R continues round the ring when the approach has it. Only lanes
+ *   without a counterpart end; ring lanes nothing continues onto are not offered (non-runnable).
+ *   The approach is the stretch before the ring, or after it when the one before is pedestrian.
+ *   Without data, the approach's own lanes + walk-R.
  * - 2 ≤ lanes ≤ MAX_LANES.
  *
  * Stabilisation (`buildStretches`, circular over the lap): consecutive non-ring sections with
@@ -48,6 +50,7 @@
  */
 import type { CitySection } from "./data";
 
+/** "median" is kept for API compatibility; no layout produces median lanes any more. */
 export type LaneKind = "road" | "sidewalk" | "pedestrian" | "median";
 export type Flow = 1 | -1 | 0;
 
@@ -98,13 +101,8 @@ export const PED_MAX_PAVED = 14;
 export const MAX_DUAL_OFFSET = 30;
 /** Medians at least this wide (kerb to kerb) are never crossed by runnable oncoming lanes. */
 export const MEDIAN_RUNNABLE_GAP = 3.5;
-export const MEDIAN_LANE_MAX = 3.0;
-export const MEDIAN_LANE_MIN = 1.8;
-export const MEDIAN_LANE_MARGIN = 0.3;
-/** Max distance from the inner own lane centre to the median lane centre. */
-export const MEDIAN_LANE_REACH = 4.5;
 export const MIN_LANES = 3;
-export const MAX_LANES = 5;
+export const MAX_LANES = 4;
 /** Non-ring stretches shorter than this are absorbed into a neighbour. */
 export const MIN_STRETCH = 120;
 export const MERGE_TOLERANCE = 0.75;
@@ -115,7 +113,6 @@ export const MAP_NEAREST = 1.5;
 
 const PED_HIGHWAYS = new Set(["pedestrian", "footway", "living_street", "cycleway", "steps", "path"]);
 const CROSSABLE_MEDIANS = new Set(["cable-plane", "kerb", "unmapped"]);
-const RUNNABLE_MEDIANS = new Set(["planting", "promenade", "unmapped", "kerb"]);
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 const r2 = (v: number): number => Math.round(v * 100) / 100 + 0; // + 0 turns -0 into 0
@@ -257,20 +254,15 @@ function sectionDraft(sec: CitySection): Draft {
       const crossable = gap < MEDIAN_RUNNABLE_GAP && (kind === null || CROSSABLE_MEDIANS.has(kind));
       if (crossable) {
         for (let j = 0; j < m; j++) d.lanes.push({ id: `opp-${j + 1}`, offset: oppR - (j + 0.5) * w, width: w, flow: -1, kind: "road" });
-      } else if (kind === null || RUNNABLE_MEDIANS.has(kind)) {
-        const wm = clamp(gap - 2 * MEDIAN_LANE_MARGIN, MEDIAN_LANE_MIN, MEDIAN_LANE_MAX);
-        const centre = kerbL - MEDIAN_LANE_MARGIN - wm / 2;
-        const inner = -(k - 1) * w;
-        if (gap >= wm + 2 * MEDIAN_LANE_MARGIN && inner - centre <= MEDIAN_LANE_REACH) {
-          d.lanes.push({ id: "median", offset: centre, width: wm, flow: 0, kind: "median" });
-        }
       }
+      // A wide or planted median is never runnable: drawing info only.
     }
   }
 
   const sw = sidewalkWidth(sec, kerbR - leftEdge);
-  d.lanes.push({ id: "walk-R", offset: kerbR + sw / 2, width: sw, flow: 0, kind: "sidewalk" });
   d.sidewalks.push({ from: kerbR, to: kerbR + sw }, { from: leftEdge - sw, to: leftEdge });
+  // Pavement lanes only to reach MIN_LANES: walk-R first, walk-L only on one-way streets.
+  if (d.lanes.length < MIN_LANES) d.lanes.push({ id: "walk-R", offset: kerbR + sw / 2, width: sw, flow: 0, kind: "sidewalk" });
   if (walkLeftAllowed && d.lanes.length < MIN_LANES) {
     d.lanes.push({ id: "walk-L", offset: kerbL - sw / 2, width: sw, flow: 0, kind: "sidewalk" });
   }
@@ -293,43 +285,132 @@ export const ISLAND_MARGIN = 0.3;
  *  inside rRef, and 1-lane rings are only 3.5 m wide (Reyes Católicos, Minayo). */
 export const RING_OWN1_MIN = 2.6;
 
+/** Lanes continue across a ring boundary, in order from the kerb, when their centres are this close. */
+export const RING_PAIR_MAX = 2.0;
+
+/** Lane indices of `l` from the outside (kerb, largest offset) inward. */
+const outsideIn = (l: LaneLayout): number[] => l.offsets.map((_, i) => i).sort((a, b) => l.offsets[b]! - l.offsets[a]!);
+
 /**
- * A ring's layout from the roundabout data: its real circulating lanes, all flow +1, own-1 on the
- * route (the outer lane), further lanes inward every (rOuter − rInner) / lanes. Lane j reuses the
- * approach's "own-j" id when it has one, else "ring-j" (those begin at the entry and end at the
- * exit). Lanes after own-1 share the band between own-1 and the island (ISLAND_MARGIN clear, at
- * the route's closest point) evenly, each ≤ the ring lane width and ≥ RING_OWN1_MIN; a lane that
- * cannot fit is dropped. walk-R (if the approach
- * has one) runs outside the outer kerb.
+ * Order-preserving correspondence across a ring boundary: counting from the outside inward, the
+ * k-th lane of `a` continues as the k-th lane of `b` when their centres are within RING_PAIR_MAX
+ * (ids and kinds may differ). Returns, for each lane of `a`, its index in `b` or null.
  */
-export function ringLayoutFromData(g: RingGeometry, approach: LaneLayout): LaneLayout {
+export function mapLanesInOrder(a: LaneLayout, b: LaneLayout, maxD = RING_PAIR_MAX): (number | null)[] {
+  const oa = outsideIn(a);
+  const ob = outsideIn(b);
+  // Order-preserving: the k-th lane from the kerb on one side pairs with the (k + δ)-th on the
+  // other, with the alignment δ that pairs the most lanes (then the smallest total shift), so a
+  // pavement lane present on one side only does not throw the road lanes out of step.
+  let best: (number | null)[] = a.ids.map(() => null);
+  let bestScore = -Infinity;
+  for (let delta = -ob.length; delta <= oa.length; delta++) {
+    const map: (number | null)[] = a.ids.map(() => null);
+    let score = 0;
+    for (let k = 0; k < oa.length; k++) {
+      const j = ob[k + delta];
+      const i = oa[k]!;
+      if (j === undefined) continue;
+      const dist = Math.abs(a.offsets[i]! - b.offsets[j]!);
+      if (dist <= maxD) {
+        map[i] = j;
+        score += 100 - dist;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = map;
+    }
+  }
+  return best;
+}
+
+/**
+ * A ring's layout from the roundabout data. Lanes flow through the ring 1:1 in order from the kerb
+ * (see mapLanesInOrder): walk-R ↔ walk-R (outside the outer kerb, when the approach or exit has a
+ * pavement), the approach's outermost road/pedestrian lane ↔ "own-1" (the route's outer lane,
+ * offset 0), the next lanes inward ↔ the ring's inner lanes. A ring lane after own-1 is offered
+ * ONLY if an approach lane continues onto it (no lane begins inside the arc); its id is the
+ * approach lane's id when that is an own lane, else "ring-j". Its offset is the mean of the
+ * continuing lanes' offsets at entry and exit (so each end shifts ≤ half their difference), moved
+ * or narrowed (≥ RING_OWN1_MIN) as needed to stay ISLAND_MARGIN clear of the island at the
+ * route's closest point and not to overlap the lane outside it. The ring's capacity — how many
+ * lanes of width ≤ (rOuter − rInner) / lanes fit between own-1 and the island — caps the count.
+ */
+export function ringLayoutFromData(g: RingGeometry, approach: LaneLayout, exit: LaneLayout = approach): LaneLayout {
   const n = Math.max(1, Math.round(g.lanes));
   const lw = (g.rOuter - g.rInner) / n;
   const limit = g.rInner + ISLAND_MARGIN;
-  // own-1 on the route; narrowed symmetrically (≥ RING_OWN1_MIN) if even it would touch the island.
+  const minOffsetEdge = limit - g.dMin; // lane inner edges must stay ≥ this (lateral)
   const w1 = Math.min(lw, Math.max(RING_OWN1_MIN, 2 * (g.dMin - limit)));
-  const lanes: DraftLane[] = [{ id: "own-1", offset: 0, width: w1, flow: 1, kind: "road" }];
-  // The other ring lanes share the band between own-1 and the island evenly (≤ lw, ≥ ROAD_LANE_MIN).
+  const kerbOut = Math.max(g.rOuter - g.dMean, w1 / 2);
+  // Capacity: nominal inner lanes sharing the band evenly.
   const band = g.dMin - w1 / 2 - limit;
-  let k = n - 1;
-  let w = k > 0 ? Math.min(lw, band / k) : 0;
-  while (k > 0 && w < RING_OWN1_MIN) {
-    k--;
-    w = k > 0 ? Math.min(lw, band / k) : 0;
+  let cap = n - 1;
+  let wn = cap > 0 ? Math.min(lw, band / cap) : 0;
+  while (cap > 0 && wn < RING_OWN1_MIN) {
+    cap--;
+    wn = cap > 0 ? Math.min(lw, band / cap) : 0;
   }
-  for (let j = 1; j <= k; j++) {
-    const id = approach.ids.includes(`own-${j + 1}`) ? `own-${j + 1}` : `ring-${j + 1}`;
-    lanes.push({ id, offset: -w1 / 2 - (j - 0.5) * w, width: w, flow: 1, kind: "road" });
-  }
-  const kerbOut = Math.max(g.rOuter - g.dMean, lanes[0]!.width / 2);
-  const kerbIn = Math.min(g.rInner - g.dMean, ...lanes.map((l) => l.offset - l.width / 2));
+  // walk-R continues round the ring when the approach has it (a pedestrian street counts).
+  const paved = (l: LaneLayout): boolean => l.ids.includes("walk-R") || (l.kinds.length > 0 && l.kinds.every((k) => k === "pedestrian"));
+  const hasWalk = paved(approach);
+  // Pavement width: the mean of the approach's and exit's (so walk-R shifts little at both ends).
+  const ws = [approach, exit].flatMap((l) => (l.ids.includes("walk-R") ? [l.widths[l.ids.indexOf("walk-R")]!] : []));
+  const walkW = ws.length > 0 ? ws.reduce((x, y) => x + y, 0) / ws.length : SIDEWALK_DEFAULT;
+  // Nominal ring lanes from the outside in.
+  const nominal: DraftLane[] = [];
+  if (hasWalk) nominal.push({ id: "walk-R", offset: kerbOut + walkW / 2, width: walkW, flow: 0, kind: "sidewalk" });
+  nominal.push({ id: "own-1", offset: 0, width: w1, flow: 1, kind: "road" });
+  for (let j = 1; j <= cap; j++) nominal.push({ id: `ring-${j + 1}`, offset: -w1 / 2 - (j - 0.5) * wn, width: wn, flow: 1, kind: "road" });
+  // Continuations (order-preserving), as indices into `nominal`.
+  const nom = finish({ lanes: nominal.map((x) => ({ ...x })), carriageways: [], sidewalks: [], median: [] });
+  const nomIndex = nominal.map((x) => nom.ids.indexOf(x.id));
+  const pairWith = (l: LaneLayout, lFirst: boolean): (number | null)[] => {
+    const m = lFirst ? mapLanesInOrder(l, nom) : mapLanesInOrder(nom, l);
+    return nominal.map((_, k) => {
+      const ni = nomIndex[k]!;
+      if (lFirst) {
+        const i = m.indexOf(ni);
+        return i >= 0 ? i : null;
+      }
+      return m[ni] ?? null;
+    });
+  };
+  const fromA = pairWith(approach, true);
+  const toE = pairWith(exit, false);
+  const lanes: DraftLane[] = [];
+  nominal.forEach((x, k) => {
+    if (x.id === "walk-R" || x.id === "own-1") {
+      lanes.push(x);
+      return;
+    }
+    const ia = fromA[k];
+    if (ia === null || ia === undefined) return; // not offered: nothing continues onto it
+    const aId = approach.ids[ia]!;
+    const id = /^own-\d$/.test(aId) ? aId : x.id;
+    const ie = toE[k];
+    const a = approach.offsets[ia]!;
+    let target = ie !== null && ie !== undefined ? (a + exit.offsets[ie]!) / 2 : a;
+    let w = x.width;
+    const outer = lanes[lanes.length - 1]!;
+    const maxOff = outer.offset - outer.width / 2 - w / 2;
+    target = Math.min(target, maxOff);
+    if (target - w / 2 < minOffsetEdge) {
+      // Too close to the island: move out as far as the outer lane allows, then narrow.
+      target = Math.min(maxOff, minOffsetEdge + w / 2);
+      if (target - w / 2 < minOffsetEdge) {
+        const top = outer.offset - outer.width / 2;
+        w = top - minOffsetEdge;
+        target = top - w / 2;
+      }
+    }
+    if (w < RING_OWN1_MIN - 1e-9) return;
+    lanes.push({ id, offset: target, width: w, flow: 1, kind: "road" });
+  });
+  const kerbIn = Math.min(g.rInner - g.dMean, ...lanes.filter((l) => l.kind === "road").map((l) => l.offset - l.width / 2));
   const d: Draft = { lanes, carriageways: [{ from: kerbIn, to: kerbOut, flow: 1 }], sidewalks: [], median: [] };
-  const wi = approach.ids.indexOf("walk-R");
-  if (wi >= 0) {
-    const sw = approach.widths[wi]!;
-    d.lanes.push({ id: "walk-R", offset: kerbOut + sw / 2, width: sw, flow: 0, kind: "sidewalk" });
-    d.sidewalks.push({ from: kerbOut, to: kerbOut + sw });
-  }
+  if (hasWalk) d.sidewalks.push({ from: kerbOut, to: kerbOut + walkW });
   return finish(d);
 }
 
@@ -444,7 +525,7 @@ export function buildStretches(
   sections: readonly CitySection[],
   lapLength: number,
   /** Ring layout from the roundabout data (track.ts), else null → approach's own lanes. */
-  ringFor?: (ring: CitySection, approach: LaneLayout) => LaneLayout | null,
+  ringFor?: (ring: CitySection, approach: LaneLayout, exit: LaneLayout) => LaneLayout | null,
 ): Stretch[] {
   const n = sections.length;
   if (n === 0) throw new Error("buildStretches: no sections");
@@ -539,7 +620,11 @@ export function buildStretches(
       const after = groups[(i + 1) % L]!;
       const road = (x: Group): LaneLayout | null => (x.layout && !x.ped ? x.layout : null);
       const approach = road(before) ?? road(after);
-      if (approach) g.layout = ringFor?.(sections[g.secs[0]!]!, approach) ?? ringLayout(approach);
+      if (approach) {
+        const ap = before.layout ?? approach;
+        const ex = after.layout ?? approach;
+        g.layout = ringFor?.(sections[g.secs[0]!]!, ap, ex) ?? ringLayout(approach);
+      }
       else pending = true;
     }
     if (!pending) break;
@@ -586,6 +671,9 @@ export interface LaneTransition {
   map: readonly (number | null)[];
   /** Lanes of the stretch after that are new. */
   begins: readonly number[];
+  /** Lanes of the stretch before (indices) that continue with a different flow (e.g. a median or
+   *  oncoming lane continuing onto a ring becomes +1): the engine keeps vehicles apart there. */
+  flowChanges: readonly number[];
 }
 
 /**

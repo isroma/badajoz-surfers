@@ -225,7 +225,7 @@ function elevatedSpans(ctx: CityCtx, bag: Bag, ts: TS, ground: GroundLayer, run:
   const p = bag.props;
   const m = propMaterial(true);
   const runs = [run];
-  const pylonS = ctx.landmark("puente-real")?.pylon?.s ?? 826;
+  const pylonS = ctx.landmark("puente-real")?.pylon?.s ?? ctx.track.marks.pylon;
   for (const [a, b] of runs) {
     const ss = samples(a, b, 3);
     const deck = bag.acc(m);
@@ -263,7 +263,7 @@ function elevatedSpans(ctx: CityCtx, bag: Bag, ts: TS, ground: GroundLayer, run:
       }
     }
     // piers
-    const nearPylon = (s: number): boolean => Math.abs(s - pylonS) < 150 && ctx.track.sectionAt(s).name === "Puente Real" && s > 520 && s < 960;
+    const nearPylon = (s: number): boolean => Math.abs(s - pylonS) < 150 && ctx.track.sectionAt(s).name === "Puente Real" && s > ctx.track.marks.bridgeDeckStart && s < ctx.track.marks.bridgeDeckEnd;
     for (let s = Math.ceil((a + 10) / 36) * 36; s < b - 8; s += 36) {
       if (nearPylon(s)) continue;
       const f = ts.f(s);
@@ -363,7 +363,7 @@ function puenteReal(ctx: CityCtx, bag: Bag, ts: TS): void {
     for (let k = 0; k < n; k++) {
       const d = 18 + k * 9.5;
       const sa = s + dir * d;
-      if (sa < 516 || sa > 962) continue;
+      if (sa < ctx.track.marks.bridgeDeckStart - 6 || sa > ctx.track.marks.bridgeDeckEnd + 2) continue;
       const ml = ctx.track.layoutAt(sa).median[0];
       if (!ml) continue;
       const anchor = ts.p(sa, (ml.from + ml.to) / 2, 0.4);
@@ -966,16 +966,19 @@ function storkNest(bag: Bag, x: number, y: number, z: number): void {
  * (by the Avenida de Elvas roundabout exit), with its terrace and the abandoned table.
  */
 function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
+  // at the bar's site from the data (just behind the start, right-hand side, on land)
+  const site = ctx.track.marks.barSite;
   const L = ctx.track.lapLength;
-  const s0 = L - 17;
-  const s1 = L - 3;
-  const lay = ctx.track.layoutAt(L - 8);
+  const sc = ((site.sLap % L) + L) % L;
+  const s0 = sc - 7;
+  const s1 = Math.min(L - 0.5, sc + 7);
+  const lay = ctx.track.layoutAt(sc);
   let edge = lay.right;
   for (const w of lay.sidewalks) edge = Math.max(edge, w.to);
   for (const c of lay.carriageways) edge = Math.max(edge, c.to);
   const t0 = edge + 0.4;
-  const t1 = edge + 4.4;
-  const b0 = t1 + 0.6;
+  const b0 = Math.max(edge + 5, site.lateral - 3.5);
+  const t1 = b0 - 0.6;
   const b1 = b0 + 7;
   const p = bag.props;
   const m = propMaterial(true);
@@ -1094,9 +1097,9 @@ function barElPuente(ctx: CityCtx, bag: Bag, fac: Acc, top: Acc, ts: TS): void {
   }
 }
 
-/** The blue direction sign at the start: "Puente Real · Badajoz centro", on two posts to the right. */
+/** The blue "Puente Real" sign at the bridge head (just before the deck), on two posts to the right. */
 export function startSign(ctx: CityCtx, bag: Bag, ts: TS): void {
-  const s = 70;
+  const s = Math.max(2, ctx.track.marks.bridgeDeckStart - 8);
   const lay = ctx.track.layoutAt(s);
   let edge = lay.right;
   for (const w of lay.sidewalks) edge = Math.max(edge, w.to);
@@ -1107,7 +1110,7 @@ export function startSign(ctx: CityCtx, bag: Bag, ts: TS): void {
   p.push(xf(q.x, q.y, q.z, 1, 1, 1, 0, ry, 0));
   for (const x of [-1.9, 1.9]) p.box(x, 1.6, 0.05, 0.12, 3.2, 0.12, PAL.darkGrey, flatMaterial());
   p.box(0, 3.4, 0, 4.6, 1.0, 0.08, 0x1d4f9e, flatMaterial());
-  const uv = signSlot("start-sign", drawLabel("Puente Real · Badajoz centro", "#1d4f9e", "#ffffff", { border: "#ffffff" }));
+  const uv = signSlot("start-sign", drawLabel("Puente Real", "#1d4f9e", "#ffffff", { border: "#ffffff" }));
   p.quad(new THREE.Matrix4().makeScale(4.5, 0.85, 1).setPosition(0, 3.4, 0.05), 0xffffff, signMaterial(), uv);
   p.pop();
 }

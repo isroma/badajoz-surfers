@@ -17,15 +17,22 @@ describe("the real course", () => {
   it("drives the lap length, zones and lanes", () => {
     expect(LAP_LENGTH).toBeCloseTo(course.lapLength, 6);
     expect(LAP_LENGTH).toBeGreaterThan(8000);
-    expect(zoneAt(500).zone.id).toBe("puente-real");
-    expect(zoneAt(1100).zone.id).toBe("valdepasillas");
-    expect(zoneAt(4600).zone.id).toBe("casco-antiguo");
-    expect(zoneAt(LAP_LENGTH + 500).lap).toBe(2);
+    // (zones, lanes and features from the course's own marks and zones: no hard-coded s)
+    const m = course.track.marks;
+    const zoneOf = (id: string): { fromS: number; toS: number } => course.zones.find((z) => z.id === id)!;
+    expect(zoneAt(m.pylon).zone.id).toBe("puente-real");
+    expect(zoneAt(m.sinforianoStart + 50).zone.id).toBe("valdepasillas");
+    expect(zoneAt(m.plazaAlta - 50).zone.id).toBe("casco-antiguo");
+    expect(zoneAt(LAP_LENGTH + m.pylon).lap).toBe(2);
     // Real zone lengths in the zone definitions handed to the shell.
-    const z = zoneAt(1500);
+    const z = zoneAt((zoneOf("valdepasillas").fromS + zoneOf("valdepasillas").toS) / 2);
     expect(z.zone.length).toBeCloseTo(z.end - z.start, 6);
-    expect(layoutAt(600).offsets.length).toBe(5);
-    expect(layoutAt(4700).offsets.length).toBe(2);
+    // The bridge: two lanes each way (no walkway lane); the old town: a narrow two-lane street.
+    expect(layoutAt(m.pylon + 40).offsets.length).toBe(4);
+    const old = zoneOf("casco-antiguo");
+    let narrow = 0;
+    for (let s = old.fromS; s < old.toS; s += 5) if (layoutAt(s).offsets.length === 2) narrow++;
+    expect(narrow).toBeGreaterThan(10);
   });
 
   it("finds the real stop lines, bus stops, bars, trees and arches", () => {
@@ -34,10 +41,11 @@ describe("the real course", () => {
     expect(course.busStops.length).toBeGreaterThan(5);
     expect(course.bars.length).toBeGreaterThan(5);
     expect(course.trees.length).toBeGreaterThan(200);
-    // Arco del Peso (route through a building, s ≈ 4903–4916).
-    expect(underArch(course, 4905, 4910)).toBe(true);
-    expect(underArch(course, 2000, 2100)).toBe(false);
-    expect(underArch(course, 4905 + LAP_LENGTH, 4910 + LAP_LENGTH)).toBe(true);
+    // Arco del Peso (the route runs through a building there).
+    const [a0, a1] = course.track.marks.arcoDelPeso;
+    expect(underArch(course, a0 + 1, a1 - 1)).toBe(true);
+    expect(underArch(course, course.track.marks.sinforianoStart + 100, course.track.marks.sinforianoStart + 200)).toBe(false);
+    expect(underArch(course, a0 + 1 + LAP_LENGTH, a1 - 1 + LAP_LENGTH)).toBe(true);
   });
 
   it("speed builds slowly over the 8.2 km lap: 15 m/s by 2 km, ~21 by 5 km, faster on lap 2", () => {
@@ -81,9 +89,10 @@ describe("the real course", () => {
     const events: GameEvent[] = [];
     const run = new Run({ seed: 21, powerupDuration: (k) => POWERUPS[k].baseDuration, baseMultiplier: () => 1, emit: (e) => events.push(e), fx: () => {} });
     run.invincible = true;
-    run.begin(undefined, 1000);
+    const m = course.track.marks;
+    run.begin(undefined, m.sinforianoStart - 150);
     const bot = new Bot();
-    for (let i = 0; i < 40 / TICK && run.player.p < 1500; i++) {
+    for (let i = 0; i < 40 / TICK && run.player.p < m.sinforianoStart + 300; i++) {
       bot.update(run);
       run.tick(TICK);
     }
@@ -93,7 +102,7 @@ describe("the real course", () => {
     for (let i = 1; i < names.length; i++) expect(names[i]).not.toBe(names[i - 1]);
   }, 60_000);
 
-  it("the tutorial on the Puente Real approach: dodge left/right, jump, roll, jump onto a car; the autopilot does it", () => {
+  it("the tutorial on the Puente Real bridge head: dodge left/right, jump, roll, jump onto a car, all before the deck's middle; the autopilot does it", () => {
     const events: GameEvent[] = [];
     const run = new Run({
       seed: 9, powerupDuration: (k) => POWERUPS[k].baseDuration, baseMultiplier: () => 1, emit: (e) => events.push(e), fx: () => {}, tutorial: true,
@@ -101,8 +110,9 @@ describe("the real course", () => {
     run.begin();
     const steps = run.gen.tutorial;
     expect(steps.map((t) => t.action).slice(1)).toEqual(["jump", "roll", "jump"]);
-    expect(steps[0]!.front).toBeGreaterThanOrEqual(50);
-    expect(steps[steps.length - 1]!.end).toBeLessThan(190);
+    // (between s ≈ 40 and 260: on the deck, well before the pylon)
+    expect(steps[0]!.front).toBeGreaterThanOrEqual(40);
+    expect(steps[steps.length - 1]!.end).toBeLessThan(Math.min(260, course.track.marks.pylon - 50));
     const bot = new Bot();
     for (let i = 0; i < 40 / TICK && run.phase !== "over" && run.player.p < 260; i++) {
       bot.update(run);

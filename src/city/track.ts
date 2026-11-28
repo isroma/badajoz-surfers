@@ -10,8 +10,8 @@
  * has heading + the lap's total turning (±2π).
  * curvature = dθ/ds signed, + when turning towards the runner's right.
  */
-import type { CityData, CityRoundabout, CitySection, ZoneId } from "./data";
-import { buildStretches, mapLanes, ringLayoutFromData, type LaneLayout, type LaneTransition } from "./lanes";
+import type { CityData, CityMarks, CityMeta, CityRoundabout, CitySection, ZoneId } from "./data";
+import { buildStretches, mapLanes, mapLanesInOrder, ringLayoutFromData, type LaneLayout, type LaneTransition } from "./lanes";
 import { findTurns, TURN_LOOKAHEAD, type Turn } from "./turns";
 import { computeWalls, fitStretches, type Pinch, type Walls } from "./walls";
 
@@ -89,6 +89,10 @@ export interface Track {
    * transitions; null if it continues for at least LANE_END_LOOKAHEAD m.
    */
   laneEndsAhead(s: number, laneIndex: number): number | null;
+  /** Named s positions along the lap (city.meta.marks). */
+  readonly marks: CityMarks;
+  /** Where s = 0 is in the frame (city.meta.start); the frame origin is NOT the start. */
+  readonly start: CityMeta["start"];
   /** The roundabouts of the lap (city.roundabouts) with their ring-arc s range and stretches. */
   readonly roundabouts: readonly TrackRoundabout[];
   /** Nearest building wall per metre on each side (see walls.ts; also via wallClearance()). */
@@ -348,7 +352,7 @@ export function createTrack(city: CityData): Track {
   const walls = computeWalls(city, lap, project);
   const rbFor = (sec: CitySection): CityRoundabout | undefined =>
     (city.roundabouts ?? []).find((r) => sec.fromS < r.exitS - 0.5 && sec.toS > r.entryS + 0.5);
-  const ringFor = (sec: CitySection, approach: LaneLayout): LaneLayout | null => {
+  const ringFor = (sec: CitySection, approach: LaneLayout, exit: LaneLayout): LaneLayout | null => {
     const rb = rbFor(sec);
     if (!rb) return null;
     const f = createFrame();
@@ -363,9 +367,18 @@ export function createTrack(city: CityData): Track {
       cnt++;
     }
     // dMin less a little: the curve between samples can come slightly closer.
-    return ringLayoutFromData({ lanes: rb.lanes, rInner: rb.rInner, rOuter: rb.rOuter, dMin: dMin - 0.05, dMean: sum / Math.max(1, cnt) }, approach);
+    return ringLayoutFromData({ lanes: rb.lanes, rInner: rb.rInner, rOuter: rb.rOuter, dMin: dMin - 0.05, dMean: sum / Math.max(1, cnt) }, approach, exit);
   };
-  const fitted = fitStretches(buildStretches(sections, lap, ringFor), walls, city.buildings);
+  // Rings are laid out again from their final (wall-fitted) neighbours, then everything is refitted.
+  const isRing = (sec: CitySection): boolean => sec.roundabout !== null && rbFor(sec) !== undefined;
+  const first = fitStretches(buildStretches(sections, lap, ringFor), walls, city.buildings).stretches;
+  const redone = first.map((st, i, arr) => {
+    if (!isRing(st.section)) return st;
+    const prev = arr[(i - 1 + arr.length) % arr.length]!;
+    const next = arr[(i + 1) % arr.length]!;
+    return { ...st, layout: ringFor(st.section, prev.layout, next.layout) ?? st.layout };
+  });
+  const fitted = fitStretches(redone, walls, city.buildings);
   const stretches = fitted.stretches;
   const pinches = fitted.pinches;
   const stFrom = stretches.map((x) => x.fromS);
@@ -388,8 +401,17 @@ export function createTrack(city: CityData): Track {
       after.push(null);
       continue;
     }
-    const { map, begins } = mapLanes(a, b);
-    const t: LaneTransition = { s: j === 0 ? 0 : stretches[j]!.fromS, fromIndex: i, toIndex: j, map, begins };
+    // Ring boundaries: lanes continue 1:1 in order from the kerb; elsewhere the id/nearest rules.
+    const ringEdge = isRing(stretches[i]!.section) || isRing(stretches[j]!.section);
+    let map: (number | null)[];
+    let begins: number[];
+    if (ringEdge) {
+      map = mapLanesInOrder(a, b);
+      const taken = new Set(map.filter((x): x is number => x !== null));
+      begins = b.ids.map((_, k) => k).filter((k) => !taken.has(k));
+    } else ({ map, begins } = mapLanes(a, b));
+    const flowChanges = map.flatMap((k, li) => (k !== null && b.flow[k] !== a.flow[li] ? [li] : []));
+    const t: LaneTransition = { s: j === 0 ? 0 : stretches[j]!.fromS, fromIndex: i, toIndex: j, map, begins, flowChanges };
     after.push(t);
     transitions.push(t);
   }
@@ -455,6 +477,8 @@ export function createTrack(city: CityData): Track {
     streetNameAt,
     transitions,
     roundabouts,
+    marks: city.meta.marks,
+    start: city.meta.start,
     walls,
     pinches,
     laneEndsAhead,

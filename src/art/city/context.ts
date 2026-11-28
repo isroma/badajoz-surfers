@@ -121,7 +121,7 @@ export function makeTerrainSampler(city: CityData): (x: number, z: number) => nu
 const LANDMARK_MODELS = ["torre-siglo-xxi", "catedral", "ayuntamiento", "torre-espantaperros", "puerta-palmas", "puerta-capitel", "templete-san-francisco"];
 
 /** Typology from the data's tags first (school, church, hospital…), then zone, height and footprint. */
-function classify(b: CityBuilding, zone: ZoneId, s: number, area: number, plazaAlta: boolean, poiCat: string | null): Typology {
+function classify(b: CityBuilding, zone: ZoneId, s: number, area: number, plazaAlta: boolean, poiCat: string | null, marks: Track["marks"]): Typology {
   const t = b.tags ?? {};
   const tag = t["building"] ?? "yes";
   const am = t["amenity"] ?? (poiCat?.startsWith("amenity:") ? poiCat.slice(8) : "");
@@ -138,7 +138,7 @@ function classify(b: CityBuilding, zone: ZoneId, s: number, area: number, plazaA
   if (["industrial", "warehouse", "garage", "roof", "kiosk", "train_station"].includes(tag)) return "shed";
   const r = hash01(b.ring.length * 131 + Math.round(b.ring[0] ?? 0), Math.round((b.ring[1] ?? 0) * 10));
   if (b.height < 4.2 && area < 120) return zone === "casco-antiguo" || zone === "alcazaba-palmas" ? "casco" : "shed";
-  if (zone === "casco-antiguo" || (zone === "alcazaba-palmas" && s < 5780)) return b.height <= 13.5 ? "casco" : "render";
+  if (zone === "casco-antiguo" || (zone === "alcazaba-palmas" && s < marks.puentePalmasStart)) return b.height <= 13.5 ? "casco" : "render";
   if (b.height < 5 && area > 400) return "shed";
   switch (zone) {
     case "san-francisco":
@@ -146,7 +146,8 @@ function classify(b: CityBuilding, zone: ZoneId, s: number, area: number, plazaA
     case "valdepasillas":
       return r < 0.74 ? "brick" : r < 0.92 ? "render" : "modern";
     case "puente-real":
-      return s < 512 ? (r < 0.55 ? "modern" : "brick") : r < 0.75 ? "brick" : "render";
+      // the land approach to the Puente Real deck (now at the lap's end and its very start)
+      return s < marks.bridgeDeckStart || s > marks.elvasRoundabout[1] ? (r < 0.55 ? "modern" : "brick") : r < 0.75 ? "brick" : "render";
     case "alcazaba-palmas":
       return r < 0.5 ? "render" : "brick";
     case "margen-derecha":
@@ -239,7 +240,7 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
     const poi = city.pois.find((p) => Math.abs(p.s - b.s) < 120 && pointInFlat(p.x, p.z, b.ring)) ?? null;
     const nearSchool = city.pois.find((p) => p.category === "amenity:school" && Math.hypot(p.x - c.x, p.z - c.z) < 90) ?? null;
     const isSchoolBuilding = (b.tags?.["building"] ?? "") === "school";
-    const typ = classify(b, zone, b.s, area, plazaAlta, poi?.category ?? null);
+    const typ = classify(b, zone, b.s, area, plazaAlta, poi?.category ?? null, track.marks);
     // building names: OSM's, or an institution inside (shops keep to their own ground-floor signs)
     const institution = poi && /^amenity:(school|college|university|kindergarten|hospital|clinic|theatre|place_of_worship|townhall|police|post_office|library)$|^tourism:hotel$/.test(poi.category);
     const rawName = NAME_OVERRIDES[b.id] ?? b.tags?.["name"] ?? (institution ? poi.name : null) ?? (isSchoolBuilding && nearSchool ? nearSchool.name : null);

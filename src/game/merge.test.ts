@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { OBSTACLE_DEFS, POWERUPS, type GameEvent, type ObstacleKind } from "../contracts";
 import { PASSAGE_AFTER, PASSAGE_BEFORE } from "./course";
-import { RING_FULL, laneMergeAhead, laneOffsetAt, laneOpenAt, laneShownAt, layoutAt, merges } from "./lanes";
+import { laneMergeAhead, laneOffsetAt, laneOpenAt, laneShownAt, layoutAt, merges } from "./lanes";
 import { BoxSet } from "./collision";
 import { tableAt } from "./course";
 import { Run } from "./run";
@@ -128,19 +128,13 @@ describe("lane tapers, passages and guides on the real lap", () => {
       expect(laneShownAt(track, m.lane, Math.min(m.end - 0.1, mid + 1))).toBe(false);
       expect(laneShownAt(track, m.into, mid + 1)).toBe(true);
       // Every taper is at least MERGE_LENGTH long (the short ring stretch borrows the one before);
-      // a ring lane that begins and ends in the ring is never offered (zero length at its start).
-      // (lanes drawn on a ring close over a short taper sized by sideways speed)
-      if (m.s1 === m.s0) expect(m.s0).toBe(st.fromS);
-      else if (st.section.roundabout === null) expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
+      expect(m.s1 - m.s0).toBeGreaterThanOrEqual(59.9);
     }
-    // A lane ending on a ring either is runnable there (closing inside the ring after at least
-    // RING_FULL m at full width) or tapers away before the ring (never offered on it).
+    // Lanes flow through the rings 1:1: no taper inside a ring any more.
     for (const m of merges(track).filter((x) => !x.opens)) {
-      const ring = track.stretches[m.fromStretch]!;
-      if (ring.section.roundabout === null || m.s1 === m.s0) continue;
-      if (m.s1 <= ring.fromS + 1e-6) continue;
-      const open = merges(track).find((x) => x.opens && x.fromStretch === m.fromStretch && x.lane === m.lane);
-      expect(m.s0 - (open ? open.s1 : ring.fromS)).toBeGreaterThanOrEqual(RING_FULL - 1e-6);
+      for (const ring of track.roundabouts) {
+        expect(m.s1 <= ring.arcFromS + 0.5 || m.s0 >= ring.arcToS - 0.5, `taper ${m.s0.toFixed(0)}-${m.s1.toFixed(0)} on the ring at ${ring.arcFromS.toFixed(0)}`).toBe(true);
+      }
     }
   });
 
@@ -165,7 +159,8 @@ describe("two-lane streets and oncoming warnings", () => {
     expect(narrow.length).toBeGreaterThan(2);
     for (const st of narrow) {
       const gap = Math.abs(st.layout.offsets[1]! - st.layout.offsets[0]!);
-      expect(laneChangeTime(gap), `${st.layout.ids.join(",")} at ${st.fromS.toFixed(0)}`).toBeLessThanOrEqual(gap < 2 ? 0.2 : 0.22);
+      // (narrow old-town lanes: ≤ 0.2 s; a two-lane ring arc is a full lane wide: a normal change)
+      expect(laneChangeTime(gap), `${st.layout.ids.join(",")} at ${st.fromS.toFixed(0)}`).toBeLessThanOrEqual(gap < 2 ? 0.2 : laneChangeTime(3.3));
     }
     const bad: string[] = [];
     for (let seed = 1; seed <= 12; seed++) {
@@ -210,7 +205,7 @@ describe("two-lane streets and oncoming warnings", () => {
       return horns;
     };
     // Puente Real, in an oncoming lane: the car honks, the pedestrian does not.
-    expect(scene(300, "opp-1", ["peaton", "coche"])).toEqual(["coche"]);
+    expect(scene(track.marks.pylon - 40, "opp-1", ["peaton", "coche"])).toEqual(["coche"]);
     // A shared pedestrian street (no traffic flow): neither a pedestrian nor a scooter honks.
     const shared = track.stretches.find((st) => st.layout.ids.join() === "ped-1,ped-2" && st.toS - st.fromS > 150)!;
     expect(scene(shared.fromS + 20, "ped-1", ["peaton", "moto"])).toEqual([]);
@@ -236,7 +231,8 @@ describe("second review regressions", () => {
         tested++;
       }
     }
-    expect(tested).toBeGreaterThan(5);
+    // (only the lap's real endings remain: a handful)
+    expect(tested).toBeGreaterThanOrEqual(2);
   });
 
   it("every lane that begins opens out of its neighbour (no lane appears at full width at once)", () => {

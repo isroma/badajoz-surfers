@@ -738,6 +738,8 @@ export class Run {
       if (Math.abs(o.x - this.boxes.laneX(s.lane, s.p)) > def.width / 2 + 0.3) continue;
       const [front] = footprintOf(o);
       if ((front - s.p) / v > HORN_TIME) continue;
+      // (not yet out of its ring exit: it honks once it is there to be seen)
+      if (o.beyond !== undefined && obstacleCentre(o, s.p) > o.beyond) continue;
       this.flashed.add(o.id);
       const c = obstacleCentre(o, s.p);
       this.cfg.fx({ type: "flash", id: o.id });
