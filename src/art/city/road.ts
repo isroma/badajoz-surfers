@@ -190,7 +190,9 @@ class RoadPainter {
   /** Centroid inside the footprint, or any corner inside the ring's outer kerb (+0.4 m). */
   private owned(x: number, z: number, ...corners: THREE.Vector3[]): boolean {
     // runnable-lane tints (offRoad paint) stay on top of the roundabout object
-    if (this.exclude === null || this.offRoad) return false;
+    // runnable tints too: a pedestrian lane entering a ring stops at its footprint (the ring object
+    // draws the ring's own lanes and walk-R)
+    if (this.exclude === null) return false;
     return this.exclude(x, z, -1) || corners.some((c) => this.exclude!(c.x, c.z, -3.2));
   }
 
@@ -304,7 +306,9 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     let kmax = 0;
     for (let q = a; q <= b; q += 4) kmax = Math.max(kmax, Math.abs(ts.f(q).curvature));
     const ss = samples(a, b, kmax < 0.012 ? 4 : 2);
-    const bridge = sec.bridge !== null;
+    // a bridge only where its deck really is (the section's flag runs on past the deck's ends)
+    const deckAt = (q: number): boolean => sec.bridge !== null && ctx.city.meta.bridges.some((bq) => bq.name === sec.bridge && q >= bq.fromS - 1 && q <= bq.toS + 1);
+    const bridge = sec.bridge !== null && ss.every((q) => deckAt(q));
     const ped = lay.carriageways.length === 0;
     const surf = surfaceOf(sec, zone);
     const surfMat = groundMaterial(surf);
@@ -343,12 +347,15 @@ export function buildRoadChunk(ctx: CityCtx, bag: Bag, ts: TS, s0: number, s1: n
     // --- pavement out to the facades ---------------------------------------------------------
     const outer = (s: number, side: 1 | -1): number => {
       const edge = side > 0 ? hi : -lo;
-      if (bridge) return edge + 0.35;
+      if (deckAt(s)) return edge + 0.35;
       // out to the real wall (track.walls) when there is one close by: one surface wall to wall
       const wi = Math.min(ctx.track.walls.left.length - 1, Math.max(0, Math.floor(s)));
       const f = side > 0 ? ctx.track.walls.right[wi]! : ctx.track.walls.left[wi]!;
       let w: number;
-      if (Math.abs(f) > edge - 0.05 && Math.abs(f) < 16) w = Math.max(edge, Math.abs(f)) + 0.3;
+      // a far façade beside a road is not reached by one huge pavement: past 6 m the ground (with its
+      // dressing) takes over; streets without carriageway still pave wall to wall
+      if (Math.abs(f) > edge - 0.05 && Math.abs(f) < 16 && (ped || Math.abs(f) < edge + 6)) w = Math.max(edge, Math.abs(f)) + 0.3;
+      else if (!ped && Math.abs(f) >= edge + 6 && Math.abs(f) < 16) w = edge + 3.5;
       else w = edge + (ped ? 1.5 : zone === "puente-real" || zone === "margen-derecha" ? 2.5 : 3.5);
       return curvatureLimit(s, side, w);
     };

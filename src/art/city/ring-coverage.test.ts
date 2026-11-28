@@ -73,7 +73,7 @@ describe("city art: roundabout ground coverage", () => {
       const chunks = new Set<number>();
       const L = track.lapLength;
       const passLen = (((rb.passToS - rb.passFromS) % L) + L) % L;
-      for (let d = -40; d <= passLen + 40; d += CHUNK / 2) chunks.add(Math.floor((((rb.passFromS + d) % L) + L) % L / CHUNK));
+      for (let d = -80; d <= passLen + 80; d += CHUNK / 2) chunks.add(Math.floor((((rb.passFromS + d) % L) + L) % L / CHUNK));
       for (const c of chunks) {
         const b = new Bag();
         buildRoadChunk(ctx, b, ts, c * CHUNK, Math.min(track.lapLength, (c + 1) * CHUNK));
@@ -116,6 +116,16 @@ describe("city art: roundabout ground coverage", () => {
         let lo = lay.left, hi = lay.right;
         for (const c of lay.carriageways) { lo = Math.min(lo, c.from); hi = Math.max(hi, c.to); }
         for (const w of lay.sidewalks) { lo = Math.min(lo, w.from); hi = Math.max(hi, w.to); }
+        if (lay.carriageways.length === 0) {
+          // a pedestrian approach: its floor reaches the walls (or 1.5 m beyond the lanes)
+          const sp = ctx.routeSpan(pr.s);
+          // (on the inside of a tight curve the floor stops short of the wall so it cannot fold)
+          const k = track.frameAt(pr.s).curvature;
+          const lim = Math.abs(k) > 0.002 ? 0.85 / Math.abs(k) : 99;
+          // (the floor out to the walls is smoothed and rate-limited: require it to the lanes + 1.5 m)
+          lo = Math.max(sp.lo, lo - 1.5, -12, k < 0 ? -lim : -99);
+          hi = Math.min(sp.hi, hi + 1.5, 12, k > 0 ? lim : 99);
+        }
         return pr.lateral > lo + 0.3 && pr.lateral < hi - 0.3;
       };
       let bare = 0, fight = 0, step = 0;
@@ -149,6 +159,24 @@ describe("city art: roundabout ground coverage", () => {
           }
         }
       }
+      // on a pedestrian approach the floor is flush: no raised slab of the ring over the route's paving
+      let raised = 0;
+      let fr = "";
+      for (const [key, a] of top) {
+        if (!a || a.t.src !== "ring") continue;
+        const [i, j] = key.split(",").map(Number) as [number, number];
+        const x = i * S, z = j * S;
+        if (Math.hypot(x - rb.cx, z - rb.cz) < rb.rOuter + 0.6) continue;
+        const pr = track.project(x, z);
+        if (Math.abs(pr.lateral) > 12 || track.layoutAt(pr.s).carriageways.length > 0 || !must(x, z)) continue;
+        const spn = ctx.routeSpan(pr.s);
+        if (pr.lateral < spn.lo + 0.3 || pr.lateral > spn.hi - 0.3) continue; // the ring's own pavement beside it
+        if (a.y - track.frameAt(pr.s).h > 0.08) {
+          raised++;
+          fr ||= `raised ${(a.y - track.frameAt(pr.s).h).toFixed(2)} at ${x.toFixed(1)},${z.toFixed(1)}`;
+        }
+      }
+      if (raised) bad.push(`${rb.id}: raised slabs on the pedestrian approach ${raised} (${fr})`);
       // steps between the route's road and the ring object's road across the handover
       for (const [key, a] of top) {
         if (!a || !a.t.asphalt) continue;

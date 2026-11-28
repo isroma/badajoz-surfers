@@ -341,7 +341,8 @@ export function buildContext(city: CityData, track: Track, lap = 1): CityCtx {
       const wl = track.walls.left[i] ?? -99;
       const wr = track.walls.right[i] ?? 99;
       // without a wall, as far as road.ts draws the pavement at least (1.5 m on pedestrian streets)
-      const m = lay.carriageways.length === 0 ? 1.5 : 2.5;
+      const onDeck = city.meta.bridges.some((bq) => bq.name === track.sectionAt(s).bridge && s >= bq.fromS - 1 && s <= bq.toS + 1);
+      const m = onDeck ? 0.35 : lay.carriageways.length === 0 ? 1.5 : 2.5;
       lo = wl > -16 ? Math.min(lo, wl) : lo - m;
       hi = wr < 16 ? Math.max(hi, wr) : hi + m;
       return { lo, hi };
@@ -427,7 +428,9 @@ export function clipRing(ring: P2[], track: Track, nearS: number, margin = 0.35)
       const q = poly[(i + 1) % poly.length]!;
       out.push(p);
       if (Math.abs(p.l - at) < 1e-6 && Math.abs(q.l - at) < 1e-6) {
-        const n = Math.floor(Math.abs(q.s - p.s) / 1.0);
+        // ~4 m pieces: a cut face still follows the curve but keeps façade-sized edges (windows,
+        // ground-floor doors and the relief need edges ≥ 2.5 m)
+        const n = Math.floor(Math.abs(q.s - p.s) / 4.0);
         for (let k = 1; k < n; k++) out.push({ s: p.s + ((q.s - p.s) * k) / n, l: at });
       }
     }
